@@ -1,3 +1,4 @@
+```text
 guardops/
 │
 ├── cli/                          ← All CLI code lives here
@@ -36,3 +37,4 @@ guardops/
 ├── requirements.txt              ← Runtime dependencies
 ├── requirements-dev.txt          ← Dev-only dependencies (pytest, ruff, etc.)
 └── README.md
+```
