@@ -1,0 +1,53 @@
+[build-system]
+# Tells pip WHICH tool to use to build your package.
+# setuptools is the standard. wheel creates the distributable .whl file.
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+# The name pip will use: `pip install guardops`
+name = "guardops"
+version = "0.1.0"
+description = "Autonomous DevSecOps CLI Platform"
+readme = "README.md"
+# Minimum Python version. 3.11 gives you better error messages and speed.
+requires-python = ">=3.11"
+
+# Runtime dependencies — installed automatically when someone does pip install guardops
+dependencies = [
+    "click>=8.1.7",        # CLI framework. Handles commands, options, arguments.
+    "rich>=13.7.0",        # Beautiful terminal output. Colors, tables, spinners.
+    "pyyaml>=6.0.1",       # Read/write YAML files (.guardops.yaml)
+    "python-dotenv>=1.0.0", # Load .env file into os.environ automatically
+    "requests>=2.31.0",    # HTTP calls (used later for GitHub API, health checks)
+    "boto3>=1.34.0",       # AWS SDK. Used in later phases; listed now so structure is ready.
+    "kubernetes>=29.0.0",  # Official Kubernetes Python client
+]
+
+# This is the magic line.
+# It tells pip: when this package is installed, create a command called `guardops`
+# that runs the `cli` function inside `cli/main.py`.
+[project.scripts]
+guardops = "cli.main:cli"
+
+# Tells setuptools where your packages live.
+# find: means "find all directories that have __init__.py"
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cli*", "backend*"]
+
+# Ruff is a fast Python linter. This configures it.
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# E = pycodestyle errors, F = pyflakes, I = isort (import sorting)
+select = ["E", "F", "I"]
+
+# Pytest configuration
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# -v = verbose, shows each test name
+# --tb=short = shorter tracebacks on failure
+addopts = "-v --tb=short"
