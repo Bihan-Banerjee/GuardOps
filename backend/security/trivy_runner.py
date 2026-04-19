@@ -2,6 +2,7 @@ import json
 import shutil
 import subprocess
 from backend.security.semgrep_runner import ScanResult, SecurityFinding
+from typing import Optional
 
 SEVERITY_MAP = {
     "CRITICAL": "CRITICAL",
@@ -17,7 +18,6 @@ def run_trivy_image(
     config: dict,
     severities: Optional[list[str]] = None,
 ) -> ScanResult:
-    from typing import Optional
     if not shutil.which("trivy"):
         return ScanResult(
             tool="trivy",
