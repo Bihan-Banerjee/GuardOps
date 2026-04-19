@@ -1,0 +1,5 @@
+
+# GuardOps
+.env
+.guardops-state.json
+security/reports/

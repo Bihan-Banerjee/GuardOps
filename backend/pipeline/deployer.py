@@ -58,6 +58,14 @@ def deploy_local(
     """
     info(f"Deploying [cyan]{image_ref}[/cyan] to namespace [cyan]{namespace}[/cyan]")
 
+    if not import_image_to_k3d(image_ref):
+        return DeployResult(
+            success=False,
+            namespace=namespace,
+            deployment_name=project_name,
+            error_message="Failed to import image into k3d cluster"
+        )
+
     # ── Step 1: Ensure namespace exists ──────────────────────────────────────
     _ensure_namespace(namespace)
 
@@ -199,23 +207,21 @@ def get_pods(deployment_name: str, namespace: str = "default") -> list[dict]:
 # ─── Private helper functions ──────────────────────────────────────────────────
 
 def _ensure_namespace(namespace: str) -> None:
-    """Creates a Kubernetes namespace if it doesn't exist."""
-    run_command(
-        ["kubectl", "create", "namespace", namespace, "--dry-run=client", "-o", "yaml"],
-        capture_output=True
-    )
-    run_command(
-        ["kubectl", "apply", "-f", "-"],
-        capture_output=True
-    )
-    # Simpler approach: kubectl create namespace (ignore error if exists)
+    """
+    Creates a Kubernetes namespace if it doesn't exist.
+    Uses --dry-run=client approach to be idempotent (safe to run multiple times).
+    """
+    if namespace == "default":
+        # 'default' namespace always exists in Kubernetes — skip creation
+        return
+
     result = run_command(
         ["kubectl", "create", "namespace", namespace],
         capture_output=True
     )
-    # returncode 1 with "already exists" is fine — not a real error
+    # returncode != 0 is fine if namespace already exists
     if result.returncode != 0 and "already exists" not in result.stderr:
-        warn(f"Could not create namespace {namespace}: {result.stderr.strip()}")
+        warn(f"Could not create namespace '{namespace}': {result.stderr.strip()}")
 
 
 def _generate_deployment_manifest(
@@ -398,3 +404,19 @@ def _get_restart_count(pod: dict) -> int:
 def spec_node(pod: dict) -> str:
     """Returns the node a pod is scheduled on."""
     return pod.get("spec", {}).get("nodeName", "unknown")
+
+def import_image_to_k3d(image_ref: str, cluster_name: str = "guardops-local") -> bool:
+    """
+    Imports a local Docker image into k3d's internal registry.
+    Required because k3d runs isolated from Docker Desktop's image cache.
+    Without this, pods fail with ErrImageNeverPull or ImagePullBackOff.
+    """
+    from cli.utils.system import run_command
+    from cli.utils.output import info
+
+    info(f"Importing [cyan]{image_ref}[/cyan] into k3d cluster [cyan]{cluster_name}[/cyan]...")
+    result = run_command(
+        ["k3d", "image", "import", image_ref, "-c", cluster_name],
+        capture_output=False
+    )
+    return result.returncode == 0

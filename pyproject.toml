@@ -2,7 +2,7 @@
 # Tells pip WHICH tool to use to build your package.
 # setuptools is the standard. wheel creates the distributable .whl file.
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 # The name pip will use: `pip install guardops`
