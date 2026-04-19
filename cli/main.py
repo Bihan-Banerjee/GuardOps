@@ -31,7 +31,7 @@ from cli.commands.init_cmd import init_command
 from cli.commands.deploy_cmd import deploy_command
 from cli.commands.status_cmd import status_command
 from cli.commands.logs_cmd import logs_command
-
+from cli.commands.scan_cmd import scan_command  
 
 @click.group()
 @click.version_option(
@@ -65,7 +65,7 @@ cli.add_command(init_command,   name="init")
 cli.add_command(deploy_command, name="deploy")
 cli.add_command(status_command, name="status")
 cli.add_command(logs_command,   name="logs")
-
+cli.add_command(scan_command,   name="scan") 
 
 # This block runs ONLY when you execute: python cli/main.py
 # It does NOT run when the module is imported.
