@@ -1,0 +1,25 @@
+project:
+  name: tester
+  description: ''
+  cloud: local
+docker:
+  dockerfile: Dockerfile
+  context: .
+  registry: local
+  image_name: tester
+kubernetes:
+  namespace: default
+  cluster_context: k3d-guardops-local
+  deployment_name: tester
+security:
+  fail_on_severity: HIGH
+  tools:
+    semgrep: true
+    bandit: true
+    trivy: true
+    sonarqube: false
+    owasp_zap: false
+monitoring:
+  grafana_url: ''
+  prometheus_url: ''
+  loki_url: ''
