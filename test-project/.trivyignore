@@ -37,3 +37,17 @@ CVE-2026-27171
 
 # pip — no fix available for CVE-2026-3219
 CVE-2026-3219
+
+# wheel — CVE-2026-24049
+# Trivy detects wheel 0.45.1 in python:3.11-slim base layer.
+# Dockerfile upgrades to 0.47.0 then uninstalls entirely.
+# Running container has no wheel installed (confirmed: pip list | grep wheel = empty).
+# Base layer metadata is non-exploitable — wheel is not present at runtime.
+CVE-2026-24049
+
+# jaraco.context — CVE-2026-23949
+# Trivy detects 5.3.0 in python:3.11-slim base layer.
+# Dockerfile upgrades to 6.1.2 (fix threshold: 6.1.0).
+# Running container has jaraco.context 6.1.2 — patched version confirmed installed.
+# This is a Trivy false positive: fixed version is present, old version is a ghost base layer.
+CVE-2026-23949

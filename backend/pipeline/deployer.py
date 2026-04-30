@@ -338,7 +338,7 @@ spec:
       containers:
         - name: {name}
           image: {image}
-          # imagePullPolicy: Never → don't try to pull from registry
+          # imagePullPolicy: Never - don't try to pull from registry
           # Phase 3 changes this to Always for ECR-hosted images
           imagePullPolicy: Never
           ports:
@@ -405,11 +405,13 @@ def _kubectl_apply(manifest_yaml: str) -> bool:
 
     Returns True on success, False on failure.
     """
-    result = __import__("subprocess").run(
+    import subprocess
+    result = subprocess.run(
         ["kubectl", "apply", "-f", "-"],
         input=manifest_yaml,
         text=True,
-        capture_output=True
+        capture_output=True,
+        encoding="utf-8"
     )
     if result.returncode == 0:
         console.print(f"[dim green]  {result.stdout.strip()}[/dim green]")
