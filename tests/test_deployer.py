@@ -348,16 +348,22 @@ class TestDeployLocal:
         # Should not proceed past k3d import
         ensure.assert_not_called()
 
-    def test_deployment_apply_failure_triggers_cleanup(self, mocker):
+    def test_deployment_apply_failure_no_rollback_needed(self, mocker):
+        """
+        When the Deployment apply fails, applied_deployment is still False —
+        nothing has been written to the cluster yet, so rollback must NOT be called.
+        There is nothing to clean up.
+        """
         mocker.patch("backend.pipeline.deployer.import_image_to_k3d", return_value=True)
         mocker.patch("backend.pipeline.deployer._ensure_namespace")
-        # First kubectl apply (Deployment) fails
         mocker.patch("backend.pipeline.deployer._kubectl_apply", return_value=False)
         mock_rollback = mocker.patch("backend.pipeline.deployer.rollback_partial_deploy")
         result = deploy_local("my-app", "my-app:v1")
         assert result.success is False
         assert "Deployment" in result.error_message
-        mock_rollback.assert_called_once()
+        # Nothing was applied → rollback would have nothing to delete → must not be called
+        mock_rollback.assert_not_called()
+        assert result.rollback_applied is False
 
     def test_service_apply_failure_triggers_cleanup(self, mocker):
         mocker.patch("backend.pipeline.deployer.import_image_to_k3d", return_value=True)
