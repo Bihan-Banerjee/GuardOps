@@ -568,17 +568,19 @@ class TestTrivyFilesystemRunner:
         assert result.findings == []
 
     def test_secret_finding(self, mocker):
+        """
+        Trivy filesystem uses the 'Secrets' key (not 'Vulnerabilities').
+        Secrets are always mapped to HIGH severity (hardcoded in trivy_runner.py).
+        """
         mocker.patch("backend.security.trivy_runner.shutil.which", return_value="/usr/bin/trivy")
         payload = json.dumps({
             "Results": [{
                 "Target": ".env",
-                "Vulnerabilities": [{
-                    "VulnerabilityID": "SECRET-001",
-                    "PkgName": "aws-access-key",
-                    "InstalledVersion": "hardcoded",
-                    "FixedVersion": "",
-                    "Severity": "CRITICAL",
-                    "Title": "AWS Access Key hardcoded",
+                "Secrets": [{
+                    "RuleID": "aws-access-key-id",
+                    "Title": "AWS Access Key ID",
+                    "StartLine": 3,
+                    "EndLine": 3,
                 }]
             }]
         })
@@ -586,7 +588,60 @@ class TestTrivyFilesystemRunner:
                      return_value=_mock_proc(0, payload))
         result = run_trivy_filesystem(".", {})
         assert result.success is True
-        assert result.findings[0].severity == "CRITICAL"
+        assert len(result.findings) == 1
+        f = result.findings[0]
+        # Secrets are hardcoded HIGH in trivy_runner.py (all secrets are treated equally)
+        assert f.severity == "HIGH"
+        assert f.rule_id == "aws-access-key-id"
+        assert "AWS Access Key ID" in f.message
+        assert f.file_path == ".env"
+        assert f.line_start == 3
+
+    def test_misconfiguration_finding(self, mocker):
+        """Trivy fs also detects Dockerfile/IaC misconfigurations under 'Misconfigurations' key."""
+        mocker.patch("backend.security.trivy_runner.shutil.which", return_value="/usr/bin/trivy")
+        payload = json.dumps({
+            "Results": [{
+                "Target": "Dockerfile",
+                "Misconfigurations": [{
+                    "ID": "DS002",
+                    "Severity": "HIGH",
+                    "Message": "Image should not be run as root",
+                    "Resolution": "Add USER instruction to Dockerfile",
+                }]
+            }]
+        })
+        mocker.patch("backend.security.trivy_runner.subprocess.run",
+                     return_value=_mock_proc(0, payload))
+        result = run_trivy_filesystem(".", {})
+        assert result.success is True
+        assert len(result.findings) == 1
+        assert result.findings[0].severity == "HIGH"
+        assert result.findings[0].rule_id == "DS002"
+        assert "USER" in result.findings[0].fix_guidance
+
+    def test_secrets_and_misconfigs_in_same_result(self, mocker):
+        """Both Secrets and Misconfigurations in the same target are collected together."""
+        mocker.patch("backend.security.trivy_runner.shutil.which", return_value="/usr/bin/trivy")
+        payload = json.dumps({
+            "Results": [{
+                "Target": "Dockerfile",
+                "Secrets": [
+                    {"RuleID": "github-pat", "Title": "GitHub PAT", "StartLine": 1, "EndLine": 1}
+                ],
+                "Misconfigurations": [
+                    {"ID": "DS002", "Severity": "MEDIUM",
+                     "Message": "Running as root", "Resolution": "Add USER"}
+                ]
+            }]
+        })
+        mocker.patch("backend.security.trivy_runner.subprocess.run",
+                     return_value=_mock_proc(0, payload))
+        result = run_trivy_filesystem(".", {})
+        assert len(result.findings) == 2
+        severities = {f.severity for f in result.findings}
+        assert "HIGH" in severities    # from secret
+        assert "MEDIUM" in severities  # from misconfig
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,39 @@
+# Unfixable OS-level CVEs in python:3.11-slim (Debian 13.4)
+# No upstream fix available as of 2026-04-30.
+# Tracked: review monthly and remove when Debian releases a patch.
+
+# ncurses buffer overflow — affects libncursesw6, libtinfo6, ncurses-base, ncurses-bin
+CVE-2025-69720
+
+# systemd arbitrary code execution — affects libsystemd0, libudev1
+CVE-2026-29111
+
+# util-linux TOCTOU — affects bsdutils, libblkid1, libmount1, etc
+CVE-2026-27456
+
+# glibc issues — affects libc-bin, libc6
+CVE-2026-4046
+CVE-2026-4437
+CVE-2026-4438
+CVE-2026-5450
+CVE-2026-5928
+
+# libcap TOCTOU
+CVE-2026-4878
+
+# xz DoS
+CVE-2026-34743
+
+# systemd privilege escalation / escape
+CVE-2026-40225
+CVE-2026-40226
+CVE-2026-4105
+
+# tar hidden file injection
+CVE-2026-5704
+
+# zlib DoS
+CVE-2026-27171
+
+# pip — no fix available for CVE-2026-3219
+CVE-2026-3219
