@@ -4,12 +4,14 @@ WORKDIR /app
 
 COPY requirements.txt .
 
-# Upgrade pip first, then install deps, then force-upgrade vulnerable transitive deps
-# This order matters — upgrading AFTER requirements ensures transitive deps don't
-# get pinned back down by something else in the dependency tree
 RUN pip install --upgrade pip==25.3 && \
     pip install -r requirements.txt && \
-    pip install --upgrade "wheel>=0.46.2" "jaraco.context>=6.1.0"
+    # Upgrade vulnerable build tools
+    pip install --upgrade "wheel>=0.46.2" "jaraco.context>=6.1.0" && \
+    # Remove build tools not needed at runtime — eliminates the CVEs entirely
+    # wheel and jaraco.context are only needed during pip install, not to run app.py
+    pip uninstall -y wheel && \
+    pip cache purge
 
 COPY app.py .
 
