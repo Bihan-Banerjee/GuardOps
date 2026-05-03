@@ -1,53 +1,46 @@
-[build-system]
-# Tells pip WHICH tool to use to build your package.
-# setuptools is the standard. wheel creates the distributable .whl file.
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [project]
-# The name pip will use: `pip install guardops`
 name = "guardops"
-version = "0.1.0"
-description = "Autonomous DevSecOps CLI Platform"
+version = "0.2.0"
+description = "Autonomous DevSecOps CLI — build, scan, and deploy with security gates"
 readme = "README.md"
-# Minimum Python version. 3.11 gives you better error messages and speed.
+license = { text = "MIT" }
 requires-python = ">=3.11"
-
-# Runtime dependencies — installed automatically when someone does pip install guardops
+authors = [
+    { name = "Bihan Banerjee", email = "bihanbanerjee26@gmail.com" }
+]
+keywords = ["devsecops", "security", "kubernetes", "devops", "cli"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Security",
+    "Topic :: Software Development :: Build Tools",
+]
 dependencies = [
-    "click>=8.1.7",        # CLI framework. Handles commands, options, arguments.
-    "rich>=13.7.0",        # Beautiful terminal output. Colors, tables, spinners.
-    "pyyaml>=6.0.1",       # Read/write YAML files (.guardops.yaml)
-    "python-dotenv>=1.0.0", # Load .env file into os.environ automatically
-    "requests>=2.31.0",    # HTTP calls (used later for GitHub API, health checks)
-    "boto3>=1.34.0",       # AWS SDK. Used in later phases; listed now so structure is ready.
-    "kubernetes>=29.0.0",  # Official Kubernetes Python client
+    "click>=8.1.7",
+    "rich>=13.7",
+    "pyyaml>=6.0.1",
+    "requests>=2.31",
+    "boto3>=1.34",
+    "python-dotenv>=1.0",
 ]
 
-# This is the magic line.
-# It tells pip: when this package is installed, create a command called `guardops`
-# that runs the `cli` function inside `cli/main.py`.
+[project.urls]
+Homepage = "https://github.com/Bihan-Banerjee/GuardOps"
+Repository = "https://github.com/Bihan-Banerjee/GuardOps"
+"Bug Tracker" = "https://github.com/Bihan-Banerjee/GuardOps/issues"
+
 [project.scripts]
 guardops = "cli.main:cli"
 
-# Tells setuptools where your packages live.
-# find: means "find all directories that have __init__.py"
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["cli*", "backend*"]
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
 
-# Ruff is a fast Python linter. This configures it.
-[tool.ruff]
-line-length = 100
-target-version = "py311"
-
-[tool.ruff.lint]
-# E = pycodestyle errors, F = pyflakes, I = isort (import sorting)
-select = ["E", "F", "I"]
-
-# Pytest configuration
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# -v = verbose, shows each test name
-# --tb=short = shorter tracebacks on failure
-addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
