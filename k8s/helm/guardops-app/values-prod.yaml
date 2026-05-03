@@ -1,0 +1,48 @@
+# values-prod.yaml — Production overrides for AWS EKS
+# Applied ON TOP of values.yaml when running `guardops deploy --env prod`
+# Only specify values that DIFFER from local defaults.
+
+image:
+  # Set at deploy time: AWS_ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/guardops-app
+  repository: ""
+  tag: ""
+  pullPolicy: Always          # always pull from ECR in production
+
+replicaCount: 2               # minimum 2 for high availability
+
+resources:
+  requests:
+    memory: "128Mi"
+    cpu: "100m"
+  limits:
+    memory: "512Mi"
+    cpu: "500m"
+
+service:
+  type: ClusterIP             # same — ingress handles external access
+  port: 80
+  targetPort: 8080
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    # cert-manager provisions TLS automatically
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+  # Replace with your actual domain in .guardops.yaml
+  host: app.yourdomain.com
+  tls: true
+  tlsSecret: guardops-app-tls
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+config:
+  LOG_LEVEL: "WARNING"
+  ENVIRONMENT: "production"
+  PORT: "8080"

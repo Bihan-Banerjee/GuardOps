@@ -1,0 +1,95 @@
+# values.yaml — Local development defaults (k3d)
+# These are the base values used when running `guardops deploy --env local`
+# Production overrides live in values-prod.yaml
+
+# ---------------------------------------------------------------------------
+# Application identity
+# ---------------------------------------------------------------------------
+app:
+  name: guardops-app          # overridden by guardops at deploy time
+  version: latest             # overridden with git SHA by guardops
+
+# ---------------------------------------------------------------------------
+# Container image
+# ---------------------------------------------------------------------------
+image:
+  repository: guardops-app   # overridden at deploy time
+  tag: latest                 # overridden with git SHA at deploy time
+  # Never = use locally imported image (k3d requirement)
+  # Always = pull from registry (ECR in prod)
+  pullPolicy: Never
+
+# ---------------------------------------------------------------------------
+# Deployment
+# ---------------------------------------------------------------------------
+replicaCount: 1
+
+# Resource requests/limits — these are minimums for local dev
+# Production overrides to higher values in values-prod.yaml
+resources:
+  requests:
+    memory: "64Mi"
+    cpu: "50m"
+  limits:
+    memory: "256Mi"
+    cpu: "200m"
+
+# ---------------------------------------------------------------------------
+# Health probes
+# ---------------------------------------------------------------------------
+probes:
+  liveness:
+    path: /healthz
+    initialDelaySeconds: 10
+    periodSeconds: 15
+    failureThreshold: 3
+  readiness:
+    path: /ready
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    failureThreshold: 3
+
+# ---------------------------------------------------------------------------
+# Service
+# ---------------------------------------------------------------------------
+service:
+  # ClusterIP + Ingress is used for both local and prod.
+  # This fixes the Windows NodePort connectivity issue from Phase 1/2.
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+# ---------------------------------------------------------------------------
+# Ingress
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: true
+  className: nginx
+  annotations: {}
+  # Local: app is accessible at http://test-app.local
+  # Add `127.0.0.1 test-app.local` to your hosts file
+  host: test-app.local
+  tls: false
+  tlsSecret: ""
+
+# ---------------------------------------------------------------------------
+# Horizontal Pod Autoscaler
+# ---------------------------------------------------------------------------
+hpa:
+  enabled: false           # disabled locally — not enough resources
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 70
+
+# ---------------------------------------------------------------------------
+# Application config (injected as env vars via ConfigMap)
+# ---------------------------------------------------------------------------
+config:
+  LOG_LEVEL: "INFO"
+  ENVIRONMENT: "local"
+  PORT: "8080"
+
+# ---------------------------------------------------------------------------
+# Container port
+# ---------------------------------------------------------------------------
+containerPort: 8080

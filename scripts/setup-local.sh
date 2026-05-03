@@ -1,132 +1,117 @@
 #!/usr/bin/env bash
 # scripts/setup-local.sh
 #
-# One-command setup for local development environment.
-# Run once after cloning the repo:
-#   chmod +x scripts/setup-local.sh
-#   ./scripts/setup-local.sh
+# One-command local environment bootstrap for Phase 3.
+#
+# What this does:
+#   1. Recreates k3d cluster with proper port mappings (fixes Windows curl issue)
+#   2. Installs Nginx Ingress Controller
+#   3. Installs cert-manager (TLS in prod — skipped locally)
+#   4. Adds test-app.local to your hosts file
+#   5. Verifies everything is ready
+#
+# Usage:
+#   bash scripts/setup-local.sh
+#
+# Prerequisites: k3d, kubectl, helm must be on PATH
 
-# -e: exit immediately if any command fails
-# -u: treat unset variables as errors
-# -o pipefail: a pipe fails if ANY command in the pipe fails (not just the last)
 set -euo pipefail
 
-# Color codes for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color (reset)
-
-info()    { echo -e "${CYAN}  ℹ${NC}  $1"; }
-success() { echo -e "${GREEN}  ✓${NC}  $1"; }
-warn()    { echo -e "${YELLOW}  ⚠${NC}  $1"; }
-error()   { echo -e "${RED}  ✗${NC}  $1"; exit 1; }
+CLUSTER_NAME="guardops-local"
+INGRESS_NAMESPACE="ingress-nginx"
+APP_HOST="test-app.local"
 
 echo ""
-echo "  GuardOps — Local Development Setup"
-echo "  ─────────────────────────────────────"
+echo "========================================"
+echo "  GuardOps — Local Environment Setup"
+echo "========================================"
 echo ""
 
-# ── Check Python version ─────────────────────────────────────────────────────
-info "Checking Python version..."
-PYTHON_VERSION=$(python3 --version 2>&1 | cut -d' ' -f2)
-PYTHON_MAJOR=$(echo $PYTHON_VERSION | cut -d. -f1)
-PYTHON_MINOR=$(echo $PYTHON_VERSION | cut -d. -f2)
+# ── Step 1: Recreate k3d cluster with port mappings ────────────────────────
+echo "[1/5] Setting up k3d cluster: ${CLUSTER_NAME}"
 
-if [ "$PYTHON_MAJOR" -lt 3 ] || [ "$PYTHON_MINOR" -lt 11 ]; then
-    error "Python 3.11+ required. Found: $PYTHON_VERSION. Install from https://python.org"
+if k3d cluster list | grep -q "${CLUSTER_NAME}"; then
+  echo "  Deleting existing cluster..."
+  k3d cluster delete "${CLUSTER_NAME}"
 fi
-success "Python $PYTHON_VERSION"
 
-# ── Create virtual environment ───────────────────────────────────────────────
-info "Creating Python virtual environment..."
-if [ ! -d ".venv" ]; then
-    python3 -m venv .venv
-    success "Created .venv/"
+echo "  Creating cluster with port mappings..."
+k3d cluster create "${CLUSTER_NAME}" \
+  --port "80:80@loadbalancer" \
+  --port "443:443@loadbalancer" \
+  --port "30000-32767:30000-32767@server:0" \
+  --wait
+
+echo "  Cluster created."
+kubectl get nodes
+
+# ── Step 2: Install Nginx Ingress Controller ────────────────────────────────
+echo ""
+echo "[2/5] Installing Nginx Ingress Controller..."
+
+helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx 2>/dev/null || true
+helm repo update
+
+helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+  --namespace "${INGRESS_NAMESPACE}" \
+  --create-namespace \
+  --set controller.service.type=LoadBalancer \
+  --set controller.hostPort.enabled=true \
+  --wait \
+  --timeout 3m
+
+echo "  Nginx Ingress ready."
+
+# ── Step 3: Install cert-manager (optional, for TLS) ───────────────────────
+echo ""
+echo "[3/5] Installing cert-manager..."
+
+helm repo add jetstack https://charts.jetstack.io 2>/dev/null || true
+helm repo update
+
+helm upgrade --install cert-manager jetstack/cert-manager \
+  --namespace cert-manager \
+  --create-namespace \
+  --set installCRDs=true \
+  --wait \
+  --timeout 3m
+
+echo "  cert-manager ready."
+
+# ── Step 4: Add hosts file entry ────────────────────────────────────────────
+echo ""
+echo "[4/5] Hosts file setup"
+
+HOSTS_LINE="127.0.0.1  ${APP_HOST}"
+
+if grep -q "${APP_HOST}" /etc/hosts 2>/dev/null; then
+  echo "  ${APP_HOST} already in /etc/hosts — skipping"
 else
-    warn ".venv/ already exists — skipping creation"
+  echo ""
+  echo "  Add this line to your hosts file:"
+  echo "    ${HOSTS_LINE}"
+  echo ""
+  if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || -n "${WINDIR:-}" ]]; then
+    echo "  Windows: edit C:\\Windows\\System32\\drivers\\etc\\hosts as Administrator"
+  else
+    echo "  Run: echo '${HOSTS_LINE}' | sudo tee -a /etc/hosts"
+  fi
 fi
 
-# Activate the virtual environment
-# shellcheck disable=SC1091
-source .venv/bin/activate
-success "Activated .venv"
+# ── Step 5: Verify ──────────────────────────────────────────────────────────
+echo ""
+echo "[5/5] Verifying setup..."
 
-# ── Install Python dependencies ──────────────────────────────────────────────
-info "Installing dependencies..."
-pip install --quiet --upgrade pip
-pip install --quiet -r requirements-dev.txt
-success "Dependencies installed"
+kubectl get nodes
+kubectl get pods -n "${INGRESS_NAMESPACE}"
+kubectl get pods -n cert-manager
 
-# ── Install CLI in development mode ─────────────────────────────────────────
-# -e means "editable" — changes to source code take effect immediately
-# without reinstalling. Like a symlink into your source directory.
-info "Installing guardops CLI in development mode..."
-pip install --quiet -e .
-success "guardops CLI installed"
-
-# Verify it works
-GUARDOPS_VERSION=$(guardops --version 2>&1)
-success "CLI ready: $GUARDOPS_VERSION"
-
-# ── Create .env if it doesn't exist ─────────────────────────────────────────
-if [ ! -f ".env" ]; then
-    info "Creating .env from .env.example..."
-    cp .env.example .env
-    success "Created .env — fill in your values before deploying to cloud"
-else
-    warn ".env already exists — keeping existing values"
-fi
-
-# ── Check optional tools ─────────────────────────────────────────────────────
 echo ""
-info "Checking optional tools (needed for Phase 1 deploy):"
-
-check_tool() {
-    local tool=$1
-    local install=$2
-    if command -v "$tool" &>/dev/null; then
-        success "$tool: $(command -v $tool)"
-    else
-        warn "$tool: NOT FOUND — $install"
-    fi
-}
-
-check_tool "docker"  "Install Docker Desktop: https://docker.com"
-check_tool "kubectl" "brew install kubectl  OR  https://kubernetes.io/docs/tasks/tools/"
-check_tool "k3d"     "brew install k3d  OR  https://k3d.io"
-check_tool "helm"    "brew install helm  OR  https://helm.sh/docs/intro/install/"
-
-# ── Run tests to verify setup ────────────────────────────────────────────────
+echo "========================================"
+echo "  Setup complete!"
 echo ""
-info "Running test suite to verify installation..."
-if python -m pytest tests/ -q --tb=short; then
-    success "All tests passed"
-else
-    warn "Some tests failed — check output above"
-fi
-
-# ── Print next steps ──────────────────────────────────────────────────────────
-echo ""
-echo "  ─────────────────────────────────────────────────────────"
-echo "  Setup complete! Here's how to start:"
-echo ""
-echo "  1. Activate virtual environment in new terminals:"
-echo "     source .venv/bin/activate"
-echo ""
-echo "  2. Start a local Kubernetes cluster:"
-echo "     k3d cluster create guardops-local --port '8080:80@loadbalancer'"
-echo ""
-echo "  3. Initialize a test project:"
-echo "     mkdir my-test-app && cd my-test-app"
-echo "     guardops init"
-echo ""
-echo "  4. Deploy:"
-echo "     guardops deploy"
-echo ""
-echo "  5. Check status:"
-echo "     guardops status"
-echo ""
-echo "  ─────────────────────────────────────────────────────────"
-echo ""
+echo "  Next steps:"
+echo "    1. Add '127.0.0.1 ${APP_HOST}' to your hosts file"
+echo "    2. Run: guardops deploy"
+echo "    3. Open: http://${APP_HOST}"
+echo "========================================"
