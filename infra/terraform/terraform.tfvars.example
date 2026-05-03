@@ -1,0 +1,16 @@
+# infra/terraform/terraform.tfvars.example
+# Copy to terraform.tfvars and fill in your values.
+# NEVER commit terraform.tfvars — it is gitignored.
+
+project_name       = "guardops"
+environment        = "prod"
+aws_region         = "us-east-1"
+aws_account_id     = "123456789012"      # your 12-digit account ID
+
+vpc_cidr           = "10.0.0.0/16"
+availability_zones = ["us-east-1a", "us-east-1b"]
+
+node_instance_type = "t3.medium"
+node_min_size      = 1
+node_max_size      = 4
+node_desired_size  = 2

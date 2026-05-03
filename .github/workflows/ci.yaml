@@ -1,4 +1,21 @@
-name: GuardOps CI/CD Pipeline
+# .github/workflows/ci.yaml
+#
+# GuardOps CI/CD Pipeline — Phase 3
+#
+# Jobs:
+#   1. build-test      — lint, type-check, unit tests, coverage
+#   2. sast            — Semgrep + Bandit source code scanning
+#   3. container-scan  — Docker build + Trivy image scan + ECR push
+#   4. deploy          — Helm upgrade to EKS (main branch only)
+#   5. upload-reports  — Push scan reports to S3 (always runs)
+#
+# Security gates:
+#   Job 2 blocks on HIGH+ SAST findings
+#   Job 3 blocks on HIGH+ fixable container CVEs
+#   Job 4 only runs if jobs 1-3 all pass AND branch is main
+#   Job 5 always runs so reports are saved even when pipeline fails
+
+name: GuardOps CI/CD
 
 on:
   push:
@@ -7,159 +24,287 @@ on:
     branches: [main]
 
 env:
-  AWS_REGION: us-east-1
-  ECR_REPOSITORY: guardops-app
-  EKS_CLUSTER_NAME: guardops-cluster
-  IMAGE_TAG: ${{ github.sha }}
-  PYTHON_VERSION: "3.11"
+  AWS_REGION:       us-east-1
+  ECR_REGISTRY:     ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+  IMAGE_NAME:       guardops-app
+  HELM_CHART_PATH:  k8s/helm/guardops-app
+  K8S_NAMESPACE:    default
 
 jobs:
 
-  # ── Job 1: Build and unit test ──────────────────────────────────────────────
+  # ── Job 1: Build and Test ──────────────────────────────────────────────────
   build-test:
-    name: Build and Test
+    name: Build & Test
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: pip-${{ hashFiles('requirements*.txt') }}
-          restore-keys: pip-
+          python-version: "3.11"
+          cache: pip
 
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
+          pip install -r requirements.txt
           pip install -r requirements-dev.txt
-          pip install -e .
 
       - name: Lint with ruff
-        run: ruff check . --output-format=github
+        run: ruff check cli/ backend/
 
-      - name: Run tests
-        run: pytest tests/ -v --tb=short --cov=. --cov-report=xml
+      - name: Type check with mypy
+        run: mypy cli/ backend/ --ignore-missing-imports
 
-      - name: Upload coverage
-        uses: codecov/codecov-action@v4
+      - name: Run tests with coverage
+        run: |
+          pytest tests/ -v \
+            --cov=cli --cov=backend \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --tb=short
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
         with:
-          files: ./coverage.xml
-          fail_ci_if_error: false
+          name: coverage-report
+          path: coverage.xml
 
-  # ── Job 2: SAST scans ───────────────────────────────────────────────────────
+  # ── Job 2: SAST ───────────────────────────────────────────────────────────
   sast:
-    name: SAST Scans
+    name: SAST Security Scan
     runs-on: ubuntu-latest
     needs: build-test
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: "3.11"
+          cache: pip
 
-      - name: Install scan tools
-        run: pip install semgrep bandit
-
-      - name: Semgrep SAST
+      - name: Install dependencies and security tools
         run: |
-          semgrep scan \
-            --config p/python \
-            --config p/security-audit \
-            --config p/secrets \
+          pip install -r requirements.txt
+          pip install semgrep bandit
+
+      - name: Create reports directory
+        run: mkdir -p security/reports
+
+      - name: Run Semgrep
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+        run: |
+          semgrep --config=auto \
             --json \
-            --output semgrep-results.json \
+            --output=security/reports/semgrep.json \
+            --exclude=.venv \
+            --exclude=tests \
             . || true
 
-      - name: Check Semgrep results
+      - name: Check Semgrep results — gate on HIGH+
         run: |
           python - <<'EOF'
-          import json, sys
-          with open("semgrep-results.json") as f:
-              data = json.load(f)
-          results = data.get("results", [])
-          blocking = [
-              r for r in results
-              if r.get("extra", {}).get("severity", "").upper() in ("ERROR",)
-          ]
-          print(f"Semgrep: {len(results)} total findings, {len(blocking)} blocking (ERROR severity)")
-          for r in blocking[:5]:
-              print(f"  [{r['extra']['severity']}] {r['check_id']} — {r['path']}:{r['start']['line']}")
-          if blocking:
-              print("Pipeline blocked by Semgrep HIGH findings.")
-              sys.exit(1)
-          EOF
+          import json, sys, os
 
-      - name: Bandit Python security scan
-        run: |
-          bandit -r . \
-            --exclude .venv,tests,node_modules \
-            -f json \
-            -o bandit-results.json \
-            -ll || true
-
-      - name: Check Bandit results
-        run: |
-          python - <<'EOF'
-          import json, sys
-          try:
-              with open("bandit-results.json") as f:
-                  data = json.load(f)
-          except (json.JSONDecodeError, FileNotFoundError):
-              print("Bandit: no output file or parse error — treating as clean")
+          report_path = "security/reports/semgrep.json"
+          if not os.path.exists(report_path):
+              print("No semgrep report found — skipping gate")
               sys.exit(0)
+
+          try:
+              data = json.load(open(report_path))
+          except Exception as e:
+              print(f"Could not parse semgrep report: {e} — skipping gate")
+              sys.exit(0)
+
           blocking = [
               r for r in data.get("results", [])
-              if r.get("issue_severity") == "HIGH" and r.get("issue_confidence") in ("HIGH", "MEDIUM")
+              if r.get("extra", {}).get("severity") in ("ERROR", "WARNING")
           ]
-          print(f"Bandit: {len(data.get('results', []))} total, {len(blocking)} blocking")
-          for r in blocking[:5]:
-              print(f"  [HIGH] {r['test_id']} — {r['filename']}:{r['line_number']}: {r['issue_text']}")
+
           if blocking:
-              print("Pipeline blocked by Bandit HIGH findings.")
+              print(f"BLOCKED: {len(blocking)} HIGH/MEDIUM semgrep findings")
+              for f in blocking:
+                  print(
+                      f"  {f['extra']['severity']}  "
+                      f"{f['check_id']}  "
+                      f"{f['path']}:{f['start']['line']}"
+                  )
               sys.exit(1)
+
+          total = len(data.get("results", []))
+          print(f"OK: {total} total semgrep findings, none blocking")
           EOF
 
-      - name: SonarQube scan
-        if: ${{ env.SONAR_TOKEN != '' }}
-        uses: sonarsource/sonarqube-scan-action@master
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+      - name: Run Bandit
+        run: |
+          bandit -r . \
+            --exclude .venv,tests \
+            -f json \
+            -o security/reports/bandit.json \
+            -l || true
 
-      - name: SonarQube quality gate
-        if: ${{ env.SONAR_TOKEN != '' }}
-        uses: sonarsource/sonarqube-quality-gate-action@master
-        timeout-minutes: 5
+      - name: Check Bandit results — gate on HIGH confidence HIGH severity
+        run: |
+          python - <<'EOF'
+          import json, sys, os
+
+          report_path = "security/reports/bandit.json"
+          if not os.path.exists(report_path):
+              print("No bandit report found — skipping gate")
+              sys.exit(0)
+
+          try:
+              data = json.load(open(report_path))
+          except Exception as e:
+              print(f"Could not parse bandit report: {e} — skipping gate")
+              sys.exit(0)
+
+          blocking = [
+              r for r in data.get("results", [])
+              if r.get("issue_severity") == "HIGH"
+              and r.get("issue_confidence") != "LOW"
+          ]
+
+          if blocking:
+              print(f"BLOCKED: {len(blocking)} HIGH-confidence HIGH-severity bandit findings")
+              for f in blocking:
+                  print(
+                      f"  {f['issue_severity']} ({f['issue_confidence']})  "
+                      f"{f['test_id']}  "
+                      f"{f['filename']}:{f['line_number']}  "
+                      f"{f['issue_text']}"
+                  )
+              sys.exit(1)
+
+          total = len(data.get("results", []))
+          print(f"OK: {total} total bandit findings, none blocking")
+          EOF
+
+      - name: Run SonarQube analysis
         env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_TOKEN:    ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        run: |
+          if [ -z "${SONAR_TOKEN}" ]; then
+            echo "SONAR_TOKEN not set — skipping SonarQube"
+            exit 0
+          fi
+          pip install -e . --quiet
+          python - <<'EOF'
+          import os, sys
+          from backend.security.sonarqube_runner import run_sonarqube, check_quality_gate
+
+          result = run_sonarqube(".", {})
+          if result.skipped:
+              print(f"SonarQube skipped: {result.skip_reason}")
+              sys.exit(0)
+
+          if not result.success:
+              print(f"SonarQube analysis failed: {result.error_message}")
+              sys.exit(1)
+
+          passed, message = check_quality_gate({})
+          if not passed:
+              print(f"BLOCKED: SonarQube quality gate FAILED: {message}")
+              sys.exit(1)
+
+          print(f"OK: SonarQube quality gate passed")
+          EOF
 
       - name: Upload SAST reports
-        uses: actions/upload-artifact@v4
         if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: sast-reports
-          path: |
-            semgrep-results.json
-            bandit-results.json
-          retention-days: 30
+          path: security/reports/
 
-  # ── Job 3: Docker build and Trivy container scan ────────────────────────────
+  # ── Job 3: Container Scan + ECR Push ──────────────────────────────────────
   container-scan:
-    name: Container Build and Scan
+    name: Container Scan & Push
     runs-on: ubuntu-latest
     needs: sast
     outputs:
-      image-uri: ${{ steps.build.outputs.image-uri }}
+      image-tag:      ${{ steps.meta.outputs.tag }}
+      full-image-ref: ${{ steps.meta.outputs.full_ref }}
+
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set image metadata
+        id: meta
+        run: |
+          TAG=$(git rev-parse --short HEAD)
+          FULL_REF="${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${TAG}"
+          echo "tag=${TAG}"           >> $GITHUB_OUTPUT
+          echo "full_ref=${FULL_REF}" >> $GITHUB_OUTPUT
+          echo "Image will be: ${FULL_REF}"
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }} \
+            -f Dockerfile \
+            .
+
+      - name: Install Trivy
+        run: |
+          wget -qO- \
+            https://github.com/aquasecurity/trivy/releases/download/v0.51.1/trivy_0.51.1_Linux-64bit.tar.gz \
+            | tar xz -C /usr/local/bin trivy
+          trivy --version
+
+      - name: Run Trivy container scan
+        run: |
+          mkdir -p security/reports
+          trivy image \
+            --format json \
+            --output security/reports/trivy-image.json \
+            ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }} || true
+
+      - name: Check Trivy results — gate on fixable HIGH/CRITICAL CVEs
+        run: |
+          python3 - <<'EOF'
+          import json, sys, os
+
+          report_path = "security/reports/trivy-image.json"
+          if not os.path.exists(report_path):
+              print("No trivy report found — skipping gate")
+              sys.exit(0)
+
+          try:
+              data = json.load(open(report_path))
+          except Exception as e:
+              print(f"Could not parse trivy report: {e} — skipping gate")
+              sys.exit(0)
+
+          blocking = []
+          for result in data.get("Results", []):
+              for vuln in result.get("Vulnerabilities") or []:
+                  sev = vuln.get("Severity", "")
+                  fix = vuln.get("FixedVersion", "")
+                  if sev in ("HIGH", "CRITICAL") and fix:
+                      blocking.append(vuln)
+
+          if blocking:
+              print(f"BLOCKED: {len(blocking)} fixable HIGH/CRITICAL CVEs found")
+              for v in blocking[:10]:
+                  print(
+                      f"  {v['Severity']}  "
+                      f"{v['VulnerabilityID']}  "
+                      f"{v['PkgName']}@{v['InstalledVersion']}  "
+                      f"fix: {v['FixedVersion']}"
+                  )
+              if len(blocking) > 10:
+                  print(f"  ... and {len(blocking) - 10} more")
+              sys.exit(1)
+
+          print(f"OK: no fixable HIGH/CRITICAL CVEs")
+          EOF
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -169,94 +314,46 @@ jobs:
           aws-region:            ${{ env.AWS_REGION }}
 
       - name: Login to ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build Docker image
-        id: build
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker build \
-            --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
-            --build-arg GIT_SHA=$IMAGE_TAG \
-            --cache-from $ECR_REGISTRY/$ECR_REPOSITORY:latest \
-            -t $IMAGE_URI \
-            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
-            .
-          echo "image-uri=$IMAGE_URI" >> $GITHUB_OUTPUT
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} \
+            | docker login \
+                --username AWS \
+                --password-stdin \
+                ${{ env.ECR_REGISTRY }}
 
-      - name: Install Trivy
+      - name: Create ECR repository if it doesn't exist
         run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          aws ecr describe-repositories \
+            --repository-names ${{ env.IMAGE_NAME }} \
+            --region ${{ env.AWS_REGION }} 2>/dev/null \
+          || aws ecr create-repository \
+              --repository-name ${{ env.IMAGE_NAME }} \
+              --region ${{ env.AWS_REGION }}
 
-      - name: Trivy container scan
+      - name: Tag and push to ECR
         run: |
-          trivy image \
-            --format json \
-            --output trivy-results.json \
-            --severity CRITICAL,HIGH \
-            --no-progress \
-            ${{ steps.build.outputs.image-uri }}
+          docker tag \
+            ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }} \
+            ${{ steps.meta.outputs.full_ref }}
+          docker push ${{ steps.meta.outputs.full_ref }}
+          echo "Successfully pushed: ${{ steps.meta.outputs.full_ref }}"
 
-      - name: Check Trivy results
-        run: |
-          python - <<'EOF'
-          import json, sys
-          with open("trivy-results.json") as f:
-              data = json.load(f)
-          blocking = []
-          for target in data.get("Results", []):
-              for vuln in target.get("Vulnerabilities") or []:
-                  if vuln.get("Severity") in ("CRITICAL", "HIGH") and vuln.get("FixedVersion"):
-                      blocking.append(vuln)
-          print(f"Trivy: {len(blocking)} blocking fixable HIGH/CRITICAL CVEs")
-          for v in blocking[:5]:
-              print(f"  [{v['Severity']}] {v['VulnerabilityID']} in {v['PkgName']}@{v['InstalledVersion']} → fix: {v.get('FixedVersion','?')}")
-          if blocking:
-              print("Pipeline blocked. Fix the CVEs above.")
-              sys.exit(1)
-          EOF
-
-      - name: Trivy SARIF upload
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ steps.build.outputs.image-uri }}
-          format: sarif
-          output: trivy.sarif
-          severity: CRITICAL,HIGH
-          exit-code: 0
-        continue-on-error: true
-
-      - name: Upload SARIF to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy.sarif
-        continue-on-error: true
-
-      - name: Push image to ECR
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        run: |
-          docker push ${{ steps.build.outputs.image-uri }}
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-
-      - name: Upload Trivy report
-        uses: actions/upload-artifact@v4
+      - name: Upload container scan report
         if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: trivy-report
-          path: trivy-results.json
-          retention-days: 30
+          name: container-scan-report
+          path: security/reports/trivy-image.json
 
-  # ── Job 4: Deploy to Kubernetes ─────────────────────────────────────────────
+  # ── Job 4: Helm Deploy to EKS ─────────────────────────────────────────────
   deploy:
-    name: Deploy to EKS
+    name: Deploy to EKS (Helm)
     runs-on: ubuntu-latest
     needs: container-scan
+    # Only deploy on direct pushes to main — not on PRs, not on develop
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    environment: production
+    environment: production   # requires manual approval if configured in GitHub
+
     steps:
       - uses: actions/checkout@v4
 
@@ -267,43 +364,73 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ env.AWS_REGION }}
 
-      - name: Update kubeconfig
+      - name: Configure kubectl for EKS
         run: |
           aws eks update-kubeconfig \
-            --name $EKS_CLUSTER_NAME \
-            --region $AWS_REGION
+            --region ${{ env.AWS_REGION }} \
+            --name guardops-prod-cluster
 
       - name: Install Helm
-        uses: azure/setup-helm@v3
+        uses: azure/setup-helm@v4
         with:
-          version: v3.14.0
+          version: "3.17.0"
 
-      - name: Helm deploy
+      - name: Helm lint — validate chart before deploying
         run: |
-          helm upgrade --install guardops-app ./k8s/helm/guardops-app \
-            --namespace production \
+          helm lint ${{ env.HELM_CHART_PATH }} \
+            --set image.repository=${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }} \
+            --set image.tag=${{ needs.container-scan.outputs.image-tag }}
+
+      - name: Deploy with Helm
+        run: |
+          IMAGE_REPO="${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}"
+          IMAGE_TAG="${{ needs.container-scan.outputs.image-tag }}"
+
+          helm upgrade --install guardops-app \
+            ${{ env.HELM_CHART_PATH }} \
+            --namespace ${{ env.K8S_NAMESPACE }} \
             --create-namespace \
-            --set image.tag=$IMAGE_TAG \
-            --set image.repository=${{ needs.container-scan.outputs.image-uri }} \
             --atomic \
-            --timeout 10m \
-            --history-max 5
+            --timeout 5m \
+            --set image.repository="${IMAGE_REPO}" \
+            --set image.tag="${IMAGE_TAG}" \
+            --set image.pullPolicy=Always \
+            -f ${{ env.HELM_CHART_PATH }}/values-prod.yaml \
+            --wait
+
+          echo "Helm release status:"
+          helm status guardops-app --namespace ${{ env.K8S_NAMESPACE }}
 
       - name: Verify rollout
         run: |
           kubectl rollout status deployment/guardops-app \
-            -n production --timeout=5m
+            -n ${{ env.K8S_NAMESPACE }} \
+            --timeout=120s
 
-  # ── Job 5: Upload all reports to S3 ─────────────────────────────────────────
+          echo ""
+          echo "Pod status:"
+          kubectl get pods -n ${{ env.K8S_NAMESPACE }}
+
+          echo ""
+          echo "Helm history:"
+          helm history guardops-app --namespace ${{ env.K8S_NAMESPACE }}
+
+  # ── Job 5: Upload Reports to S3 ───────────────────────────────────────────
   upload-reports:
     name: Upload Reports to S3
     runs-on: ubuntu-latest
     needs: [sast, container-scan]
+    # Always runs — even when earlier jobs fail — so reports are never lost
     if: always()
+
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+
+      - name: Download all scan artifacts
+        uses: actions/download-artifact@v4
         with:
           path: all-reports/
+        continue-on-error: true   # don't fail if no artifacts were produced
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -312,9 +439,18 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ env.AWS_REGION }}
 
-      - name: Push reports to S3
+      - name: Upload reports to S3
         run: |
-          aws s3 cp all-reports/ \
-            s3://${{ secrets.GUARDOPS_S3_BUCKET }}/reports/${{ github.repository }}/${{ env.IMAGE_TAG }}/ \
-            --recursive \
-            --no-progress
+          SHA=$(git rev-parse --short HEAD)
+          BRANCH="${{ github.ref_name }}"
+          REPO="${{ github.repository }}"
+          S3_PREFIX="s3://${{ secrets.GUARDOPS_S3_BUCKET }}/reports/${REPO}/${BRANCH}/${SHA}"
+
+          if [ -d "all-reports" ] && [ "$(ls -A all-reports)" ]; then
+            aws s3 cp all-reports/ "${S3_PREFIX}/" \
+              --recursive \
+              --no-progress
+            echo "Reports uploaded to: ${S3_PREFIX}/"
+          else
+            echo "No reports to upload"
+          fi

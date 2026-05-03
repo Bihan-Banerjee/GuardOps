@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "guardops-app.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "guardops-app.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "guardops-app.selectorLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # maxSurge: allow 1 extra pod during update (so we never reduce capacity)
+      # maxUnavailable: 0 means the old pod stays up until new one is ready
+      # Together: always at least replicaCount pods serving traffic during deploy
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        {{- include "guardops-app.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Force pod restart when ConfigMap changes (Helm doesn't do this automatically)
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      # Security context: run as non-root user
+      # This enforces least-privilege at the pod level
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: {{ include "guardops-app.name" . }}
+          image: {{ include "guardops-app.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.containerPort }}
+              protocol: TCP
+          # Inject all config values as environment variables from ConfigMap
+          envFrom:
+            - configMapRef:
+                name: {{ include "guardops-app.fullname" . }}-config
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          # Liveness probe: if this fails, Kubernetes RESTARTS the pod
+          # Use for: detecting deadlocks, infinite loops, unrecoverable errors
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          # Readiness probe: if this fails, Kubernetes REMOVES the pod from Service endpoints
+          # Use for: app is alive but not ready (still loading config, warming cache, etc.)
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          # Container-level security: drop all Linux capabilities
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
