@@ -11,7 +11,7 @@ import subprocess
 
 import click
 
-from cli.utils.output import header, info, error, warn, blank, console
+from cli.utils.output import header, info, error, blank
 from cli.utils.config import load_config, get_project_name
 from backend.pipeline.deployer import get_pods
 

@@ -1,8 +1,7 @@
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 from backend.security.semgrep_runner import ScanResult, SecurityFinding
 
 
@@ -100,16 +99,16 @@ def generate_report(
     timestamp_slug = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
     json_path = output_path / f"report_{timestamp_slug}.json"
-    json_path.write_text(json.dumps(report.to_dict(), indent=2))
+    json_path.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
 
     html_path = output_path / f"report_{timestamp_slug}.html"
-    html_path.write_text(_render_html(report))
+    html_path.write_text(_render_html(report), encoding="utf-8")
 
     latest_json = output_path / "latest.json"
-    latest_json.write_text(json.dumps(report.to_dict(), indent=2))
+    latest_json.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
 
     latest_html = output_path / "latest.html"
-    latest_html.write_text(_render_html(report))
+    latest_html.write_text(_render_html(report), encoding="utf-8")
 
     return report
 

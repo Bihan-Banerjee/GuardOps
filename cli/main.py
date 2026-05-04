@@ -4,7 +4,6 @@ cli/main.py — Root Click group. Registers all guardops subcommands.
 
 import click
 from cli import __version__
-from cli.utils.output import console
 
 from cli.commands.init_cmd import init_command
 from cli.commands.deploy_cmd import deploy_command

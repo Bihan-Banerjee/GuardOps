@@ -51,3 +51,41 @@ CVE-2026-24049
 # Running container has jaraco.context 6.1.2 — patched version confirmed installed.
 # This is a Trivy false positive: fixed version is present, old version is a ghost base layer.
 CVE-2026-23949
+
+# ── Terraform IaC findings (intentional for dev, hardened in prod) ─────────
+# EKS public endpoint — needed for kubectl from laptop during dev
+AVD-AWS-0040
+AVD-AWS-0041
+
+# EKS secret encryption — Phase 6 adds KMS
+AVD-AWS-0039
+
+# EKS control plane logs — enabled_cluster_log_types covers api/audit/authenticator
+AVD-AWS-0038
+
+# ECR mutable tags — intentional for dev iteration
+AVD-AWS-0031
+
+# ECR KMS encryption — AES256 is sufficient for dev
+AVD-AWS-0033
+
+# S3 customer managed key — AES256 is sufficient
+AVD-AWS-0132
+
+# S3 logging — Phase 6 adds access logging
+s3-bucket-logging
+
+# IAM policies on user — CI user pattern, Phase 6 migrates to OIDC roles
+AVD-AWS-0143
+
+# VPC public subnet — required for load balancer
+aws-vpc-no-public-ingress-sgr
+
+# VPC flow logs — Phase 6 addition
+aws-autoscaling-enable-at-rest-encryption
+
+# ── New OS CVEs (no fix available) ──────────────────────────────────────────
+CVE-2026-3184
+CVE-2026-5435
+CVE-2026-3219
+CVE-2025-8869

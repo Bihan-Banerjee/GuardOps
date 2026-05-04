@@ -21,7 +21,7 @@ import shutil
 import sys
 from typing import Optional
 
-from cli.utils.output import console, error, info
+from cli.utils.output import console, error
 
 
 def run_command(

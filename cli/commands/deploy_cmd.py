@@ -19,13 +19,11 @@ Environments:
 import sys
 import time
 import click
-from rich.table import Table
 
 from cli.utils.output import (
     info, success, error, warn, result_panel, console
 )
 from cli.utils.config import load_config
-from cli.utils.system import check_dependency
 from backend.pipeline.builder import build_image
 from backend.pipeline.deployer import deploy_helm, import_image_to_k3d
 from backend.pipeline.pusher import push_to_ecr
@@ -68,7 +66,6 @@ def deploy_command(env, skip_scan, skip_build, skip_sonarqube,
 
     project_name = config.get("project", {}).get("name", "guardops-app")
     namespace = config.get("kubernetes", {}).get("namespace", "default")
-    port = config.get("docker", {}).get("port", 8080)
 
     # Determine replica count: CLI flag > values-prod.yaml default > 1
     replica_count = replicas or (2 if env == "prod" else 1)
@@ -151,7 +148,7 @@ def deploy_command(env, skip_scan, skip_build, skip_sonarqube,
         if report.blocked:
             error(f"Deployment blocked — {fail_on}+ severity findings detected.")
             console.print(f"  [dim]View full report: {report_dir}/latest.html[/dim]")
-            console.print(f"  [dim]Run guardops scan for detailed findings.[/dim]")
+            console.print("  [dim]Run guardops scan for detailed findings.[/dim]")
             sys.exit(1)
 
         success("Security scans passed — no blocking findings")
@@ -194,20 +191,19 @@ def deploy_command(env, skip_scan, skip_build, skip_sonarqube,
         console.print("[dim]Helm automatically rolled back to the previous release.[/dim]")
         sys.exit(1)
 
-    # Success panel
     result_panel(
         title="Deployment complete",
-        items={
-            "Project": project_name,
-            "Image": full_image_ref,
-            "Environment": env,
-            "Namespace": namespace,
-            "Replicas": str(deploy_result.replicas),
-            "Helm release": deploy_result.helm_release,
-            "Helm revision": str(deploy_result.helm_revision),
-            "Duration": f"{duration:.1f}s",
-            "Service URL": deploy_result.service_url,
-        },
+        lines=[
+            f"Project:       {project_name}",
+            f"Image:         {full_image_ref}",
+            f"Environment:   {env}",
+            f"Namespace:     {namespace}",
+            f"Replicas:      {replica_count}",
+            f"Helm release:  {deploy_result.helm_release}",
+            f"Helm revision: {deploy_result.helm_revision}",
+            f"Duration:      {duration:.1f}s",
+            f"Service URL:   {deploy_result.service_url}",
+        ],
     )
     info("Run [bold]guardops status[/bold] to verify pod health")
     if env == "local":

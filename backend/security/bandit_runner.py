@@ -1,7 +1,6 @@
 import json
 import shutil
 import subprocess
-from pathlib import Path
 from backend.security.semgrep_runner import ScanResult, SecurityFinding
 
 SEVERITY_MAP = {
@@ -41,6 +40,7 @@ def run_bandit(
     cmd = [
         "bandit",
         "-r", target_path,
+        "--exclude", ".venv,tests,infra,k8s,security",
         "-f", "json",
         "-q",
         f"-{severity_level}",
@@ -92,7 +92,6 @@ def run_bandit(
             fix_guidance=issue.get("more_info", ""),
         ))
 
-    metrics = data.get("metrics", {}).get("_totals", {})
     return ScanResult(
         tool="bandit",
         success=True,

@@ -21,7 +21,7 @@ import sys
 import click
 from rich.table import Table
 
-from cli.utils.output import info, success, error, warn, console
+from cli.utils.output import success, error, warn, console
 from cli.utils.config import load_config
 from backend.pipeline.deployer import rollback_helm, get_helm_history
 

@@ -99,7 +99,7 @@ def _run_sonar_scanner(cfg: SonarQubeConfig) -> bool:
         f"-Dsonar.token={cfg.token}",
         "-Dsonar.scm.disabled=true",
         "-Dsonar.sourceEncoding=UTF-8",
-        f"-Dsonar.exclusions=**/.venv/**,**/node_modules/**,**/tests/**",
+        "-Dsonar.exclusions=**/.venv/**,**/node_modules/**,**/tests/**",
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
@@ -145,14 +145,14 @@ def _wait_for_analysis(cfg: SonarQubeConfig, timeout_seconds: int = 120) -> bool
 def _fetch_issues(cfg: SonarQubeConfig) -> list[SecurityFinding]:
     url = f"{cfg.host_url}/api/issues/search"
     headers = {"Authorization": f"Bearer {cfg.token}"}
-    params = {
+    params: dict[str, str | int] = {
         "componentKeys": cfg.project_key,
         "statuses": "OPEN,REOPENED",
         "types": "VULNERABILITY,BUG,CODE_SMELL",
         "ps": 500,
     }
 
-    findings = []
+    findings: list[SecurityFinding] = []
     try:
         resp = requests.get(url, params=params, headers=headers, timeout=30)
         if resp.status_code != 200:
