@@ -21,15 +21,13 @@ now calls deploy_helm() for both --env local and --env prod.
 """
 
 import json
-import os
 import subprocess
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from cli.utils.system import run_command, get_command_output
-from cli.utils.output import info, warn, error, success, console
+from cli.utils.system import run_command
+from cli.utils.output import info, warn, error, console
 
 
 # ---------------------------------------------------------------------------

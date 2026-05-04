@@ -17,15 +17,12 @@ The CALLER (the CLI command) decides how to handle failures.
 This is called "separation of concerns."
 """
 
-import os
-import sys
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Optional
 
-from cli.utils.system import run_command, run_command_or_exit
-from cli.utils.output import info, warn, console
+from cli.utils.system import run_command
+from cli.utils.output import info, console
 
 
 @dataclass

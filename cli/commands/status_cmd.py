@@ -14,8 +14,7 @@ from rich.table import Table
 from rich import box
 
 from cli.utils.output import (
-    header, section, success, info, warn, error,
-    blank, key_value_table, console
+    header, section, info, warn, blank, key_value_table, console
 )
 from cli.utils.config import load_config, get_project_name
 from backend.pipeline.deployer import get_deployment_status, get_pods

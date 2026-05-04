@@ -2,7 +2,6 @@ import base64
 import json
 import os
 import subprocess
-import shutil
 from dataclasses import dataclass
 from typing import Optional
 
@@ -104,7 +103,7 @@ def push_to_ecr(
             error_message="docker push failed",
         )
 
-    also_tag_latest = _tag_and_push_latest(
+    _tag_and_push_latest(
         local_image_ref, registry, repository, region
     )
 

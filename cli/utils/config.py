@@ -18,7 +18,7 @@ from typing import Any
 
 import yaml
 
-from cli.utils.output import error, warn
+from cli.utils.output import error
 
 # The config file is always in the current working directory.
 # Path(".guardops.yaml") is equivalent to os.path.join(os.getcwd(), ".guardops.yaml")

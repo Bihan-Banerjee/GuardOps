@@ -35,3 +35,5 @@ Thumbs.db
 # Kubernetes (contains cluster credentials — never commit)
 kubeconfig
 *.kubeconfig
+
+helm.zip

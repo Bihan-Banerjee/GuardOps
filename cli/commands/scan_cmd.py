@@ -1,5 +1,4 @@
 import sys
-from pathlib import Path
 
 import click
 from rich.table import Table
@@ -139,7 +138,7 @@ def scan_command(image, path, fail_on, skip_semgrep, skip_bandit, skip_trivy, sk
             [
                 f"[bold]Critical:[/bold] {counts['CRITICAL']}   [bold]High:[/bold] {counts['HIGH']}   [bold]Medium:[/bold] {counts['MEDIUM']}   [bold]Low:[/bold] {counts['LOW']}",
                 f"Pipeline is blocked because {fail_on}+ severity findings were found.",
-                f"Fix the findings above then re-run [bold]guardops scan[/bold].",
+                "Fix the findings above then re-run [bold]guardops scan[/bold].",
             ],
             style="red",
         )
