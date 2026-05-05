@@ -24,15 +24,15 @@ on:
     branches: [main]
 
 env:
-  AWS_REGION:       us-east-1
-  ECR_REGISTRY:     ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
-  IMAGE_NAME:       guardops-app
-  HELM_CHART_PATH:  k8s/helm/guardops-app
-  K8S_NAMESPACE:    default
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+  IMAGE_NAME: guardops-app
+  HELM_CHART_PATH: k8s/helm/guardops-app
+  K8S_NAMESPACE: default
 
 jobs:
 
-  # ── Job 1: Build and Test ──────────────────────────────────────────────────
+  # ── Job 1: Build and Test ───────────────────────────────────────────────
   build-test:
     name: Build & Test
     runs-on: ubuntu-latest
@@ -71,7 +71,7 @@ jobs:
           name: coverage-report
           path: coverage.xml
 
-  # ── Job 2: SAST ───────────────────────────────────────────────────────────
+  # ── Job 2: SAST ──────────────────────────────────────────────────────────
   sast:
     name: SAST Security Scan
     runs-on: ubuntu-latest
@@ -187,19 +187,22 @@ jobs:
 
       - name: Run SonarQube analysis
         env:
-          SONAR_TOKEN:    ${{ secrets.SONAR_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
         run: |
           if [ -z "${SONAR_TOKEN}" ]; then
             echo "SONAR_TOKEN not set — skipping SonarQube"
             exit 0
           fi
+
           pip install -e . --quiet
+
           python - <<'EOF'
           import os, sys
           from backend.security.sonarqube_runner import run_sonarqube, check_quality_gate
 
           result = run_sonarqube(".", {})
+
           if result.skipped:
               print(f"SonarQube skipped: {result.skip_reason}")
               sys.exit(0)
@@ -209,11 +212,12 @@ jobs:
               sys.exit(1)
 
           passed, message = check_quality_gate({})
+
           if not passed:
               print(f"BLOCKED: SonarQube quality gate FAILED: {message}")
               sys.exit(1)
 
-          print(f"OK: SonarQube quality gate passed")
+          print("OK: SonarQube quality gate passed")
           EOF
 
       - name: Upload SAST reports
@@ -223,13 +227,14 @@ jobs:
           name: sast-reports
           path: security/reports/
 
-  # ── Job 3: Container Scan + ECR Push ──────────────────────────────────────
+  # ── Job 3: Container Scan + ECR Push ────────────────────────────────────
   container-scan:
     name: Container Scan & Push
     runs-on: ubuntu-latest
     needs: sast
+
     outputs:
-      image-tag:      ${{ steps.meta.outputs.tag }}
+      image-tag: ${{ steps.meta.outputs.tag }}
       full-image-ref: ${{ steps.meta.outputs.full_ref }}
 
     steps:
@@ -240,8 +245,10 @@ jobs:
         run: |
           TAG=$(git rev-parse --short HEAD)
           FULL_REF="${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${TAG}"
-          echo "tag=${TAG}"           >> $GITHUB_OUTPUT
+
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
           echo "full_ref=${FULL_REF}" >> $GITHUB_OUTPUT
+
           echo "Image will be: ${FULL_REF}"
 
       - name: Build Docker image
@@ -256,11 +263,13 @@ jobs:
           wget -qO- \
             https://github.com/aquasecurity/trivy/releases/download/v0.51.1/trivy_0.51.1_Linux-64bit.tar.gz \
             | tar xz -C /usr/local/bin trivy
+
           trivy --version
 
       - name: Run Trivy container scan
         run: |
           mkdir -p security/reports
+
           trivy image \
             --format json \
             --output security/reports/trivy-image.json \
@@ -272,6 +281,7 @@ jobs:
           import json, sys, os
 
           report_path = "security/reports/trivy-image.json"
+
           if not os.path.exists(report_path):
               print("No trivy report found — skipping gate")
               sys.exit(0)
@@ -283,15 +293,18 @@ jobs:
               sys.exit(0)
 
           blocking = []
+
           for result in data.get("Results", []):
               for vuln in result.get("Vulnerabilities") or []:
                   sev = vuln.get("Severity", "")
                   fix = vuln.get("FixedVersion", "")
+
                   if sev in ("HIGH", "CRITICAL") and fix:
                       blocking.append(vuln)
 
           if blocking:
               print(f"BLOCKED: {len(blocking)} fixable HIGH/CRITICAL CVEs found")
+
               for v in blocking[:10]:
                   print(
                       f"  {v['Severity']}  "
@@ -299,21 +312,25 @@ jobs:
                       f"{v['PkgName']}@{v['InstalledVersion']}  "
                       f"fix: {v['FixedVersion']}"
                   )
+
               if len(blocking) > 10:
                   print(f"  ... and {len(blocking) - 10} more")
+
               sys.exit(1)
 
-          print(f"OK: no fixable HIGH/CRITICAL CVEs")
+          print("OK: no fixable HIGH/CRITICAL CVEs")
           EOF
 
       - name: Configure AWS credentials
+        if: secrets.AWS_ACCESS_KEY_ID != ''
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region:            ${{ env.AWS_REGION }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to ECR
+        if: secrets.AWS_ACCESS_KEY_ID != ''
         run: |
           aws ecr get-login-password --region ${{ env.AWS_REGION }} \
             | docker login \
@@ -322,6 +339,7 @@ jobs:
                 ${{ env.ECR_REGISTRY }}
 
       - name: Create ECR repository if it doesn't exist
+        if: secrets.AWS_ACCESS_KEY_ID != ''
         run: |
           aws ecr describe-repositories \
             --repository-names ${{ env.IMAGE_NAME }} \
@@ -331,11 +349,14 @@ jobs:
               --region ${{ env.AWS_REGION }}
 
       - name: Tag and push to ECR
+        if: secrets.AWS_ACCESS_KEY_ID != ''
         run: |
           docker tag \
             ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }} \
             ${{ steps.meta.outputs.full_ref }}
+
           docker push ${{ steps.meta.outputs.full_ref }}
+
           echo "Successfully pushed: ${{ steps.meta.outputs.full_ref }}"
 
       - name: Upload container scan report
@@ -345,14 +366,18 @@ jobs:
           name: container-scan-report
           path: security/reports/trivy-image.json
 
-  # ── Job 4: Helm Deploy to EKS ─────────────────────────────────────────────
+  # ── Job 4: Helm Deploy to EKS ────────────────────────────────────────────
   deploy:
     name: Deploy to EKS (Helm)
     runs-on: ubuntu-latest
     needs: container-scan
-    # Only deploy on direct pushes to main — not on PRs, not on develop
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    environment: production   # requires manual approval if configured in GitHub
+
+    if: |
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'push' &&
+      secrets.AWS_ACCESS_KEY_ID != ''
+
+    environment: production
 
     steps:
       - uses: actions/checkout@v4
@@ -360,9 +385,9 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region:            ${{ env.AWS_REGION }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Configure kubectl for EKS
         run: |
@@ -415,13 +440,13 @@ jobs:
           echo "Helm history:"
           helm history guardops-app --namespace ${{ env.K8S_NAMESPACE }}
 
-  # ── Job 5: Upload Reports to S3 ───────────────────────────────────────────
+  # ── Job 5: Upload Reports to S3 ──────────────────────────────────────────
   upload-reports:
     name: Upload Reports to S3
     runs-on: ubuntu-latest
     needs: [sast, container-scan]
-    # Always runs — even when earlier jobs fail — so reports are never lost
-    if: always()
+
+    if: always() && secrets.AWS_ACCESS_KEY_ID != ''
 
     steps:
       - uses: actions/checkout@v4
@@ -430,26 +455,28 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: all-reports/
-        continue-on-error: true   # don't fail if no artifacts were produced
+        continue-on-error: true
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region:            ${{ env.AWS_REGION }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Upload reports to S3
         run: |
           SHA=$(git rev-parse --short HEAD)
           BRANCH="${{ github.ref_name }}"
           REPO="${{ github.repository }}"
+
           S3_PREFIX="s3://${{ secrets.GUARDOPS_S3_BUCKET }}/reports/${REPO}/${BRANCH}/${SHA}"
 
           if [ -d "all-reports" ] && [ "$(ls -A all-reports)" ]; then
             aws s3 cp all-reports/ "${S3_PREFIX}/" \
               --recursive \
               --no-progress
+
             echo "Reports uploaded to: ${S3_PREFIX}/"
           else
             echo "No reports to upload"
