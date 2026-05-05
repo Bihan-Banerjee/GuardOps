@@ -40,11 +40,10 @@ def run_bandit(
     cmd = [
         "bandit",
         "-r", target_path,
-        "--exclude", ".venv,tests,infra,k8s,security",
+        "--exclude", ".venv,tests,infra,k8s,security,venv,node_modules",
         "-f", "json",
         "-q",
         f"-{severity_level}",
-        "--exclude", ".venv,venv,tests,node_modules",
     ]
 
     try:
