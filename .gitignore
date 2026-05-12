@@ -41,4 +41,4 @@ helm.zip
 terraform.tfvars
 *.tfstate
 *.tfstate.backup
-infra/terraform/.terraform/providers/
+.terraform/
