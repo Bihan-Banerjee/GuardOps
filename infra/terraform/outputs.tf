@@ -1,39 +1,41 @@
 # infra/terraform/outputs.tf
-# These values are printed after terraform apply and are used in CI/CD.
+#
+# Outputs printed after `terraform apply`.
+# Copy these values into your GitHub Secrets and .guardops.yaml.
 
-output "eks_cluster_name" {
-  description = "EKS cluster name — pass to aws eks update-kubeconfig"
-  value       = module.eks.cluster_name
+output "ecr_registry_url" {
+  description = "ECR registry base URL. Set this as your docker.registry in .guardops.yaml for prod."
+  value       = module.ecr.registry_url
 }
 
-output "eks_cluster_endpoint" {
-  description = "EKS API server endpoint"
-  value       = module.eks.cluster_endpoint
+output "ecr_repository_urls" {
+  description = "Full URL for each ECR repository. Use guardops-app URL when pushing images."
+  value       = module.ecr.repository_urls
 }
 
-output "ecr_repository_url" {
-  description = "ECR repository URL — set as ECR_REGISTRY in GitHub Secrets"
-  value       = module.ecr.repository_url
+output "s3_reports_bucket_name" {
+  description = "S3 bucket name for scan reports. Set as GUARDOPS_S3_BUCKET in GitHub Secrets."
+  value       = module.s3.reports_bucket_name
 }
 
-output "s3_reports_bucket" {
-  description = "S3 bucket for security reports — set as GUARDOPS_S3_BUCKET"
-  value       = module.s3.bucket_name
+output "s3_reports_bucket_arn" {
+  description = "S3 bucket ARN — needed if you later want to create IAM policies for it."
+  value       = module.s3.reports_bucket_arn
 }
 
-output "ci_user_access_key_id" {
-  description = "IAM access key for CI/CD — set as AWS_ACCESS_KEY_ID in GitHub Secrets"
-  value       = module.iam.ci_user_access_key_id
-  sensitive   = true
-}
-
-output "ci_user_secret_access_key" {
-  description = "IAM secret key for CI/CD — set as AWS_SECRET_ACCESS_KEY in GitHub Secrets"
-  value       = module.iam.ci_user_secret_access_key
-  sensitive   = true
-}
-
-output "kubeconfig_command" {
-  description = "Run this command to configure kubectl to talk to your EKS cluster"
-  value = "aws eks update-kubeconfig --region ${var.aws_region} --name ${module.eks.cluster_name}"
-}
+# PHASE 4B outputs — uncomment when VPC/IAM/EKS modules are active
+#
+# output "vpc_id" {
+#   description = "VPC ID for the EKS cluster."
+#   value       = module.vpc.vpc_id
+# }
+#
+# output "eks_cluster_endpoint" {
+#   description = "EKS cluster API endpoint. Used by kubectl and guardops deploy --env prod."
+#   value       = module.eks.cluster_endpoint
+# }
+#
+# output "eks_cluster_name" {
+#   description = "EKS cluster name. Run: aws eks update-kubeconfig --name <this value>"
+#   value       = module.eks.cluster_name
+# }

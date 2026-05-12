@@ -1,7 +1,7 @@
 """
 cli/commands/deploy_cmd.py
 
-`guardops deploy` command — Phase 3 version.
+`guardops deploy` command — Phase 3/4A version.
 
 Flow:
   Step 1: Docker build
@@ -14,6 +14,11 @@ Environments:
   --env local  Uses k3d cluster, imagePullPolicy=Never, values.yaml
   --env prod   Pushes to ECR, uses EKS cluster, imagePullPolicy=Always,
                values.yaml + values-prod.yaml
+
+Phase 4A note:
+  --env prod will build, scan, and push to ECR successfully.
+  The Helm deploy step (Step 4) will fail with "cluster not reachable"
+  until Phase 4B (EKS) is provisioned. This is expected and non-destructive.
 """
 
 import sys
@@ -153,17 +158,25 @@ def deploy_command(env, skip_scan, skip_build, skip_sonarqube,
 
         success("Security scans passed — no blocking findings")
 
-    # ── Step 3: ECR Push (prod only) ─────────────────────────────────────────
+    # ── Step 3: Registry Push ────────────────────────────────────────────────
     console.rule("[bold]Step 3 / 4 — Registry Push[/bold]")
 
     if env == "prod":
         info("Pushing image to ECR...")
+
+        # push_to_ecr accepts the full "name:tag" ref and splits it internally.
+        # It reads docker.registry from config for the ECR base URL.
         push_result = push_to_ecr(full_image_ref, config)
+
         if not push_result.success:
             error(f"ECR push failed: {push_result.error_message}")
             sys.exit(1)
-        full_image_ref = push_result.remote_image_ref
+
+        # FIX: use push_result.image_uri (not .remote_image_ref — that field doesn't exist)
+        # image_uri is the full ECR URI: 123456.dkr.ecr.ap-south-1.amazonaws.com/test-app:abc1234
+        full_image_ref = push_result.image_uri
         success(f"Pushed to ECR: [cyan]{full_image_ref}[/cyan]")
+
     else:
         # Local: import into k3d instead of pushing to a registry
         info("Importing image into k3d cluster...")
@@ -176,6 +189,10 @@ def deploy_command(env, skip_scan, skip_build, skip_sonarqube,
     # ── Step 4: Helm Deploy ──────────────────────────────────────────────────
     console.rule("[bold]Step 4 / 4 — Helm Deploy[/bold]")
 
+    # PHASE 4A NOTE: When --env prod, this step will fail because there is no
+    # EKS cluster yet. The error message from Helm will say the cluster is
+    # unreachable. This is expected. Steps 1-3 (build, scan, ECR push) all
+    # completed successfully. Phase 4B (EKS provisioning) unlocks this step.
     deploy_result = deploy_helm(
         project_name=project_name,
         image_ref=full_image_ref,
@@ -187,8 +204,21 @@ def deploy_command(env, skip_scan, skip_build, skip_sonarqube,
     duration = time.time() - start_time
 
     if not deploy_result.success:
-        error(f"Deployment failed: {deploy_result.error_message}")
-        console.print("[dim]Helm automatically rolled back to the previous release.[/dim]")
+        if env == "prod":
+            # Provide a clearer message in Phase 4A rather than a generic failure
+            error(f"Helm deploy failed: {deploy_result.error_message}")
+            console.print(
+                "  [dim yellow]If this says 'cluster unreachable' or 'no kubeconfig',[/dim yellow]"
+            )
+            console.print(
+                "  [dim yellow]that is expected in Phase 4A. EKS is not yet provisioned.[/dim yellow]"
+            )
+            console.print(
+                "  [dim yellow]Your image was successfully pushed to ECR (Step 3 passed).[/dim yellow]"
+            )
+        else:
+            error(f"Deployment failed: {deploy_result.error_message}")
+            console.print("[dim]Helm automatically rolled back to the previous release.[/dim]")
         sys.exit(1)
 
     result_panel(

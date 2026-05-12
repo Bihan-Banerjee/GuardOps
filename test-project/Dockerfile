@@ -7,7 +7,7 @@ COPY requirements.txt .
 RUN pip install --upgrade pip==25.3 && \
     pip install -r requirements.txt && \
     # Upgrade vulnerable build tools
-    pip install --upgrade "wheel>=0.46.2" "jaraco.context>=6.1.0" && \
+    pip install --upgrade "wheel>=0.46.2" "jaraco.context>=6.1.0" "urllib3>=2.7.0" && \
     # Remove build tools not needed at runtime — eliminates the CVEs entirely
     # wheel and jaraco.context are only needed during pip install, not to run app.py
     pip uninstall -y wheel && \

@@ -1,11 +1,11 @@
 project:
   name: test-app
   description: ''
-  cloud: local
+  cloud: aws
 docker:
   dockerfile: Dockerfile
   context: .
-  registry: local
+  registry: "236796665744.dkr.ecr.ap-south-1.amazonaws.com"
   image_name: test-app
 kubernetes:
   namespace: default

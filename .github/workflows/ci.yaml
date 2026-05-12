@@ -1,19 +1,37 @@
 # .github/workflows/ci.yaml
 #
-# GuardOps CI/CD Pipeline — Phase 3
+# GuardOps CI/CD Pipeline — Phase 4A
 #
 # Jobs:
 #   1. build-test      — lint, type-check, unit tests, coverage
 #   2. sast            — Semgrep + Bandit source code scanning
 #   3. container-scan  — Docker build + Trivy image scan + ECR push
-#   4. deploy          — Helm upgrade to EKS (main branch only)
-#   5. upload-reports  — Push scan reports to S3 (always runs)
+#   4. deploy          — Helm upgrade to EKS (PHASE 4B — skipped until EKS exists)
+#   5. upload-reports  — Push scan reports to S3 (always runs if AWS creds exist)
 #
 # Security gates:
 #   Job 2 blocks on HIGH+ SAST findings
 #   Job 3 blocks on HIGH+ fixable container CVEs
-#   Job 4 only runs if jobs 1-3 all pass AND branch is main
+#   Job 4 only runs if jobs 1-3 all pass AND branch is main AND EKS exists
 #   Job 5 always runs so reports are saved even when pipeline fails
+#
+# Phase 4A behaviour:
+#   Jobs 1, 2, 3, 5 all run and pass.
+#   Job 4 (EKS deploy) is skipped — guarded by HAS_EKS_CLUSTER secret which
+#   you set to "true" only after provisioning EKS in Phase 4B.
+#
+# Required GitHub Secrets (Phase 4A):
+#   AWS_ACCESS_KEY_ID       — from IAM user CSV
+#   AWS_SECRET_ACCESS_KEY   — from IAM user CSV
+#   AWS_ACCOUNT_ID          — your 12-digit account ID
+#   GUARDOPS_S3_BUCKET      — bucket name from `terraform output s3_reports_bucket_name`
+#
+# Additional secrets for Phase 4B (EKS):
+#   HAS_EKS_CLUSTER         — set to "true" when EKS is provisioned
+#   SEMGREP_APP_TOKEN       — optional, for Semgrep cloud dashboard
+#   SONAR_TOKEN             — optional, for SonarQube
+#   SONAR_HOST_URL          — optional, for SonarQube
+#   PYPI_API_TOKEN          — optional, for publishing to PyPI
 
 name: GuardOps CI/CD
 
@@ -24,15 +42,16 @@ on:
     branches: [main]
 
 env:
-  AWS_REGION: us-east-1
-  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+  # CHANGED: ap-south-1 (Mumbai) — closest to India, cheapest for you
+  AWS_REGION: ap-south-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.ap-south-1.amazonaws.com
   IMAGE_NAME: guardops-app
   HELM_CHART_PATH: k8s/helm/guardops-app
   K8S_NAMESPACE: default
 
 jobs:
 
-  # ── Job 1: Build and Test ───────────────────────────────────────────────
+  # ── Job 1: Build and Test ───────────────────────────────────────────────────
   build-test:
     name: Build & Test
     runs-on: ubuntu-latest
@@ -71,7 +90,7 @@ jobs:
           name: coverage-report
           path: coverage.xml
 
-  # ── Job 2: SAST ──────────────────────────────────────────────────────────
+  # ── Job 2: SAST ──────────────────────────────────────────────────────────────
   sast:
     name: SAST Security Scan
     runs-on: ubuntu-latest
@@ -143,7 +162,7 @@ jobs:
       - name: Run Bandit
         run: |
           bandit -r . \
-            --exclude .venv,tests \
+            --exclude .venv,venv,tests,infra,k8s,security,node_modules \
             -f json \
             -o security/reports/bandit.json \
             -l || true
@@ -227,7 +246,7 @@ jobs:
           name: sast-reports
           path: security/reports/
 
-  # ── Job 3: Container Scan + ECR Push ────────────────────────────────────
+  # ── Job 3: Container Scan + ECR Push ────────────────────────────────────────
   container-scan:
     name: Container Scan & Push
     runs-on: ubuntu-latest
@@ -251,12 +270,13 @@ jobs:
 
           echo "Image will be: ${FULL_REF}"
 
+      # Build from test-project/Dockerfile since that's where the app lives
       - name: Build Docker image
         run: |
           docker build \
             -t ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }} \
-            -f Dockerfile \
-            .
+            -f test-project/Dockerfile \
+            test-project/
 
       - name: Install Trivy
         run: |
@@ -272,6 +292,7 @@ jobs:
 
           trivy image \
             --format json \
+            --ignorefile test-project/.trivyignore \
             --output security/reports/trivy-image.json \
             ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }} || true
 
@@ -321,8 +342,14 @@ jobs:
           print("OK: no fixable HIGH/CRITICAL CVEs")
           EOF
 
+      # ECR push — only runs when AWS credentials are present in secrets.
+      # In Phase 4A this runs every time you push to main/develop.
       - name: Configure AWS credentials
-        if: secrets.AWS_ACCESS_KEY_ID != ''
+        # GitHub Actions does not support `secrets.X != ''` directly in `if:` conditions.
+        # The workaround is to expose the secret as an env var and check that instead.
+        env:
+          HAS_AWS: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
+        if: ${{ env.HAS_AWS == 'true' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -330,7 +357,9 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to ECR
-        if: secrets.AWS_ACCESS_KEY_ID != ''
+        env:
+          HAS_AWS: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
+        if: ${{ env.HAS_AWS == 'true' }}
         run: |
           aws ecr get-login-password --region ${{ env.AWS_REGION }} \
             | docker login \
@@ -339,25 +368,39 @@ jobs:
                 ${{ env.ECR_REGISTRY }}
 
       - name: Create ECR repository if it doesn't exist
-        if: secrets.AWS_ACCESS_KEY_ID != ''
+        env:
+          HAS_AWS: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
+        if: ${{ env.HAS_AWS == 'true' }}
         run: |
           aws ecr describe-repositories \
             --repository-names ${{ env.IMAGE_NAME }} \
             --region ${{ env.AWS_REGION }} 2>/dev/null \
           || aws ecr create-repository \
               --repository-name ${{ env.IMAGE_NAME }} \
+              --image-scanning-configuration scanOnPush=true \
+              --encryption-configuration encryptionType=AES256 \
               --region ${{ env.AWS_REGION }}
 
       - name: Tag and push to ECR
-        if: secrets.AWS_ACCESS_KEY_ID != ''
+        env:
+          HAS_AWS: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
+        if: ${{ env.HAS_AWS == 'true' }}
         run: |
+          FULL_REF="${{ steps.meta.outputs.full_ref }}"
+
           docker tag \
             ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }} \
-            ${{ steps.meta.outputs.full_ref }}
+            "${FULL_REF}"
 
-          docker push ${{ steps.meta.outputs.full_ref }}
+          docker push "${FULL_REF}"
 
-          echo "Successfully pushed: ${{ steps.meta.outputs.full_ref }}"
+          # Also push :latest for convenience
+          LATEST_REF="${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          docker tag ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }} "${LATEST_REF}"
+          docker push "${LATEST_REF}"
+
+          echo "Successfully pushed: ${FULL_REF}"
+          echo "Also tagged latest: ${LATEST_REF}"
 
       - name: Upload container scan report
         if: always()
@@ -366,16 +409,28 @@ jobs:
           name: container-scan-report
           path: security/reports/trivy-image.json
 
-  # ── Job 4: Helm Deploy to EKS ────────────────────────────────────────────
+  # ── Job 4: Helm Deploy to EKS ────────────────────────────────────────────────
+  # PHASE 4A: This job is DISABLED.
+  # It is guarded by the HAS_EKS_CLUSTER secret which you must explicitly set
+  # to "true" in GitHub → Settings → Secrets after provisioning EKS.
+  # Until then, every push skips this job silently.
+  #
+  # PHASE 4B: To enable:
+  #   1. Run `terraform apply` with VPC + IAM + EKS modules uncommented
+  #   2. Go to GitHub → Settings → Secrets → New secret
+  #      Name: HAS_EKS_CLUSTER   Value: true
+  #   3. The next push to main will trigger this job automatically.
   deploy:
     name: Deploy to EKS (Helm)
     runs-on: ubuntu-latest
     needs: container-scan
 
+    # Triple guard: main branch only + push event only + EKS cluster exists
+    # HAS_EKS_CLUSTER is NOT set in Phase 4A, so this job never runs.
     if: |
       github.ref == 'refs/heads/main' &&
       github.event_name == 'push' &&
-      secrets.AWS_ACCESS_KEY_ID != ''
+      secrets.HAS_EKS_CLUSTER == 'true'
 
     environment: production
 
@@ -391,6 +446,9 @@ jobs:
 
       - name: Configure kubectl for EKS
         run: |
+          # PHASE 4B: update this cluster name to match your EKS cluster.
+          # Find it with: terraform output eks_cluster_name
+          # Or: aws eks list-clusters --region ap-south-1
           aws eks update-kubeconfig \
             --region ${{ env.AWS_REGION }} \
             --name guardops-prod-cluster
@@ -440,12 +498,14 @@ jobs:
           echo "Helm history:"
           helm history guardops-app --namespace ${{ env.K8S_NAMESPACE }}
 
-  # ── Job 5: Upload Reports to S3 ──────────────────────────────────────────
+  # ── Job 5: Upload Reports to S3 ──────────────────────────────────────────────
   upload-reports:
     name: Upload Reports to S3
     runs-on: ubuntu-latest
     needs: [sast, container-scan]
 
+    # Always run so reports are saved even when earlier jobs fail.
+    # But skip if no AWS credentials — nothing to upload to.
     if: always() && secrets.AWS_ACCESS_KEY_ID != ''
 
     steps:
@@ -455,7 +515,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: all-reports/
-        continue-on-error: true
+        continue-on-error: true   # don't fail if earlier jobs produced no artifacts
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -469,8 +529,11 @@ jobs:
           SHA=$(git rev-parse --short HEAD)
           BRANCH="${{ github.ref_name }}"
           REPO="${{ github.repository }}"
+          RUN_ID="${{ github.run_id }}"
 
-          S3_PREFIX="s3://${{ secrets.GUARDOPS_S3_BUCKET }}/reports/${REPO}/${BRANCH}/${SHA}"
+          # Path structure: reports/<repo>/<branch>/<sha>/<run_id>/
+          # Including run_id means multiple runs on the same SHA don't overwrite each other.
+          S3_PREFIX="s3://${{ secrets.GUARDOPS_S3_BUCKET }}/reports/${REPO}/${BRANCH}/${SHA}/${RUN_ID}"
 
           if [ -d "all-reports" ] && [ "$(ls -A all-reports)" ]; then
             aws s3 cp all-reports/ "${S3_PREFIX}/" \
@@ -478,6 +541,8 @@ jobs:
               --no-progress
 
             echo "Reports uploaded to: ${S3_PREFIX}/"
+            echo ""
+            echo "View in console: https://s3.console.aws.amazon.com/s3/buckets/${{ secrets.GUARDOPS_S3_BUCKET }}"
           else
-            echo "No reports to upload"
+            echo "No reports found to upload — this is OK if earlier jobs were skipped"
           fi

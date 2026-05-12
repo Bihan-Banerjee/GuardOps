@@ -37,3 +37,7 @@ kubeconfig
 *.kubeconfig
 
 helm.zip
+
+terraform.tfvars
+*.tfstate
+*.tfstate.backup
