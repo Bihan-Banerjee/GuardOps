@@ -1,0 +1,2 @@
+jaraco.context>=6.1.0
+urllib3>=2.7.0

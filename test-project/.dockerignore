@@ -1,0 +1,15 @@
+# Never include these in the Docker image
+../.terraform
+../infra
+../tests
+../.git
+../.github
+../.env
+../*.md
+../pyproject.toml
+../requirements*.txt
+
+# Local artifacts
+*.pyc
+__pycache__
+security/reports

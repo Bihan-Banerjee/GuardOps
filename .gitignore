@@ -35,3 +35,10 @@ Thumbs.db
 # Kubernetes (contains cluster credentials — never commit)
 kubeconfig
 *.kubeconfig
+
+helm.zip
+
+terraform.tfvars
+*.tfstate
+*.tfstate.backup
+.terraform/

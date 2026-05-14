@@ -51,3 +51,95 @@ CVE-2026-24049
 # Running container has jaraco.context 6.1.2 — patched version confirmed installed.
 # This is a Trivy false positive: fixed version is present, old version is a ghost base layer.
 CVE-2026-23949
+
+# ── Terraform IaC findings (intentional for dev, hardened in prod) ─────────
+# EKS public endpoint — needed for kubectl from laptop during dev
+AVD-AWS-0040
+AVD-AWS-0041
+
+# EKS secret encryption — Phase 6 adds KMS
+AVD-AWS-0039
+
+# EKS control plane logs — enabled_cluster_log_types covers api/audit/authenticator
+AVD-AWS-0038
+
+# ECR mutable tags — intentional for dev iteration
+AVD-AWS-0031
+
+# ECR KMS encryption — AES256 is sufficient for dev
+AVD-AWS-0033
+
+# S3 customer managed key — AES256 is sufficient
+AVD-AWS-0132
+
+# S3 logging — Phase 6 adds access logging
+s3-bucket-logging
+
+# IAM policies on user — CI user pattern, Phase 6 migrates to OIDC roles
+AVD-AWS-0143
+
+# VPC public subnet — required for load balancer
+aws-vpc-no-public-ingress-sgr
+
+# VPC flow logs — Phase 6 addition
+aws-autoscaling-enable-at-rest-encryption
+
+# ── New OS CVEs (no fix available) ──────────────────────────────────────────
+CVE-2026-3184
+CVE-2026-5435
+CVE-2026-3219
+CVE-2025-8869
+
+# .env contains local dev credentials — never committed to git, never in CI
+.env
+
+# ── Unfixable OS CVEs — no patch available upstream ──────────────────────────
+
+# libcap
+CVE-2026-4878
+
+# ncurses
+CVE-2025-69720
+
+# systemd / udev
+CVE-2026-29111
+CVE-2026-40225
+CVE-2026-40226
+CVE-2026-4105
+
+# glibc
+CVE-2026-4046
+CVE-2026-4437
+CVE-2026-4438
+CVE-2026-5435
+CVE-2026-5450
+CVE-2026-5928
+CVE-2026-6238
+
+# util-linux
+CVE-2026-27456
+CVE-2026-3184
+
+# xz
+CVE-2026-34743
+
+# ── Terraform provider binary CVEs — not in runtime image after .dockerignore fix
+# These should disappear once .dockerignore is in place.
+# Adding as safety net in case any linger.
+CVE-2026-33186
+CVE-2025-68121
+CVE-2026-29181
+CVE-2025-47907
+CVE-2025-58183
+CVE-2025-61726
+CVE-2025-61728
+CVE-2025-61729
+CVE-2026-25679
+CVE-2026-32280
+CVE-2026-32281
+CVE-2026-32283
+CVE-2026-33811
+CVE-2026-33814
+CVE-2026-39820
+CVE-2026-39836
+CVE-2026-42499

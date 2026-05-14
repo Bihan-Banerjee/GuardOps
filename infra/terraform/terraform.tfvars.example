@@ -1,0 +1,18 @@
+# infra/terraform/terraform.tfvars.example
+# Copy to terraform.tfvars and fill in. Never commit terraform.tfvars.
+
+aws_account_id = "236796665744"   # your account ID
+aws_region     = "ap-south-1"
+project_name   = "guardops"
+environment    = "prod"
+
+ecr_image_names    = ["guardops-app"]
+vpc_cidr           = "10.0.0.0/16"
+availability_zones = ["ap-south-1a", "ap-south-1b"]
+
+# EKS cost controls
+node_instance_type     = "t3.medium"
+node_min_size          = 1
+node_max_size          = 1
+node_desired_size      = 1
+enable_cloudwatch_logs = false

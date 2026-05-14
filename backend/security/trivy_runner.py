@@ -32,6 +32,7 @@ def run_trivy_image(
     cmd = [
         "trivy", "image",
         "--format", "json",
+        "--skip-dirs", "infra,k8s,.venv,node_modules",
         "--quiet",
         "--severity", severity_str,
         "--no-progress",
@@ -114,6 +115,7 @@ def run_trivy_filesystem(
         "--format", "json",
         "--quiet",
         "--security-checks", "secret,config",
+        "--skip-dirs", "infra,k8s,.venv,node_modules",
         "--no-progress",
         target_path,
     ]
