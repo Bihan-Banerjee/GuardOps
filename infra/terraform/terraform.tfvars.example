@@ -1,29 +1,18 @@
 # infra/terraform/terraform.tfvars.example
-#
-# Copy this file to terraform.tfvars and fill in your values.
-# NEVER commit terraform.tfvars — it contains your account ID.
-# terraform.tfvars is already in .gitignore.
-#
-# Usage:
-#   copy terraform.tfvars.example terraform.tfvars   (Windows)
-#   cp terraform.tfvars.example terraform.tfvars     (Linux/Mac)
+# Copy to terraform.tfvars and fill in. Never commit terraform.tfvars.
 
-# ── REQUIRED — fill these in ──────────────────────────────────────────────────
+aws_account_id = "236796665744"   # your account ID
+aws_region     = "ap-south-1"
+project_name   = "guardops"
+environment    = "prod"
 
-# Your 12-digit AWS account ID.
-# Find it: AWS Console → top-right account menu → Account ID
-# Or run:  aws sts get-caller-identity --query Account --output text
-aws_account_id = "123456789012"
+ecr_image_names    = ["guardops-app"]
+vpc_cidr           = "10.0.0.0/16"
+availability_zones = ["ap-south-1a", "ap-south-1b"]
 
-# ── OPTIONAL — defaults are fine for Phase 4A ─────────────────────────────────
-
-aws_region   = "ap-south-1"   # Mumbai — closest to India, keep this
-project_name = "guardops"
-environment  = "prod"
-
-# ECR repositories to create. Add more names here if you add more services.
-ecr_image_names = ["guardops-app"]
-
-# ── PHASE 4B — uncomment when ready for EKS ──────────────────────────────────
-# vpc_cidr           = "10.0.0.0/16"
-# availability_zones = ["ap-south-1a", "ap-south-1b"]
+# EKS cost controls
+node_instance_type     = "t3.medium"
+node_min_size          = 1
+node_max_size          = 1
+node_desired_size      = 1
+enable_cloudwatch_logs = false

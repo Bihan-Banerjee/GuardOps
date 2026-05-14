@@ -1,43 +1,48 @@
 # infra/terraform/modules/eks/main.tf
 #
-# Creates a managed EKS cluster with:
-#   - Managed node group (AWS handles node lifecycle, patching, replacement)
-#   - Nodes in private subnets only
-#   - EKS add-ons: CoreDNS, kube-proxy, VPC CNI, EBS CSI driver
+# PHASE 4B — Minimum-cost EKS cluster for GuardOps portfolio testing.
 #
-# After terraform apply, run:
-#   aws eks update-kubeconfig --region <region> --name <cluster-name>
-# to configure kubectl to talk to this cluster.
+# Cost-saving decisions vs a full production cluster:
+#   - Single t3.medium node instead of multi-node (saves ~$60/month)
+#   - CloudWatch logging disabled by default (saves ~$0.50/GB ingested)
+#   - EBS CSI driver removed (not needed for stateless test-app)
+#   - Single AZ node placement (NAT gateway cost controlled at VPC level)
+#
+# ALWAYS run `terraform destroy` when done for the day.
+# EKS control plane alone costs $0.10/hour even with zero nodes.
 
 locals {
   name_prefix = "${var.project_name}-${var.environment}"
+
+  # Conditionally enable CloudWatch logs — empty list = disabled = free
+  log_types = var.enable_cloudwatch_logs ? ["api", "audit", "authenticator"] : []
 }
 
-# ---------------------------------------------------------------------------
-# EKS Cluster (control plane — managed by AWS)
-# ---------------------------------------------------------------------------
+# ── EKS Cluster (control plane) ───────────────────────────────────────────────
 resource "aws_eks_cluster" "main" {
   name     = "${local.name_prefix}-cluster"
   role_arn = var.cluster_role_arn
   version  = "1.31"
 
   vpc_config {
-    subnet_ids              = var.private_subnet_ids
-    endpoint_private_access = true   # kubectl from within VPC works
-    endpoint_public_access  = true   # kubectl from your laptop works
-    # In a hardened setup, set endpoint_public_access = false and use
-    # a VPN or bastion host to reach the API server.
+    subnet_ids = concat(var.private_subnet_ids, var.public_subnet_ids)
+
+    # Public access lets you run kubectl from your Windows machine.
+    # In real prod you'd disable this and use a VPN/bastion.
+    endpoint_private_access = true
+    endpoint_public_access  = true
   }
 
-  # Enable control plane logging to CloudWatch
-  enabled_cluster_log_types = ["api", "audit", "authenticator"]
+  # Disabled by default to avoid CloudWatch costs during dev/testing.
+  # Set enable_cloudwatch_logs = true in tfvars when you need audit logs.
+  enabled_cluster_log_types = local.log_types
 
   depends_on = [var.cluster_role_arn]
+
+  tags = { Name = "${local.name_prefix}-cluster" }
 }
 
-# ---------------------------------------------------------------------------
-# Managed Node Group (EC2 worker nodes)
-# ---------------------------------------------------------------------------
+# ── Managed Node Group ────────────────────────────────────────────────────────
 resource "aws_eks_node_group" "main" {
   cluster_name    = aws_eks_cluster.main.name
   node_group_name = "${local.name_prefix}-nodes"
@@ -51,8 +56,6 @@ resource "aws_eks_node_group" "main" {
     desired_size = var.node_desired_size
   }
 
-  # Rolling update: replace nodes one at a time
-  # max_unavailable = 1 means one node is replaced at a time
   update_config { max_unavailable = 1 }
 
   labels = {
@@ -63,11 +66,9 @@ resource "aws_eks_node_group" "main" {
   tags = { Name = "${local.name_prefix}-node-group" }
 }
 
-# ---------------------------------------------------------------------------
-# EKS Add-ons (AWS-managed cluster components)
-# ---------------------------------------------------------------------------
+# ── EKS Add-ons ───────────────────────────────────────────────────────────────
+# Only the three essential add-ons. EBS CSI removed — test-app is stateless.
 
-# CoreDNS: cluster-internal DNS resolution (pod → service name lookup)
 resource "aws_eks_addon" "coredns" {
   cluster_name                = aws_eks_cluster.main.name
   addon_name                  = "coredns"
@@ -75,25 +76,22 @@ resource "aws_eks_addon" "coredns" {
   depends_on                  = [aws_eks_node_group.main]
 }
 
-# kube-proxy: maintains network rules on each node for Service routing
 resource "aws_eks_addon" "kube_proxy" {
   cluster_name                = aws_eks_cluster.main.name
   addon_name                  = "kube-proxy"
   resolve_conflicts_on_update = "OVERWRITE"
 }
 
-# VPC CNI: assigns VPC IP addresses directly to pods
 resource "aws_eks_addon" "vpc_cni" {
   cluster_name                = aws_eks_cluster.main.name
   addon_name                  = "vpc-cni"
   resolve_conflicts_on_update = "OVERWRITE"
 }
 
-# EBS CSI Driver: allows pods to use EBS volumes as persistent storage
-# Required if any workload (e.g. Prometheus) needs persistent storage
-resource "aws_eks_addon" "ebs_csi" {
-  cluster_name                = aws_eks_cluster.main.name
-  addon_name                  = "aws-ebs-csi-driver"
-  resolve_conflicts_on_update = "OVERWRITE"
-  depends_on                  = [aws_eks_node_group.main]
-}
+# PHASE 5: Uncomment when adding Prometheus/Grafana (needs persistent storage)
+# resource "aws_eks_addon" "ebs_csi" {
+#   cluster_name                = aws_eks_cluster.main.name
+#   addon_name                  = "aws-ebs-csi-driver"
+#   resolve_conflicts_on_update = "OVERWRITE"
+#   depends_on                  = [aws_eks_node_group.main]
+# }
