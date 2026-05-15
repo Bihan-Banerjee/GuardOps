@@ -248,61 +248,68 @@ jobs:
 
   # ── Job 3: Container Scan + ECR Push ────────────────────────────────────────
   container-scan:
-    name: Container Scan & Push
+    name: Container Build & Scan
     runs-on: ubuntu-latest
     needs: sast
 
     outputs:
       image-tag: ${{ steps.meta.outputs.tag }}
-      full-image-ref: ${{ steps.meta.outputs.full_ref }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set image metadata
+      - name: Generate image metadata
         id: meta
         run: |
-          TAG=$(git rev-parse --short HEAD)
-          FULL_REF="${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${TAG}"
+          SHA=$(git rev-parse --short HEAD)
+          echo "tag=${SHA}" >> $GITHUB_OUTPUT
+          echo "full_ref=${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${SHA}" >> $GITHUB_OUTPUT
 
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "full_ref=${FULL_REF}" >> $GITHUB_OUTPUT
-
-          echo "Image will be: ${FULL_REF}"
-
-      # Build from test-project/Dockerfile since that's where the app lives
       - name: Build Docker image
         run: |
           docker build \
             -t ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }} \
-            -f test-project/Dockerfile \
             test-project/
+
+      # ── Phase 4.5: Cache Trivy DB ──────────────────────────────────────────
+      # Prevents ghcr.io rate-limit errors on the vulnerability DB download.
+      # Cache rotates daily (Trivy DB updates once per 24h).
+      - name: Get current date for Trivy cache key
+        id: date
+        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
+      - name: Cache Trivy vulnerability DB
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-${{ runner.os }}-${{ steps.date.outputs.date }}
+          restore-keys: |
+            trivy-db-${{ runner.os }}-
+      # ── End Phase 4.5 addition ─────────────────────────────────────────────
 
       - name: Install Trivy
         run: |
-          wget -qO- \
-            https://github.com/aquasecurity/trivy/releases/download/v0.51.1/trivy_0.51.1_Linux-64bit.tar.gz \
-            | tar xz -C /usr/local/bin trivy
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin v0.51.0
 
-          trivy --version
+      - name: Create reports directory
+        run: mkdir -p security/reports
 
-      - name: Run Trivy container scan
+      - name: Run Trivy image scan
         run: |
-          mkdir -p security/reports
-
           trivy image \
             --format json \
-            --ignorefile test-project/.trivyignore \
             --output security/reports/trivy-image.json \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
             ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }} || true
 
-      - name: Check Trivy results — gate on fixable HIGH/CRITICAL CVEs
+      - name: Check Trivy results — gate on fixable HIGH/CRITICAL
         run: |
-          python3 - <<'EOF'
+          python - <<'EOF'
           import json, sys, os
 
           report_path = "security/reports/trivy-image.json"
-
           if not os.path.exists(report_path):
               print("No trivy report found — skipping gate")
               sys.exit(0)
@@ -314,13 +321,12 @@ jobs:
               sys.exit(0)
 
           blocking = []
-
           for result in data.get("Results", []):
               for vuln in result.get("Vulnerabilities") or []:
-                  sev = vuln.get("Severity", "")
-                  fix = vuln.get("FixedVersion", "")
-
-                  if sev in ("HIGH", "CRITICAL") and fix:
+                  if (
+                      vuln.get("Severity") in ("HIGH", "CRITICAL")
+                      and vuln.get("FixedVersion")
+                  ):
                       blocking.append(vuln)
 
           if blocking:
@@ -342,11 +348,7 @@ jobs:
           print("OK: no fixable HIGH/CRITICAL CVEs")
           EOF
 
-      # ECR push — only runs when AWS credentials are present in secrets.
-      # In Phase 4A this runs every time you push to main/develop.
       - name: Configure AWS credentials
-        # GitHub Actions does not support `secrets.X != ''` directly in `if:` conditions.
-        # The workaround is to expose the secret as an env var and check that instead.
         env:
           HAS_AWS: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
         if: ${{ env.HAS_AWS == 'true' }}
@@ -394,7 +396,6 @@ jobs:
 
           docker push "${FULL_REF}"
 
-          # Also push :latest for convenience
           LATEST_REF="${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
           docker tag ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }} "${LATEST_REF}"
           docker push "${LATEST_REF}"
@@ -408,6 +409,7 @@ jobs:
         with:
           name: container-scan-report
           path: security/reports/trivy-image.json
+
 
   # ── Job 4: Helm Deploy to EKS ────────────────────────────────────────────────
   # PHASE 4A: This job is DISABLED.

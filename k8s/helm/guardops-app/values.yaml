@@ -53,8 +53,6 @@ probes:
 # Service
 # ---------------------------------------------------------------------------
 service:
-  # ClusterIP + Ingress is used for both local and prod.
-  # This fixes the Windows NodePort connectivity issue from Phase 1/2.
   type: ClusterIP
   port: 80
   targetPort: 8080
@@ -66,8 +64,6 @@ ingress:
   enabled: true
   className: nginx
   annotations: {}
-  # Local: app is accessible at http://test-app.local
-  # Add `127.0.0.1 test-app.local` to your hosts file
   host: test-app.local
   tls: false
   tlsSecret: ""
@@ -93,3 +89,20 @@ config:
 # Container port
 # ---------------------------------------------------------------------------
 containerPort: 8080
+
+# ---------------------------------------------------------------------------
+# PHASE 5: Monitoring (Prometheus scraping)
+# ---------------------------------------------------------------------------
+# The app exposes /metrics via prometheus_client (Python).
+# When monitoring.enabled = true:
+#   - Prometheus scrape annotations are added to the pod
+#   - A 'metrics' named port is added to the container
+#   - A ServiceMonitor CRD is created (requires kube-prometheus-stack installed first)
+#
+# Local (k3d): set enabled: false unless you've installed kube-prometheus-stack locally.
+# Prod (EKS):  set enabled: true in values-prod.yaml — kube-prometheus-stack runs there.
+monitoring:
+  enabled: false            # true in values-prod.yaml
+  port: 8080                # same port — app serves /metrics on the app port
+  path: /metrics
+  scrapeInterval: 30s       # how often Prometheus polls — 30s is standard

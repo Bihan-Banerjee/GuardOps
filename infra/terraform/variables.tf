@@ -1,4 +1,4 @@
-# infra/terraform/variables.tf — Phase 4B
+# infra/terraform/variables.tf — Phase 5
 
 variable "aws_account_id" {
   description = "Your 12-digit AWS account ID."
@@ -45,9 +45,15 @@ variable "availability_zones" {
 # ── EKS cost controls ─────────────────────────────────────────────────────────
 
 variable "node_instance_type" {
-  description = "t3.medium = minimum viable for EKS. t3.small often OOMs."
+  description = <<-EOT
+    PHASE 5 CHANGE: upgraded from t3.medium (4GB) to t3.large (8GB).
+    Prometheus (~500MB) + Grafana (~300MB) + Alertmanager (~100MB) + kube-state-metrics (~100MB)
+    adds ~1GB overhead on top of the existing stack. t3.medium OOMs under this load.
+    t3.large costs ~$0.075/hr vs $0.036/hr for t3.medium — about $0.94/day extra.
+    Still destroy every night to keep costs manageable.
+  EOT
   type        = string
-  default     = "t3.medium"
+  default     = "t3.large"
 }
 
 variable "node_min_size" {
