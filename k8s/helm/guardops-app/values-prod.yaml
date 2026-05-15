@@ -3,7 +3,6 @@
 # Only specify values that DIFFER from local defaults.
 
 image:
-  # Set at deploy time: AWS_ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/guardops-app
   repository: ""
   tag: ""
   pullPolicy: Always          # always pull from ECR in production
@@ -19,7 +18,7 @@ resources:
     cpu: "500m"
 
 service:
-  type: ClusterIP             # same — ingress handles external access
+  type: ClusterIP
   port: 80
   targetPort: 8080
 
@@ -27,11 +26,9 @@ ingress:
   enabled: true
   className: nginx
   annotations:
-    # cert-manager provisions TLS automatically
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
-  # Replace with your actual domain in .guardops.yaml
   host: app.yourdomain.com
   tls: true
   tlsSecret: guardops-app-tls
@@ -46,3 +43,17 @@ config:
   LOG_LEVEL: "WARNING"
   ENVIRONMENT: "production"
   PORT: "8080"
+
+# ---------------------------------------------------------------------------
+# PHASE 5: Monitoring enabled in production
+# ---------------------------------------------------------------------------
+# kube-prometheus-stack is installed on EKS (see scripts/setup-observability.ps1).
+# This enables:
+#   - Prometheus scrape annotations on the pod
+#   - ServiceMonitor CRD pointing Prometheus at /metrics
+# Grafana dashboard: import k8s/observability/grafana-dashboard.json
+monitoring:
+  enabled: true
+  port: 8080
+  path: /metrics
+  scrapeInterval: 30s

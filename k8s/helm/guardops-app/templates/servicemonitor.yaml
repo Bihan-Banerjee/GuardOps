@@ -1,0 +1,39 @@
+{{- if .Values.monitoring.enabled }}
+# k8s/helm/guardops-app/templates/servicemonitor.yaml
+#
+# PHASE 5 — Prometheus ServiceMonitor
+#
+# This CRD is installed by kube-prometheus-stack and tells the Prometheus Operator
+# exactly which pods to scrape, at what interval, and on which path/port.
+#
+# Why ServiceMonitor over annotation scraping:
+#   - Annotation scraping requires configuring Prometheus's global scrape_configs
+#   - ServiceMonitor is self-contained: deploy the app, scraping is automatic
+#   - Supports TLS, auth, relabeling — annotations do not
+#
+# PREREQUISITE: kube-prometheus-stack must be installed before `helm upgrade`
+# Otherwise Kubernetes will reject this resource (unknown CRD).
+# Install order: 1) kube-prometheus-stack  2) helm upgrade guardops-app
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "guardops-app.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "guardops-app.labels" . | nindent 4 }}
+    # This label is what kube-prometheus-stack uses to discover ServiceMonitors.
+    # The Prometheus CR's serviceMonitorSelector matches on this label.
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      {{- include "guardops-app.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: metrics           # matches the named port in deployment.yaml
+      path: {{ .Values.monitoring.path }}
+      interval: {{ .Values.monitoring.scrapeInterval }}
+      scrapeTimeout: 10s
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+{{- end }}

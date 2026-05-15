@@ -1,11 +1,14 @@
 # infra/terraform/modules/eks/main.tf
 #
-# PHASE 4B — Minimum-cost EKS cluster for GuardOps portfolio testing.
+# PHASE 5 — EBS CSI driver enabled for Prometheus/Grafana persistent storage.
+#
+# Changes from Phase 4B:
+#   - aws_eks_addon.ebs_csi uncommented (required for PersistentVolumeClaims)
+#   - No other changes — VPC, cluster, node group are identical
 #
 # Cost-saving decisions vs a full production cluster:
-#   - Single t3.medium node instead of multi-node (saves ~$60/month)
+#   - Single t3.large node (upgraded from t3.medium for Prometheus headroom)
 #   - CloudWatch logging disabled by default (saves ~$0.50/GB ingested)
-#   - EBS CSI driver removed (not needed for stateless test-app)
 #   - Single AZ node placement (NAT gateway cost controlled at VPC level)
 #
 # ALWAYS run `terraform destroy` when done for the day.
@@ -67,7 +70,6 @@ resource "aws_eks_node_group" "main" {
 }
 
 # ── EKS Add-ons ───────────────────────────────────────────────────────────────
-# Only the three essential add-ons. EBS CSI removed — test-app is stateless.
 
 resource "aws_eks_addon" "coredns" {
   cluster_name                = aws_eks_cluster.main.name
@@ -88,10 +90,14 @@ resource "aws_eks_addon" "vpc_cni" {
   resolve_conflicts_on_update = "OVERWRITE"
 }
 
-# PHASE 5: Uncomment when adding Prometheus/Grafana (needs persistent storage)
-# resource "aws_eks_addon" "ebs_csi" {
-#   cluster_name                = aws_eks_cluster.main.name
-#   addon_name                  = "aws-ebs-csi-driver"
-#   resolve_conflicts_on_update = "OVERWRITE"
-#   depends_on                  = [aws_eks_node_group.main]
-# }
+# PHASE 5: EBS CSI driver — required for Prometheus and Grafana PersistentVolumeClaims.
+# The node role already has the AmazonEBSCSIDriverPolicy attached via the IAM module.
+# If terraform plan says the node role is missing the policy, add it to modules/iam/main.tf:
+#   data "aws_iam_policy" "ebs_csi" { arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy" }
+#   resource "aws_iam_role_policy_attachment" "ebs_csi" { role = aws_iam_role.node.name; policy_arn = data.aws_iam_policy.ebs_csi.arn }
+resource "aws_eks_addon" "ebs_csi" {
+  cluster_name                = aws_eks_cluster.main.name
+  addon_name                  = "aws-ebs-csi-driver"
+  resolve_conflicts_on_update = "OVERWRITE"
+  depends_on                  = [aws_eks_node_group.main]
+}

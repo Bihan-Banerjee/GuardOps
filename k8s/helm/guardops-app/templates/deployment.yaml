@@ -13,9 +13,6 @@ spec:
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      # maxSurge: allow 1 extra pod during update (so we never reduce capacity)
-      # maxUnavailable: 0 means the old pod stays up until new one is ready
-      # Together: always at least replicaCount pods serving traffic during deploy
       maxSurge: 1
       maxUnavailable: 0
   template:
@@ -25,9 +22,16 @@ spec:
       annotations:
         # Force pod restart when ConfigMap changes (Helm doesn't do this automatically)
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        # ── PHASE 5: Prometheus scrape annotations ──────────────────────────────
+        # kube-prometheus-stack's PodMonitor / annotation-based scraping picks these up.
+        # If you add a ServiceMonitor (recommended), these annotations become redundant
+        # but are kept as a fallback for any Prometheus instance using annotation scraping.
+        {{- if .Values.monitoring.enabled }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.monitoring.port | quote }}
+        prometheus.io/path: {{ .Values.monitoring.path | quote }}
+        {{- end }}
     spec:
-      # Security context: run as non-root user
-      # This enforces least-privilege at the pod level
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -40,14 +44,17 @@ spec:
             - name: http
               containerPort: {{ .Values.containerPort }}
               protocol: TCP
-          # Inject all config values as environment variables from ConfigMap
+            {{- if .Values.monitoring.enabled }}
+            # Named port so ServiceMonitor can reference it by name, not number
+            - name: metrics
+              containerPort: {{ .Values.monitoring.port }}
+              protocol: TCP
+            {{- end }}
           envFrom:
             - configMapRef:
                 name: {{ include "guardops-app.fullname" . }}-config
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          # Liveness probe: if this fails, Kubernetes RESTARTS the pod
-          # Use for: detecting deadlocks, infinite loops, unrecoverable errors
           livenessProbe:
             httpGet:
               path: {{ .Values.probes.liveness.path }}
@@ -55,8 +62,6 @@ spec:
             initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
             failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
-          # Readiness probe: if this fails, Kubernetes REMOVES the pod from Service endpoints
-          # Use for: app is alive but not ready (still loading config, warming cache, etc.)
           readinessProbe:
             httpGet:
               path: {{ .Values.probes.readiness.path }}
@@ -64,7 +69,6 @@ spec:
             initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
             failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
-          # Container-level security: drop all Linux capabilities
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: false

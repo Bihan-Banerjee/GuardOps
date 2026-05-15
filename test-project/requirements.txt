@@ -1,2 +1,6 @@
+# test-project/requirements.txt
+# Phase 5: added prometheus-client for /metrics endpoint
+
 jaraco.context>=6.1.0
 urllib3>=2.7.0
+prometheus-client>=0.20.0
