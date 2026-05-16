@@ -29,7 +29,7 @@ spec:
     matchLabels:
       {{- include "guardops-app.selectorLabels" . | nindent 6 }}
   endpoints:
-    - port: metrics           # matches the named port in deployment.yaml
+    - port: http         # matches the named port in deployment.yaml
       path: {{ .Values.monitoring.path }}
       interval: {{ .Values.monitoring.scrapeInterval }}
       scrapeTimeout: 10s

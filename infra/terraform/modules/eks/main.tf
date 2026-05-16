@@ -45,6 +45,21 @@ resource "aws_eks_cluster" "main" {
   tags = { Name = "${local.name_prefix}-cluster" }
 }
 
+resource "aws_launch_template" "nodes" {
+  name_prefix = "${local.name_prefix}-node-"
+
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"   # keeps IMDSv2 enforced (security best practice)
+    http_put_response_hop_limit = 2            # allows pods to reach IMDS for AWS SDK auth
+  }
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = { Name = "${local.name_prefix}-node" }
+  }
+}
+
 # ── Managed Node Group ────────────────────────────────────────────────────────
 resource "aws_eks_node_group" "main" {
   cluster_name    = aws_eks_cluster.main.name
@@ -64,6 +79,11 @@ resource "aws_eks_node_group" "main" {
   labels = {
     role        = "worker"
     environment = var.environment
+  }
+
+  launch_template {
+    id      = aws_launch_template.nodes.id
+    version = aws_launch_template.nodes.latest_version
   }
 
   tags = { Name = "${local.name_prefix}-node-group" }

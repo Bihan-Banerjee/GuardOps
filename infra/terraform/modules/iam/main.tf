@@ -1,21 +1,21 @@
 # infra/terraform/modules/iam/main.tf
 #
-# Creates three IAM identities for GuardOps:
+# Phase 5 change: added aws_iam_role_policy_attachment.ebs_csi_policy
 #
-#   1. EKS Cluster Role   — used by the EKS control plane to manage AWS resources
-#   2. EKS Node Role      — used by EC2 worker nodes to pull images, write logs
-#   3. CI/CD User         — used by GitHub Actions to push to ECR, upload to S3,
-#                           and deploy to EKS (least-privilege)
+# The EBS CSI driver addon (enabled in modules/eks/main.tf) runs as a DaemonSet
+# on every node and calls AWS APIs to create/attach/detach EBS volumes on behalf
+# of PersistentVolumeClaims. Without AmazonEBSCSIDriverPolicy on the node role,
+# it authenticates fine but gets AccessDenied on ec2:CreateVolume — PVCs stay
+# Pending forever with no obvious error in the pod logs.
 #
-# All roles/policies follow least-privilege: only the exact actions needed.
+# This policy attachment is the ONLY change from Phase 4B.
+# Everything else (cluster role, node role, CI user) is identical.
 
 locals {
   name_prefix = "${var.project_name}-${var.environment}"
 }
 
 # ── 1. EKS Cluster Role ───────────────────────────────────────────────────────
-# The EKS control plane assumes this role to call AWS APIs on your behalf
-# (e.g. creating load balancers, describing EC2 instances for node registration).
 
 resource "aws_iam_role" "eks_cluster" {
   name = "${local.name_prefix}-eks-cluster-role"
@@ -32,17 +32,12 @@ resource "aws_iam_role" "eks_cluster" {
   tags = { Name = "${local.name_prefix}-eks-cluster-role" }
 }
 
-# AWS-managed policy that grants EKS the minimum permissions it needs
 resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
   role       = aws_iam_role.eks_cluster.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
 }
 
 # ── 2. EKS Node Role ──────────────────────────────────────────────────────────
-# EC2 worker nodes assume this role. They need it to:
-#   - Register with the EKS cluster (EKSWorkerNodePolicy)
-#   - Pull container images from ECR (AmazonEC2ContainerRegistryReadOnly)
-#   - Set up pod networking (AmazonEKS_CNI_Policy)
 
 resource "aws_iam_role" "eks_node" {
   name = "${local.name_prefix}-eks-node-role"
@@ -74,16 +69,22 @@ resource "aws_iam_role_policy_attachment" "eks_cni_policy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
 }
 
+# PHASE 5: Required for Prometheus and Grafana PersistentVolumeClaims.
+# The EBS CSI driver calls ec2:CreateVolume, ec2:AttachVolume, ec2:DescribeVolumes
+# etc. on behalf of PVCs. Without this policy the driver gets AccessDenied and
+# every PVC stays Pending indefinitely.
+resource "aws_iam_role_policy_attachment" "ebs_csi_policy" {
+  role       = aws_iam_role.eks_node.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+}
+
 # ── 3. CI/CD User ─────────────────────────────────────────────────────────────
-# Used by GitHub Actions. Least-privilege: only what the pipeline actually needs.
-# NEVER give this user AdministratorAccess.
 
 resource "aws_iam_user" "ci" {
   name = "${local.name_prefix}-ci-user"
   tags = { Name = "${local.name_prefix}-ci-user", Purpose = "github-actions" }
 }
 
-# Inline policy: exactly what CI needs and nothing more
 resource "aws_iam_user_policy" "ci_policy" {
   name = "${local.name_prefix}-ci-policy"
   user = aws_iam_user.ci.name
@@ -92,11 +93,10 @@ resource "aws_iam_user_policy" "ci_policy" {
     Version = "2012-10-17"
     Statement = [
 
-      # ECR: authenticate, push images, create repos
       {
-        Sid    = "ECRAuth"
-        Effect = "Allow"
-        Action = ["ecr:GetAuthorizationToken"]
+        Sid      = "ECRAuth"
+        Effect   = "Allow"
+        Action   = ["ecr:GetAuthorizationToken"]
         Resource = "*"
       },
       {
@@ -116,7 +116,6 @@ resource "aws_iam_user_policy" "ci_policy" {
         Resource = "arn:aws:ecr:${var.aws_region}:${var.aws_account_id}:repository/*"
       },
 
-      # S3: upload scan reports to the reports bucket only
       {
         Sid    = "S3Reports"
         Effect = "Allow"
@@ -131,8 +130,6 @@ resource "aws_iam_user_policy" "ci_policy" {
         ]
       },
 
-      # EKS: update kubeconfig and deploy via Helm
-      # PHASE 4B: needed for CI deploy job
       {
         Sid    = "EKSDeploy"
         Effect = "Allow"
@@ -146,13 +143,6 @@ resource "aws_iam_user_policy" "ci_policy" {
   })
 }
 
-# Access key for the CI user — used in GitHub Actions secrets
-# IMPORTANT: After terraform apply, run:
-#   terraform output ci_user_access_key_id
-#   terraform output -raw ci_user_secret_access_key
-# and update your GitHub secrets with these values.
-#
-# These are marked sensitive so they don't print in plain text during apply.
 resource "aws_iam_access_key" "ci" {
   user = aws_iam_user.ci.name
 }

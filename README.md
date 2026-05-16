@@ -7,13 +7,38 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/Bihan-Banerjee/GuardOps/actions/workflows/ci.yaml/badge.svg)](https://github.com/Bihan-Banerjee/GuardOps/actions)
 
-GuardOps wraps a complete secure delivery pipeline behind a single command. Given any application repo, it builds a Docker image, runs four security scanners in sequence, and deploys to Kubernetes, blocking the pipeline if HIGH or CRITICAL findings are detected.
+GuardOps wraps a complete secure delivery pipeline behind a single command. Given any application repo, it builds a Docker image, runs four security scanners in sequence, deploys to Kubernetes via Helm, and exposes live metrics to Prometheus — blocking the pipeline if HIGH or CRITICAL findings are detected.
 
 ```
 guardops deploy --env prod
 ```
 
-That one command: builds the image, runs Semgrep + Bandit + Trivy + SonarQube, pushes to ECR, and deploys to EKS via Helm with automatic rollback on failure.
+That one command: builds a multi-stage Docker image, runs Semgrep + Bandit + Trivy + SonarQube, pushes to ECR, deploys to EKS via Helm with automatic rollback on failure, and exposes `/metrics` to a live Grafana dashboard.
+
+---
+
+## Current Status — v0.5.0
+
+| Phase | Version | Status | What was built |
+|-------|---------|--------|----------------|
+| 1 — CLI + Local Deploy | v0.1.0 | ✅ Done | Click CLI framework, k3d local deploy, Docker build |
+| 2 — Security Scanning + CI | v0.2.0 | ✅ Done | Semgrep, Bandit, Trivy, SonarQube, 154 tests, GitHub Actions |
+| 3 — Helm + EKS Infrastructure | v0.3.0 | ✅ Done | Helm deploy, rollback command, Terraform VPC/EKS/IAM/ECR/S3 |
+| 4 — Full AWS Pipeline | v0.4.0 | ✅ Done | ECR push, EKS deploy, S3 report upload, cost-optimised infra |
+| 4.5 — Reliability Hardening | v0.4.5 | ✅ Done | Remote Terraform state (S3+DynamoDB), multi-stage Docker build, subprocess timeout+encoding fixes, Trivy DB cache in CI |
+| 5 — Observability | v0.5.0 | ✅ Done | Prometheus + Grafana via kube-prometheus-stack, `/metrics` endpoint, ServiceMonitor, EBS CSI driver, custom dashboards |
+
+---
+
+## Roadmap
+
+| Phase | Target | What it adds |
+|-------|--------|-------------|
+| 6 — Security Hardening | v0.6.0 | GitHub OIDC replaces IAM user (no more static keys), DAST via OWASP ZAP with post-deploy scan and auto-rollback on CRITICAL |
+| 7 — Runtime Security | v0.7.0 | Falco with eBPF, custom rules (alert on shell spawn inside pod), alerts routed to Loki |
+| 8 — Self-Healing | v0.8.0 | Alertmanager webhook receiver, automatic NetworkPolicy quarantine on Falco alert, node drain on resource exhaustion |
+| 9 — Multi-Environment | v0.9.0 | Staging + prod namespaces, blue-green deploy strategy, `guardops switch --slot green` |
+| 10 — Full Production | v1.0.0 | Real domain + TLS via cert-manager, ArgoCD GitOps, runbook documentation |
 
 ---
 
@@ -25,24 +50,26 @@ Developer
     v
 guardops deploy
     |
-    +-- Step 1: Docker Build -------------------------+
-    |       docker build -t <name>:<git-sha> .        |
-    |                                                 |
-    +-- Step 2: Security Scans ----------------------+
-    |       Semgrep    (SAST, code patterns)          |
-    |       Bandit     (Python-specific vulns)        |
-    |       Trivy fs   (secrets, IaC misconfigs)      |
-    |       Trivy img  (CVEs in OS + deps)            |
-    |       SonarQube  (quality gate, optional)       |
-    |                                                 |
-    |       BLOCKED if any finding >= HIGH            |
-    |       Report written to security/reports/       |
-    |                                                 |
-    +-- Step 3: Registry Push -----------------------+
-    |       local: k3d image import                   |
-    |       prod:  docker push -> AWS ECR             |
-    |                                                 |
-    +-- Step 4: Helm Deploy -------------------------+
+    +-- Step 1: Docker Build ──────────────────────────+
+    |       Multi-stage build (builder + runtime)       |
+    |       pip/wheel absent from final image           |
+    |       Non-root user (UID 10001), no shell         |
+    |                                                   |
+    +-- Step 2: Security Scans ────────────────────────+
+    |       Semgrep    (SAST, code patterns)            |
+    |       Bandit     (Python-specific vulns)          |
+    |       Trivy fs   (secrets, IaC misconfigs)        |
+    |       Trivy img  (CVEs in OS + deps)              |
+    |       SonarQube  (quality gate, optional)         |
+    |                                                   |
+    |       BLOCKED if any finding >= HIGH              |
+    |       Report written to security/reports/         |
+    |                                                   |
+    +-- Step 3: Registry Push ─────────────────────────+
+    |       local: k3d image import                     |
+    |       prod:  docker push -> AWS ECR               |
+    |                                                   |
+    +-- Step 4: Helm Deploy ───────────────────────────+
             helm upgrade --install --atomic
             local: k3d + values.yaml
             prod:  EKS + values-prod.yaml
@@ -53,23 +80,30 @@ guardops deploy
 
 ```
 ap-south-1 (Mumbai)
-+----------------------------------------------------------+
-|  VPC  10.0.0.0/16                                        |
-|                                                          |
-|  Public Subnets (ap-south-1a, ap-south-1b)              |
-|    NAT Gateways, Load Balancers                          |
-|                                                          |
-|  Private Subnets (ap-south-1a, ap-south-1b)             |
-|    EKS Managed Node Group (t3.medium)                    |
-|    +-- guardops-app Pod                                  |
-|         +-- /healthz endpoint                            |
-|         +-- port 8080                                    |
-|         +-- non-root user, readOnlyRootFilesystem        |
-|         +-- capabilities.drop ALL                        |
-|                                                          |
-|  ECR: guardops-app (scan-on-push, 10-image lifecycle)    |
-|  S3:  guardops-reports-* (scan reports, versioned)       |
-+----------------------------------------------------------+
++------------------------------------------------------------------+
+|  VPC  10.0.0.0/16                                                |
+|                                                                  |
+|  Public Subnets (ap-south-1a, ap-south-1b)                      |
+|    NAT Gateways, Load Balancers                                  |
+|                                                                  |
+|  Private Subnets (ap-south-1a, ap-south-1b)                     |
+|    EKS Managed Node Group (t3.large)                             |
+|    +-- guardops-app Pods (x2)                                    |
+|    |    +-- /healthz, /ready, /metrics endpoints                 |
+|    |    +-- port 8080, non-root UID 10001                        |
+|    |    +-- capabilities.drop ALL                                |
+|    |                                                             |
+|    +-- monitoring namespace                                      |
+|         +-- Prometheus  (kube-prometheus-stack)                  |
+|         +-- Grafana     (pre-loaded dashboards)                  |
+|         +-- Alertmanager                                         |
+|         +-- kube-state-metrics, node-exporter                    |
+|                                                                  |
+|  ECR: guardops-app (scan-on-push, 10-image lifecycle)            |
+|  S3:  guardops-reports-* (scan reports, versioned)               |
+|  S3:  guardops-tfstate-* (Terraform remote state)               |
+|  DynamoDB: guardops-tf-lock (state locking)                      |
++------------------------------------------------------------------+
 ```
 
 ### CI/CD Pipeline (GitHub Actions)
@@ -83,11 +117,12 @@ Job 1: build-test
     |
     v
 Job 2: sast
-    Semgrep + Bandit -- gates on HIGH+
+    Semgrep + Bandit — gates on HIGH+
     |
     v
 Job 3: container-scan
-    Docker build + Trivy -- gates on fixable HIGH/CRITICAL
+    Docker build (multi-stage) + Trivy (cached DB)
+    Gates on fixable HIGH/CRITICAL CVEs
     ECR push (if AWS creds present)
     |
     v
@@ -130,7 +165,7 @@ guardops deploy
 # Build, scan, push to ECR, deploy to EKS
 guardops deploy --env prod
 
-# Skip sonarqube if not configured
+# Skip SonarQube if not configured
 guardops deploy --env prod --skip-sonarqube
 
 # View running pod health
@@ -147,6 +182,69 @@ guardops rollback
 
 # Roll back to a specific revision
 guardops rollback --revision 2
+```
+
+---
+
+## Observability
+
+Phase 5 adds a full metrics pipeline from application code to Grafana dashboard.
+
+### Application metrics (`/metrics`)
+
+The test app exposes three custom Prometheus metrics:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `guardops_requests_total` | Counter | Total HTTP requests, labelled by `path` and `status_code` |
+| `guardops_request_duration_ms` | Gauge | Last request duration per path in milliseconds |
+| `guardops_app_info` | Info | Static build metadata (`environment`, `version`) |
+
+### Viewing metrics
+
+```bash
+# Port-forward Grafana
+kubectl port-forward svc/kube-prometheus-stack-grafana 3000:80 -n monitoring
+# Open http://localhost:3000  (admin / guardops-grafana-2024)
+
+# Port-forward Prometheus
+kubectl port-forward svc/kube-prometheus-stack-prometheus 9090:9090 -n monitoring
+# Open http://localhost:9090/targets — look for serviceMonitor/default/test-app-guardops-app
+```
+
+### Useful PromQL queries
+
+```promql
+# Request rate per path (last 5 minutes)
+rate(guardops_requests_total[5m])
+
+# Last request latency per path
+guardops_request_duration_ms
+
+# App build metadata
+guardops_app_info
+
+# Pod memory usage
+container_memory_usage_bytes{namespace="default"}
+
+# CPU usage rate
+rate(container_cpu_usage_seconds_total{namespace="default"}[5m])
+```
+
+### Setup (morning start)
+
+```powershell
+# After terraform apply and kubectl configure:
+.\scripts\setup-observability.ps1
+```
+
+### Shutdown (nightly — prevents orphaned EBS volumes)
+
+```powershell
+helm uninstall kube-prometheus-stack -n monitoring
+kubectl delete pvc --all -n monitoring
+Start-Sleep -Seconds 30
+.\scripts\night-shutdown.ps1
 ```
 
 ---
@@ -176,7 +274,7 @@ security:
 
 ## Security Pipeline
 
-Four tools run in sequence. All findings are normalized to a unified severity scale before gating.
+Four tools run in sequence. All findings are normalised to a unified severity scale before gating.
 
 | Tool | Type | What it catches | Severity mapping |
 |------|------|-----------------|-----------------|
@@ -254,35 +352,50 @@ helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
   --set controller.admissionWebhooks.enabled=false \
   --wait --timeout 5m
 
-# Add to /etc/hosts (or Windows hosts file)
+# Add to hosts file (Windows: C:\Windows\System32\drivers\etc\hosts)
 # 127.0.0.1  test-app.local
 
 # Access app after deploy
 kubectl port-forward -n ingress-nginx svc/ingress-nginx-controller 8080:80
 ```
 
-**Windows note:** After recreating a k3d cluster, patch the kubeconfig: replace `host.docker.internal` with `127.0.0.1`.
+**Windows note:** After recreating a k3d cluster, patch the kubeconfig — replace `host.docker.internal` with `127.0.0.1`.
 
 ---
 
 ## AWS Infrastructure
 
-Infrastructure is fully defined in `infra/terraform/`. Apply with `terraform apply` from that directory.
+Infrastructure is fully defined in `infra/terraform/`. Remote state is stored in S3 with DynamoDB locking — no local `.tfstate` files.
 
 ```
 infra/terraform/
+    bootstrap/      S3 bucket + DynamoDB table for remote state (run once)
     modules/
         ecr/        ECR repository, scan-on-push, 10-image lifecycle policy
         s3/         Reports bucket, versioning, AES256, Glacier after 90 days
         vpc/        Public + private subnets, NAT, IGW, route tables
-        iam/        EKS cluster role, node role, CI user (least-privilege)
-        eks/        Managed node group, CoreDNS, kube-proxy, VPC CNI
+        iam/        EKS cluster role, node role, CI user (least-privilege),
+                    AmazonEBSCSIDriverPolicy for Prometheus PVC provisioning
+        eks/        Managed node group (t3.large), CoreDNS, kube-proxy,
+                    VPC CNI, EBS CSI driver, launch template (IMDSv2 hop limit=2)
 ```
 
-ECR and S3 are free-tier safe and can remain provisioned permanently. VPC, IAM, and EKS cost roughly $4.50/day and should be destroyed when not in use:
+**Always-on (near-zero cost):** ECR, S3, DynamoDB, remote state bucket.
 
-```bash
-terraform destroy   # stops all charges
+**Destroy nightly (~$5.28/day when running):** EKS control plane ($0.10/hr), t3.large node ($0.075/hr), NAT gateways ($0.045/hr each).
+
+```powershell
+# Bootstrap remote state (one-time only)
+cd infra/terraform/bootstrap
+terraform init && terraform apply -auto-approve
+
+# Migrate existing state to S3
+cd infra/terraform
+terraform init -migrate-state
+
+# Daily operations
+terraform apply -auto-approve    # morning
+terraform destroy -auto-approve  # evening
 ```
 
 ---
@@ -295,7 +408,7 @@ The Helm chart at `k8s/helm/guardops-app/` deploys with security defaults applie
 securityContext:
   runAsNonRoot: true
   runAsUser: 1000
-  readOnlyRootFilesystem: true
+  readOnlyRootFilesystem: false
   capabilities:
     drop: ["ALL"]
 ```
@@ -303,8 +416,32 @@ securityContext:
 Production values (`values-prod.yaml`) add:
 - `replicaCount: 2`
 - `imagePullPolicy: Always`
-- HPA enabled (CPU-based autoscaling)
+- HPA enabled (CPU-based autoscaling, 2-10 replicas)
 - Ingress with TLS configuration
+- `monitoring.enabled: true` — creates ServiceMonitor for Prometheus scraping
+
+---
+
+## Dockerfile (Multi-stage)
+
+Phase 4.5 replaced the single-stage build with a two-stage build:
+
+```dockerfile
+# Stage 1: builder — installs deps into an isolated venv
+FROM python:3.11 AS builder
+RUN python -m venv /build/venv
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+
+# Stage 2: runtime — copies only the venv, no pip/wheel/setuptools
+FROM python:3.11-slim AS runtime
+COPY --from=builder /build/venv /venv
+COPY app.py .
+RUN useradd --uid 10001 --no-create-home --shell /sbin/nologin appuser
+USER 10001
+```
+
+Result: pip, wheel, and all build tools are absent from the final image, significantly reducing the CVE surface area reported by Trivy.
 
 ---
 
@@ -334,7 +471,34 @@ mypy cli/ backend/ --ignore-missing-imports
 | test_config.py | 12 | YAML read/write, defaults, config existence checks |
 | test_security.py | 68 | All 4 runners: skip, timeout, malformed JSON, severity mapping, report output |
 | test_deployer.py | 37 | kubectl apply, k3d import, rollout wait, rollback, service URL |
-| test_deployer_phase3.py | 35 | Helm deploy, rollback, release name sanitization, chart path resolution |
+| test_deployer_phase3.py | 35 | Helm deploy, rollback, release name sanitisation, chart path resolution |
+
+---
+
+## Known Operational Notes
+
+**State lock after interrupted apply:**
+```powershell
+# If terraform hangs on "Acquiring state lock":
+aws dynamodb scan --table-name guardops-tf-lock --region ap-south-1 --query "Items[0].Info.S" --output text
+# Copy the ID field from the output, then:
+terraform force-unlock -force <ID>
+```
+
+**EBS CSI driver / IMDS hop limit:**
+EKS AL2023 nodes default to IMDSv2 hop limit of 1, which blocks pod-level AWS SDK calls. The launch template in `modules/eks/main.tf` sets `http_put_response_hop_limit = 2` permanently. If the EBS CSI controller shows `CrashLoopBackOff` after a node replacement, verify the launch template is attached to the node group.
+
+**Prometheus not scraping test-app:**
+Always use `helm install` (not `helm upgrade --install`) for kube-prometheus-stack on a fresh cluster. Upgrading over a previous release can silently preserve stale `serviceMonitorNamespaceSelector` settings that restrict scraping to the `monitoring` namespace only.
+
+**Nightly shutdown order matters:**
+```powershell
+helm uninstall kube-prometheus-stack -n monitoring  # triggers EBS volume deletion
+kubectl delete pvc --all -n monitoring              # ensures PVCs are removed
+Start-Sleep -Seconds 30                             # wait for ec2:DeleteVolume
+cd infra/terraform && terraform destroy -auto-approve
+```
+Skipping the Helm uninstall leaves orphaned EBS volumes that persist after `terraform destroy` and continue billing silently.
 
 ---
 
@@ -345,9 +509,14 @@ mypy cli/ backend/ --ignore-missing-imports
 | v0.1.0 | Published | CLI scaffold, k3d local deploy via kubectl |
 | v0.2.0 | Published | Security scanning pipeline, 154 tests, GitHub Actions CI |
 | v0.3.0 | Published | Helm deploy, rollback command, EKS Terraform modules |
-| v0.4.0 | Current | Full AWS pipeline: ECR push, EKS deploy, S3 report upload, cost-optimized infra |
-| v0.5.0 | Planned | Prometheus + Grafana observability, /metrics endpoint |
-| v1.0.0 | Planned | Multi-environment (staging/prod), blue-green deploy strategy, OIDC auth |
+| v0.4.0 | Published | Full AWS pipeline: ECR push, EKS deploy, S3 report upload |
+| v0.4.5 | Published | Remote TF state, multi-stage Docker, subprocess hardening, Trivy CI cache |
+| v0.5.0 | Current | Prometheus + Grafana, `/metrics` endpoint, ServiceMonitor, EBS CSI, custom metrics |
+| v0.6.0 | Planned | GitHub OIDC (no IAM user), DAST via OWASP ZAP with auto-rollback |
+| v0.7.0 | Planned | Falco runtime security, eBPF, alert routing to Loki |
+| v0.8.0 | Planned | Self-healing: Alertmanager webhook → NetworkPolicy quarantine, node drain |
+| v0.9.0 | Planned | Multi-environment: staging + prod namespaces, blue-green deploy |
+| v1.0.0 | Planned | Real domain, TLS, ArgoCD GitOps, full runbooks |
 
 ---
 
