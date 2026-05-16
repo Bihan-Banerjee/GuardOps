@@ -27,9 +27,11 @@ helm repo update
 Write-Host "      Done." -ForegroundColor Green
 
 # ── Step 2: Install kube-prometheus-stack ─────────────────────────────────────
+# Using `helm install` (not upgrade --install) to ensure our values are always
+# applied fresh. Upgrade over an existing release can silently preserve old values.
 Write-Host ""
 Write-Host "[2/6] Installing kube-prometheus-stack (this takes 3-5 minutes)..." -ForegroundColor Yellow
-helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack `
+helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack `
     --namespace $MONITORING_NS `
     --create-namespace `
     --values k8s/observability/prometheus-values.yaml `
@@ -52,30 +54,35 @@ Write-Host "      All monitoring pods ready." -ForegroundColor Green
 
 # ── Step 4: Deploy/upgrade guardops-app with monitoring enabled ───────────────
 Write-Host ""
-Write-Host "[4/6] Upgrading guardops-app with monitoring.enabled=true..." -ForegroundColor Yellow
+Write-Host "[4/6] Upgrading test-app with monitoring.enabled=true..." -ForegroundColor Yellow
 
 # Get the current image from the running deployment
-$CURRENT_IMAGE = kubectl get deployment guardops-app -n $APP_NS `
+# Release name is "test-app", deployment name is "test-app"
+$CURRENT_IMAGE = kubectl get deployment test-app -n $APP_NS `
     -o jsonpath='{.spec.template.spec.containers[0].image}' 2>$null
 
 if (-not $CURRENT_IMAGE) {
-    Write-Host "      WARNING: guardops-app not yet deployed. Run 'guardops deploy --env prod' first," -ForegroundColor Red
+    Write-Host "      WARNING: test-app not yet deployed. Run 'guardops deploy --env prod' first," -ForegroundColor Red
     Write-Host "      then re-run this script from step 4 onwards." -ForegroundColor Red
 } else {
-    # Split image into repo and tag
+    # Split image into repo and tag on the LAST colon (handles ECR URLs with ports)
     $LAST_COLON = $CURRENT_IMAGE.LastIndexOf(":")
     $IMAGE_REPO = $CURRENT_IMAGE.Substring(0, $LAST_COLON)
     $IMAGE_TAG  = $CURRENT_IMAGE.Substring($LAST_COLON + 1)
 
-    helm upgrade guardops-app $CHART_PATH `
+    Write-Host "      Current image: $IMAGE_REPO:$IMAGE_TAG" -ForegroundColor DarkGray
+
+    helm upgrade test-app $CHART_PATH `
         --namespace $APP_NS `
         --set image.repository="$IMAGE_REPO" `
         --set image.tag="$IMAGE_TAG" `
         --set image.pullPolicy=Always `
+        --set replicaCount=2 `
+        --set monitoring.enabled=true `
         -f "$CHART_PATH/values-prod.yaml" `
         --wait --timeout 3m
 
-    Write-Host "      guardops-app upgraded with ServiceMonitor enabled." -ForegroundColor Green
+    Write-Host "      test-app upgraded with ServiceMonitor enabled." -ForegroundColor Green
 }
 
 # ── Step 5: Verify ServiceMonitor is picked up ────────────────────────────────
@@ -83,9 +90,9 @@ Write-Host ""
 Write-Host "[5/6] Checking ServiceMonitor..." -ForegroundColor Yellow
 kubectl get servicemonitor -n $APP_NS
 Write-Host ""
-Write-Host "      If 'guardops-app' appears above, Prometheus will scrape it within 30s." -ForegroundColor Green
+Write-Host "      If 'test-app-guardops-app' appears above, Prometheus will scrape it within 30s." -ForegroundColor Green
 
-# ── Step 6: Port-forward Grafana ──────────────────────────────────────────────
+# ── Step 6: Access instructions ───────────────────────────────────────────────
 Write-Host ""
 Write-Host "[6/6] Access instructions:" -ForegroundColor Yellow
 Write-Host ""
@@ -104,9 +111,6 @@ Write-Host "    rate(guardops_requests_total[5m])          # request rate per pa
 Write-Host "    guardops_request_duration_ms               # last request latency"
 Write-Host "    guardops_app_info                          # build metadata"
 Write-Host "    container_memory_usage_bytes{namespace='default'}  # pod memory"
-Write-Host ""
-Write-Host "  Import the GuardOps dashboard:" -ForegroundColor Cyan
-Write-Host "    Grafana → Dashboards → Import → Upload k8s/observability/grafana-dashboard.json"
 Write-Host ""
 Write-Host "=== Setup complete! ===" -ForegroundColor Green
 
