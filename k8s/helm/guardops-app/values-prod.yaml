@@ -53,7 +53,7 @@ config:
 #   - ServiceMonitor CRD pointing Prometheus at /metrics
 # Grafana dashboard: import k8s/observability/grafana-dashboard.json
 monitoring:
-  enabled: true
+  enabled: false
   port: 8080
   path: /metrics
   scrapeInterval: 30s
