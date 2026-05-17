@@ -1,7 +1,7 @@
 """
 cli/commands/deploy_cmd.py
 
-`guardops deploy` command — Phase 3/4A version.
+`guardops deploy` command — Phase 6 version.
 
 Flow:
   Step 1: Docker build
@@ -9,16 +9,22 @@ Flow:
           -> blocks if HIGH+ findings unless --skip-scan
   Step 3: ECR push (only when --env prod)
   Step 4: Helm deploy (both local and prod)
+  Step 5: DAST — OWASP ZAP baseline scan against the live deployed app
+          -> auto-rollback if CRITICAL findings detected (Phase 6)
+
+Phase 6 changes vs Phase 4/5:
+  - Step counters updated to N / 5
+  - Step 5 added: ZAP DAST post-deploy, with auto-rollback on CRITICAL
+  - New CLI flag: --skip-dast
+  - ZAP reads target URL from deploy_result.service_url (auto) or
+    security.zap_target_url in .guardops.yaml (manual override)
+  - ZAP only runs when security.tools.owasp_zap: true in .guardops.yaml
+    AND --env prod (DAST against local k3d is skipped — no stable URL)
 
 Environments:
   --env local  Uses k3d cluster, imagePullPolicy=Never, values.yaml
   --env prod   Pushes to ECR, uses EKS cluster, imagePullPolicy=Always,
                values.yaml + values-prod.yaml
-
-Phase 4A note:
-  --env prod will build, scan, and push to ECR successfully.
-  The Helm deploy step (Step 4) will fail with "cluster not reachable"
-  until Phase 4B (EKS) is provisioned. This is expected and non-destructive.
 """
 
 import sys
@@ -30,13 +36,19 @@ from cli.utils.output import (
 )
 from cli.utils.config import load_config
 from backend.pipeline.builder import build_image
-from backend.pipeline.deployer import deploy_helm, import_image_to_k3d
+from backend.pipeline.deployer import (
+    deploy_helm,
+    import_image_to_k3d,
+    rollback_helm,
+    _sanitize_release_name,
+)
 from backend.pipeline.pusher import push_to_ecr
 from backend.security.semgrep_runner import run_semgrep
 from backend.security.bandit_runner import run_bandit
 from backend.security.trivy_runner import run_trivy_image, run_trivy_filesystem
 from backend.security.sonarqube_runner import run_sonarqube
 from backend.security.report_generator import generate_report
+from backend.security.zap_runner import run_zap_baseline, ZapScanResult
 
 
 @click.command("deploy")
@@ -51,20 +63,23 @@ from backend.security.report_generator import generate_report
               help="Skip SonarQube scan")
 @click.option("--skip-trivy", is_flag=True,
               help="Skip Trivy scans")
+@click.option("--skip-dast", is_flag=True,
+              help="Skip OWASP ZAP DAST scan (Phase 6). Never use in prod.")
 @click.option("--fail-on", default="HIGH",
               type=click.Choice(["LOW", "MEDIUM", "HIGH", "CRITICAL"],
                                 case_sensitive=False),
-              help="Minimum severity that blocks deployment")
+              help="Minimum severity that blocks deployment (pre-deploy scans)")
 @click.option("--replicas", default=None, type=int,
               help="Number of pod replicas (overrides values.yaml)")
 def deploy_command(env, skip_scan, skip_build, skip_sonarqube,
-                   skip_trivy, fail_on, replicas):
+                   skip_trivy, skip_dast, fail_on, replicas):
     """
     Build, scan, and deploy the application.
 
     Local (default):  guardops deploy
     Production:       guardops deploy --env prod
     Skip scans:       guardops deploy --skip-scan   (dev only)
+    Skip DAST:        guardops deploy --skip-dast   (dev only)
     """
     start_time = time.time()
     config = load_config()
@@ -87,7 +102,7 @@ def deploy_command(env, skip_scan, skip_build, skip_sonarqube,
     )
 
     # ── Step 1: Docker Build ─────────────────────────────────────────────────
-    console.rule("[bold]Step 1 / 4 — Docker Build[/bold]")
+    console.rule("[bold]Step 1 / 5 — Docker Build[/bold]")
 
     if skip_build:
         warn("Skipping Docker build (--skip-build)")
@@ -110,7 +125,7 @@ def deploy_command(env, skip_scan, skip_build, skip_sonarqube,
         success(f"Built [cyan]{full_image_ref}[/cyan] in {build_result.build_duration_seconds:.1f}s")
 
     # ── Step 2: Security Scans ───────────────────────────────────────────────
-    console.rule("[bold]Step 2 / 4 — Security Scans[/bold]")
+    console.rule("[bold]Step 2 / 5 — Security Scans (SAST)[/bold]")
 
     if skip_scan:
         warn("Skipping security scans (--skip-scan). NEVER use this in production.")
@@ -147,7 +162,6 @@ def deploy_command(env, skip_scan, skip_build, skip_sonarqube,
             fail_on_severity=fail_on,
         )
 
-        # Print scan summary table
         _print_scan_summary(scan_results, report)
 
         if report.blocked:
@@ -159,26 +173,20 @@ def deploy_command(env, skip_scan, skip_build, skip_sonarqube,
         success("Security scans passed — no blocking findings")
 
     # ── Step 3: Registry Push ────────────────────────────────────────────────
-    console.rule("[bold]Step 3 / 4 — Registry Push[/bold]")
+    console.rule("[bold]Step 3 / 5 — Registry Push[/bold]")
 
     if env == "prod":
         info("Pushing image to ECR...")
-
-        # push_to_ecr accepts the full "name:tag" ref and splits it internally.
-        # It reads docker.registry from config for the ECR base URL.
         push_result = push_to_ecr(full_image_ref, config)
 
         if not push_result.success:
             error(f"ECR push failed: {push_result.error_message}")
             sys.exit(1)
 
-        # FIX: use push_result.image_uri (not .remote_image_ref — that field doesn't exist)
-        # image_uri is the full ECR URI: 123456.dkr.ecr.ap-south-1.amazonaws.com/test-app:abc1234
         full_image_ref = push_result.image_uri
         success(f"Pushed to ECR: [cyan]{full_image_ref}[/cyan]")
 
     else:
-        # Local: import into k3d instead of pushing to a registry
         info("Importing image into k3d cluster...")
         cluster = config.get("kubernetes", {}).get("cluster_name", "guardops-local")
         if not import_image_to_k3d(full_image_ref, cluster_name=cluster):
@@ -187,12 +195,8 @@ def deploy_command(env, skip_scan, skip_build, skip_sonarqube,
         success("Image imported into k3d")
 
     # ── Step 4: Helm Deploy ──────────────────────────────────────────────────
-    console.rule("[bold]Step 4 / 4 — Helm Deploy[/bold]")
+    console.rule("[bold]Step 4 / 5 — Helm Deploy[/bold]")
 
-    # PHASE 4A NOTE: When --env prod, this step will fail because there is no
-    # EKS cluster yet. The error message from Helm will say the cluster is
-    # unreachable. This is expected. Steps 1-3 (build, scan, ECR push) all
-    # completed successfully. Phase 4B (EKS provisioning) unlocks this step.
     deploy_result = deploy_helm(
         project_name=project_name,
         image_ref=full_image_ref,
@@ -201,25 +205,33 @@ def deploy_command(env, skip_scan, skip_build, skip_sonarqube,
         env=env,
     )
 
+    if not deploy_result.success:
+        error(f"Deployment failed: {deploy_result.error_message}")
+        console.print("[dim]Helm automatically rolled back to the previous release.[/dim]")
+        sys.exit(1)
+
+    # ── Step 5: DAST — OWASP ZAP ─────────────────────────────────────────────
+    console.rule("[bold]Step 5 / 5 — DAST (OWASP ZAP)[/bold]")
+
+    zap_result = _run_dast_step(
+        config=config,
+        env=env,
+        skip_dast=skip_dast,
+        service_url=deploy_result.service_url,
+        project_name=project_name,
+        namespace=namespace,
+    )
+
+    # ── Final result panel ───────────────────────────────────────────────────
     duration = time.time() - start_time
 
-    if not deploy_result.success:
-        if env == "prod":
-            # Provide a clearer message in Phase 4A rather than a generic failure
-            error(f"Helm deploy failed: {deploy_result.error_message}")
-            console.print(
-                "  [dim yellow]If this says 'cluster unreachable' or 'no kubeconfig',[/dim yellow]"
-            )
-            console.print(
-                "  [dim yellow]that is expected in Phase 4A. EKS is not yet provisioned.[/dim yellow]"
-            )
-            console.print(
-                "  [dim yellow]Your image was successfully pushed to ECR (Step 3 passed).[/dim yellow]"
-            )
-        else:
-            error(f"Deployment failed: {deploy_result.error_message}")
-            console.print("[dim]Helm automatically rolled back to the previous release.[/dim]")
-        sys.exit(1)
+    dast_status = "skipped"
+    if not zap_result.skipped:
+        counts = zap_result.severity_counts
+        dast_status = (
+            f"CRITICAL:{counts['CRITICAL']} HIGH:{counts['HIGH']} "
+            f"MEDIUM:{counts['MEDIUM']} LOW:{counts['LOW']}"
+        )
 
     result_panel(
         title="Deployment complete",
@@ -231,6 +243,7 @@ def deploy_command(env, skip_scan, skip_build, skip_sonarqube,
             f"Replicas:      {replica_count}",
             f"Helm release:  {deploy_result.helm_release}",
             f"Helm revision: {deploy_result.helm_revision}",
+            f"DAST:          {dast_status}",
             f"Duration:      {duration:.1f}s",
             f"Service URL:   {deploy_result.service_url}",
         ],
@@ -243,8 +256,141 @@ def deploy_command(env, skip_scan, skip_build, skip_sonarqube,
         )
 
 
+# ── DAST Step ─────────────────────────────────────────────────────────────────
+
+def _run_dast_step(
+    config: dict,
+    env: str,
+    skip_dast: bool,
+    service_url: str,
+    project_name: str,
+    namespace: str,
+) -> ZapScanResult:
+    """
+    Run the ZAP DAST step and handle the result, including auto-rollback.
+
+    Returns the ZapScanResult so the caller can include counts in the final panel.
+    Calls sys.exit(1) if CRITICAL findings are found and rollback is triggered.
+    """
+    security_cfg = config.get("security", {})
+    zap_enabled = security_cfg.get("tools", {}).get("owasp_zap", False)
+
+    # ── Skip paths ───────────────────────────────────────────────────────────
+
+    if skip_dast:
+        warn("Skipping DAST (--skip-dast). NEVER use this in production.")
+        result = ZapScanResult(skipped=True, skip_reason="--skip-dast flag")
+        return result
+
+    if not zap_enabled:
+        warn(
+            "DAST skipped — set [cyan]security.tools.owasp_zap: true[/cyan] "
+            "in .guardops.yaml to enable."
+        )
+        result = ZapScanResult(
+            skipped=True,
+            skip_reason="security.tools.owasp_zap is false in config",
+        )
+        return result
+
+    if env != "prod":
+        warn(
+            "DAST skipped for local environment — ZAP needs a stable HTTP URL. "
+            "DAST runs automatically on [cyan]--env prod[/cyan]."
+        )
+        result = ZapScanResult(
+            skipped=True,
+            skip_reason="DAST only runs in prod environment",
+        )
+        return result
+
+    # ── Determine target URL ─────────────────────────────────────────────────
+    # Priority: explicit config override > service URL from deploy result
+    target_url = (
+        security_cfg.get("zap_target_url", "").strip()
+        or service_url
+    )
+
+    if not target_url:
+        warn(
+            "DAST skipped — could not determine target URL. "
+            "Set [cyan]security.zap_target_url[/cyan] in .guardops.yaml."
+        )
+        result = ZapScanResult(
+            skipped=True,
+            skip_reason="No target URL available for DAST scan",
+        )
+        return result
+
+    info(f"Running OWASP ZAP baseline scan against [cyan]{target_url}[/cyan]")
+    info("This runs passively — no attack payloads sent. Timeout: 5 min.")
+
+    report_dir = security_cfg.get("report_dir", "security/reports")
+    zap_result = run_zap_baseline(
+        target_url=target_url,
+        config=config,
+        output_dir=report_dir,
+    )
+
+    # ── Handle scan failure ──────────────────────────────────────────────────
+    if not zap_result.success and not zap_result.skipped:
+        warn(f"ZAP scan failed: {zap_result.error_message}")
+        warn(
+            "The application is deployed but DAST could not complete. "
+            "Investigate manually before marking this release production-safe."
+        )
+        # Don't exit — deploy succeeded, scan infrastructure failed.
+        # Operator must investigate. This mirrors how Trivy behaves on DB fetch failure.
+        return zap_result
+
+    # ── Print DAST summary ───────────────────────────────────────────────────
+    if not zap_result.skipped:
+        _print_dast_summary(zap_result)
+
+    # ── Auto-rollback on CRITICAL ────────────────────────────────────────────
+    if zap_result.blocked:
+        counts = zap_result.severity_counts
+        error(
+            f"DAST found [bold red]{counts['CRITICAL']} CRITICAL[/bold red] findings "
+            f"on the live application — triggering automatic rollback."
+        )
+        console.print(
+            f"  [dim]ZAP report: {zap_result.html_report_path}[/dim]"
+        )
+
+        info("Rolling back Helm release...")
+        release_name = _sanitize_release_name(project_name)
+        rollback_result = rollback_helm(
+            release_name=release_name,
+            namespace=namespace,
+            revision=0,   # 0 = previous revision
+        )
+
+        if rollback_result.success:
+            success(
+                f"Rolled back to revision [cyan]{rollback_result.rolled_back_to}[/cyan]. "
+                "The previous stable version is now serving traffic."
+            )
+        else:
+            error(
+                f"Rollback also failed: {rollback_result.error_message}. "
+                "Manual intervention required — check `helm history` and `kubectl get pods`."
+            )
+
+        console.print("\n  [bold red]DAST gate FAILED[/bold red] — "
+                      "review the ZAP report and fix findings before re-deploying.")
+        sys.exit(1)
+
+    if not zap_result.skipped and zap_result.success:
+        success("DAST passed — no CRITICAL findings detected on live application")
+
+    return zap_result
+
+
+# ── Print Helpers ─────────────────────────────────────────────────────────────
+
 def _print_scan_summary(scan_results, report):
-    """Prints a Rich table summarising all scan tool results."""
+    """Prints a Rich table summarising all SAST scan tool results."""
     counts = report.severity_counts
     info(
         f"Scan complete — "
@@ -253,3 +399,36 @@ def _print_scan_summary(scan_results, report):
         f"Medium: {counts['MEDIUM']}  "
         f"Low: {counts['LOW']}"
     )
+
+
+def _print_dast_summary(zap_result: ZapScanResult) -> None:
+    """Prints a concise DAST findings table to the terminal."""
+    counts = zap_result.severity_counts
+    info(
+        f"DAST complete in {zap_result.scan_duration_seconds:.0f}s — "
+        f"Critical: {counts['CRITICAL']}  "
+        f"High: {counts['HIGH']}  "
+        f"Medium: {counts['MEDIUM']}  "
+        f"Low: {counts['LOW']}"
+    )
+
+    # Show top findings (CRITICAL + HIGH only) inline so the operator doesn't
+    # have to open the report for the most important items
+    blocking = [
+        f for f in zap_result.findings
+        if f.severity in ("CRITICAL", "HIGH")
+    ]
+    if blocking:
+        console.print()
+        console.print("  [bold]Top DAST findings:[/bold]")
+        for finding in blocking[:5]:   # cap at 5 to avoid wall of text
+            sev_color = "red" if finding.severity == "CRITICAL" else "yellow"
+            console.print(
+                f"  [{sev_color}]{finding.severity:<8}[/{sev_color}] "
+                f"{finding.alert} "
+                f"[dim]({finding.instance_count} instance{'s' if finding.instance_count != 1 else ''})[/dim]"
+            )
+        if len(blocking) > 5:
+            console.print(f"  [dim]... and {len(blocking) - 5} more. See full report.[/dim]")
+        console.print(f"  [dim]Full report: {zap_result.html_report_path}[/dim]")
+        console.print()

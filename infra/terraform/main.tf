@@ -1,6 +1,11 @@
 # infra/terraform/main.tf
 #
-# GuardOps — Root Terraform Configuration — Phase 4.5
+# GuardOps — Root Terraform Configuration — Phase 6
+#
+# Changes from Phase 4.5:
+#   - Added iam_oidc module: GitHub OIDC provider + CI role (no more static IAM keys)
+#   - Added github_repo variable (required input — set in terraform.tfvars)
+#   - Added github_actions_role_arn output (copy value → AWS_ROLE_ARN GitHub secret)
 #
 # Changes from Phase 4B:
 #   - S3 remote backend enabled (run bootstrap/ first, then terraform init -migrate-state)
@@ -92,6 +97,32 @@ module "iam" {
   environment    = var.environment
   aws_region     = var.aws_region
   aws_account_id = var.aws_account_id
+}
+
+# ── Phase 6: GitHub OIDC (replaces CI IAM user) ───────────────────────────────
+#
+# After `terraform apply`:
+#   1. Get the role ARN:  terraform output github_actions_role_arn
+#   2. Add it as a GitHub secret:
+#        gh secret set AWS_ROLE_ARN --body "<arn>"
+#   3. Delete the old IAM secrets from GitHub:
+#        gh secret delete AWS_ACCESS_KEY_ID
+#        gh secret delete AWS_SECRET_ACCESS_KEY
+#   4. (Optional) Delete the CI IAM user from the IAM console or via iam module cleanup.
+
+module "iam_oidc" {
+  source = "./modules/iam_oidc"
+
+  project_name   = var.project_name
+  environment    = var.environment
+  aws_region     = var.aws_region
+  aws_account_id = var.aws_account_id
+  github_repo    = var.github_repo
+}
+
+output "github_actions_role_arn" {
+  description = "Copy this value → GitHub secret AWS_ROLE_ARN"
+  value       = module.iam_oidc.github_actions_role_arn
 }
 
 module "eks" {

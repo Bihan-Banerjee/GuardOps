@@ -1,13 +1,13 @@
 # .github/workflows/ci.yaml
 #
-# GuardOps CI/CD Pipeline — Phase 4A
+# GuardOps CI/CD Pipeline — Phase 6
 #
 # Jobs:
 #   1. build-test      — lint, type-check, unit tests, coverage
 #   2. sast            — Semgrep + Bandit source code scanning
 #   3. container-scan  — Docker build + Trivy image scan + ECR push
-#   4. deploy          — Helm upgrade to EKS (PHASE 4B — skipped until EKS exists)
-#   5. upload-reports  — Push scan reports to S3 (always runs if AWS creds exist)
+#   4. deploy          — Helm upgrade to EKS
+#   5. upload-reports  — Push scan reports to S3 (always runs if AWS role exists)
 #
 # Security gates:
 #   Job 2 blocks on HIGH+ SAST findings
@@ -15,23 +15,24 @@
 #   Job 4 only runs if jobs 1-3 all pass AND branch is main AND EKS exists
 #   Job 5 always runs so reports are saved even when pipeline fails
 #
-# Phase 4A behaviour:
-#   Jobs 1, 2, 3, 5 all run and pass.
-#   Job 4 (EKS deploy) is skipped — guarded by HAS_EKS_CLUSTER secret which
-#   you set to "true" only after provisioning EKS in Phase 4B.
+# Phase 6 change — GitHub OIDC replaces static IAM user credentials:
+#   AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are REMOVED.
+#   configure-aws-credentials now uses role-to-assume with a short-lived token.
+#   Each job that calls AWS declares:  permissions: id-token: write
 #
-# Required GitHub Secrets (Phase 4A):
-#   AWS_ACCESS_KEY_ID       — from IAM user CSV
-#   AWS_SECRET_ACCESS_KEY   — from IAM user CSV
+# Required GitHub Secrets:
+#   AWS_ROLE_ARN            — from `terraform output github_actions_role_arn`
 #   AWS_ACCOUNT_ID          — your 12-digit account ID
 #   GUARDOPS_S3_BUCKET      — bucket name from `terraform output s3_reports_bucket_name`
-#
-# Additional secrets for Phase 4B (EKS):
 #   HAS_EKS_CLUSTER         — set to "true" when EKS is provisioned
 #   SEMGREP_APP_TOKEN       — optional, for Semgrep cloud dashboard
 #   SONAR_TOKEN             — optional, for SonarQube
 #   SONAR_HOST_URL          — optional, for SonarQube
 #   PYPI_API_TOKEN          — optional, for publishing to PyPI
+#
+# Secrets you can DELETE after applying Phase 6:
+#   AWS_ACCESS_KEY_ID
+#   AWS_SECRET_ACCESS_KEY
 
 name: GuardOps CI/CD
 
@@ -252,6 +253,12 @@ jobs:
     runs-on: ubuntu-latest
     needs: sast
 
+    # Phase 6: id-token: write is required for GitHub OIDC token generation.
+    # Without this, configure-aws-credentials cannot request the JWT.
+    permissions:
+      id-token: write   # request OIDC JWT
+      contents: read    # checkout
+
     outputs:
       image-tag: ${{ steps.meta.outputs.tag }}
 
@@ -348,20 +355,20 @@ jobs:
           print("OK: no fixable HIGH/CRITICAL CVEs")
           EOF
 
-      - name: Configure AWS credentials
-        env:
-          HAS_AWS: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
-        if: ${{ env.HAS_AWS == 'true' }}
+      # ── Phase 6: OIDC auth — no static keys ───────────────────────────────
+      # AWS_ROLE_ARN is set from `terraform output github_actions_role_arn`.
+      # GitHub generates a short-lived JWT; this action exchanges it for
+      # temporary STS credentials (valid ~1 hour). Nothing is stored.
+      - name: Configure AWS credentials (OIDC)
+        if: ${{ secrets.AWS_ROLE_ARN != '' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+          role-session-name: guardops-container-scan-${{ github.run_id }}
 
       - name: Login to ECR
-        env:
-          HAS_AWS: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
-        if: ${{ env.HAS_AWS == 'true' }}
+        if: ${{ secrets.AWS_ROLE_ARN != '' }}
         run: |
           aws ecr get-login-password --region ${{ env.AWS_REGION }} \
             | docker login \
@@ -370,9 +377,7 @@ jobs:
                 ${{ env.ECR_REGISTRY }}
 
       - name: Create ECR repository if it doesn't exist
-        env:
-          HAS_AWS: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
-        if: ${{ env.HAS_AWS == 'true' }}
+        if: ${{ secrets.AWS_ROLE_ARN != '' }}
         run: |
           aws ecr describe-repositories \
             --repository-names ${{ env.IMAGE_NAME }} \
@@ -384,9 +389,7 @@ jobs:
               --region ${{ env.AWS_REGION }}
 
       - name: Tag and push to ECR
-        env:
-          HAS_AWS: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
-        if: ${{ env.HAS_AWS == 'true' }}
+        if: ${{ secrets.AWS_ROLE_ARN != '' }}
         run: |
           FULL_REF="${{ steps.meta.outputs.full_ref }}"
 
@@ -402,6 +405,7 @@ jobs:
 
           echo "Successfully pushed: ${FULL_REF}"
           echo "Also tagged latest: ${LATEST_REF}"
+      # ── End Phase 6 OIDC block ────────────────────────────────────────────
 
       - name: Upload container scan report
         if: always()
@@ -427,8 +431,12 @@ jobs:
     runs-on: ubuntu-latest
     needs: container-scan
 
+    # Phase 6: OIDC requires id-token: write
+    permissions:
+      id-token: write
+      contents: read
+
     # Triple guard: main branch only + push event only + EKS cluster exists
-    # HAS_EKS_CLUSTER is NOT set in Phase 4A, so this job never runs.
     if: |
       github.ref == 'refs/heads/main' &&
       github.event_name == 'push' &&
@@ -439,12 +447,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+          role-session-name: guardops-deploy-${{ github.run_id }}
 
       - name: Configure kubectl for EKS
         run: |
@@ -500,15 +508,178 @@ jobs:
           echo "Helm history:"
           helm history guardops-app --namespace ${{ env.K8S_NAMESPACE }}
 
+      # ── Phase 6: OWASP ZAP DAST ──────────────────────────────────────────
+      # Runs AFTER the rollout is confirmed healthy. Uses kubectl port-forward
+      # to expose the service locally so ZAP can reach it without needing a
+      # public LB URL (which may take time to provision).
+      #
+      # Scan mode: baseline (passive) — no attack payloads, safe for prod.
+      # Gate: CRITICAL findings (ZAP High → CRITICAL in our scale) → rollback.
+      # HIGH/MEDIUM/LOW findings are reported but do not block.
+      #
+      # To disable: remove the HAS_ZAP_ENABLED secret or set it to anything
+      # other than "true". The step is a no-op without it.
+
+      - name: Port-forward app for ZAP
+        if: ${{ secrets.HAS_ZAP_ENABLED == 'true' }}
+        run: |
+          # Forward the deployed service to localhost:8090.
+          # Port 8090 avoids clashing with anything already on 8080.
+          kubectl port-forward \
+            svc/${{ env.IMAGE_NAME }} \
+            8090:8080 \
+            -n ${{ env.K8S_NAMESPACE }} &
+          echo "PORT_FORWARD_PID=$!" >> $GITHUB_ENV
+
+          # Give the tunnel 8 seconds to stabilise before ZAP starts spidering
+          sleep 8
+
+          # Smoke-test: confirm the app is actually responding before handing
+          # the URL to ZAP. A non-200 here means the pod isn't healthy yet.
+          curl --silent --fail --retry 3 --retry-delay 3 \
+            http://localhost:8090/healthz \
+            && echo "Health check passed — proceeding to ZAP scan" \
+            || (echo "::warning::Health check failed — ZAP may produce unreliable results" && true)
+
+      - name: Run OWASP ZAP baseline scan
+        if: ${{ secrets.HAS_ZAP_ENABLED == 'true' }}
+        run: |
+          mkdir -p security/reports
+
+          # owasp/zap2docker-stable flags:
+          #   -t   target URL
+          #   -J   JSON report path (relative to /zap/wrk mount)
+          #   -r   HTML report path (relative to /zap/wrk mount)
+          #   -I   ignore (don't fail) on WARN-level findings — we gate ourselves
+          #   -l WARN   include WARN+ alerts, suppress INFO noise
+          #
+          # Exit codes: 0=no alerts, 1=warn alerts found, 2=ZAP internal error.
+          # We use `|| true` so the step never fails here — gating is in the
+          # next step where we can produce a structured error message.
+
+          docker run --rm \
+            --network host \
+            -v "${{ github.workspace }}/security/reports:/zap/wrk:rw" \
+            owasp/zap2docker-stable \
+            zap-baseline.py \
+            -t http://localhost:8090 \
+            -J zap-report.json \
+            -r zap-report.html \
+            -I \
+            -l WARN \
+          || true
+
+      - name: Kill port-forward
+        if: ${{ secrets.HAS_ZAP_ENABLED == 'true' && always() }}
+        run: kill ${{ env.PORT_FORWARD_PID }} 2>/dev/null || true
+
+      - name: Upload ZAP report artifact
+        if: ${{ secrets.HAS_ZAP_ENABLED == 'true' && always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-dast-report
+          path: security/reports/zap-report.*
+          if-no-files-found: warn
+
+      - name: Gate on DAST severity + auto-rollback on CRITICAL
+        if: ${{ secrets.HAS_ZAP_ENABLED == 'true' }}
+        # Language: plain Python inline — no extra deps, runs on ubuntu-latest
+        run: |
+          python3 - << 'PYEOF'
+          import json
+          import sys
+          from pathlib import Path
+
+          RISK_MAP = {3: "CRITICAL", 2: "HIGH", 1: "MEDIUM", 0: "LOW"}
+          FAIL_ON = "CRITICAL"   # auto-rollback threshold — mirrors zap_fail_on in config
+
+          report_path = Path("security/reports/zap-report.json")
+
+          if not report_path.exists():
+              print("::error::ZAP JSON report not found. The scan may have failed to start.")
+              print("::error::Check that Docker is available and the target URL was reachable.")
+              sys.exit(1)
+
+          try:
+              data = json.loads(report_path.read_text())
+          except json.JSONDecodeError as exc:
+              print(f"::error::Could not parse ZAP report: {exc}")
+              sys.exit(1)
+
+          counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+          top_findings = []
+
+          for site in data.get("site", []):
+              for alert in site.get("alerts", []):
+                  sev = RISK_MAP.get(int(alert.get("riskcode", 0)), "LOW")
+                  counts[sev] += 1
+                  if sev in ("CRITICAL", "HIGH"):
+                      top_findings.append(f"  {sev}: {alert.get('alert', 'Unknown')}")
+
+          summary = (
+              f"DAST results — "
+              f"CRITICAL: {counts['CRITICAL']}  "
+              f"HIGH: {counts['HIGH']}  "
+              f"MEDIUM: {counts['MEDIUM']}  "
+              f"LOW: {counts['LOW']}"
+          )
+          print(summary)
+
+          if top_findings:
+              print("Top findings (CRITICAL + HIGH):")
+              for f in top_findings[:10]:
+                  print(f)
+
+          if counts[FAIL_ON] > 0:
+              print(f"\n::error::ZAP DAST found {counts[FAIL_ON]} {FAIL_ON} findings on the live application.")
+              print("::error::Triggering Helm rollback — see next step.")
+              # Write a flag file that the rollback step reads
+              Path("/tmp/zap_critical_found").write_text(str(counts[FAIL_ON]))
+              sys.exit(1)
+
+          print("DAST gate passed — no CRITICAL findings.")
+          PYEOF
+        id: zap-gate
+        continue-on-error: true   # allow rollback step to always run after this
+
+      - name: Auto-rollback on CRITICAL DAST findings
+        # Only runs if the gate step detected CRITICAL findings
+        if: steps.zap-gate.outcome == 'failure' && secrets.HAS_ZAP_ENABLED == 'true'
+        run: |
+          echo "Rolling back Helm release due to CRITICAL DAST findings..."
+
+          # Roll back to the previous revision (0 = previous in helm rollback)
+          helm rollback guardops-app 0 \
+            --namespace ${{ env.K8S_NAMESPACE }} \
+            --wait \
+            --timeout 3m
+
+          echo "Rollback complete. Helm history after rollback:"
+          helm history guardops-app --namespace ${{ env.K8S_NAMESPACE }}
+
+          echo "Pod status after rollback:"
+          kubectl get pods -n ${{ env.K8S_NAMESPACE }}
+
+          # Fail the job so the pipeline is red — deploy + DAST together are the gate
+          echo "::error::Deployment rolled back due to CRITICAL DAST findings."
+          echo "::error::Review the ZAP report in the zap-dast-report artifact and fix before re-deploying."
+          exit 1
+      # ── End Phase 6 DAST block ─────────────────────────────────────────────
+
   # ── Job 5: Upload Reports to S3 ──────────────────────────────────────────────
   upload-reports:
     name: Upload Reports to S3
     runs-on: ubuntu-latest
     needs: [sast, container-scan]
 
+    # Phase 6: OIDC requires id-token: write
+    permissions:
+      id-token: write
+      contents: read
+
     # Always run so reports are saved even when earlier jobs fail.
-    # But skip if no AWS credentials — nothing to upload to.
-    if: always() && secrets.AWS_ACCESS_KEY_ID != ''
+    # Guard changed from AWS_ACCESS_KEY_ID check → AWS_ROLE_ARN check
+    if: always() && secrets.AWS_ROLE_ARN != ''
 
     steps:
       - uses: actions/checkout@v4
@@ -519,11 +690,12 @@ jobs:
           path: all-reports/
         continue-on-error: true   # don't fail if earlier jobs produced no artifacts
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: guardops-upload-reports-${{ github.run_id }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Upload reports to S3
