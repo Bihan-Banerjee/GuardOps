@@ -48,7 +48,7 @@ resource "aws_iam_openid_connect_provider" "github" {
 
 resource "aws_iam_role" "github_actions" {
   name        = "${var.project_name}-github-actions-role"
-  description = "Assumed by GitHub Actions via OIDC — no static credentials"
+  description = "Assumed by GitHub Actions via OIDC - no static credentials"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
