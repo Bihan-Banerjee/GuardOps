@@ -449,7 +449,7 @@ jobs:
     if: |
       github.ref == 'refs/heads/main' &&
       github.event_name == 'push' &&
-      secrets.HAS_EKS_CLUSTER == 'true'
+      vars.HAS_EKS_CLUSTER == 'true'
 
     environment: production
 
@@ -688,7 +688,7 @@ jobs:
 
     # Always run so reports are saved even when earlier jobs fail.
     # Guard changed from AWS_ACCESS_KEY_ID check → AWS_ROLE_ARN check
-    if: always() && secrets.AWS_ROLE_ARN != ''
+    if: always() && vars.AWS_ROLE_ARN != ''
 
     steps:
       - uses: actions/checkout@v4
