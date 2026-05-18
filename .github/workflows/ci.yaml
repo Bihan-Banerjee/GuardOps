@@ -259,6 +259,11 @@ jobs:
       id-token: write   # request OIDC JWT
       contents: read    # checkout
 
+    # secrets context is not available in step-level `if:` conditions.
+    # Hoist to a job-level env var; steps reference env.HAS_AWS instead.
+    env:
+      HAS_AWS: ${{ secrets.AWS_ROLE_ARN != '' }}
+
     outputs:
       image-tag: ${{ steps.meta.outputs.tag }}
 
@@ -360,7 +365,7 @@ jobs:
       # GitHub generates a short-lived JWT; this action exchanges it for
       # temporary STS credentials (valid ~1 hour). Nothing is stored.
       - name: Configure AWS credentials (OIDC)
-        if: ${{ secrets.AWS_ROLE_ARN != '' }}
+        if: ${{ env.HAS_AWS == 'true' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
@@ -368,7 +373,7 @@ jobs:
           role-session-name: guardops-container-scan-${{ github.run_id }}
 
       - name: Login to ECR
-        if: ${{ secrets.AWS_ROLE_ARN != '' }}
+        if: ${{ env.HAS_AWS == 'true' }}
         run: |
           aws ecr get-login-password --region ${{ env.AWS_REGION }} \
             | docker login \
@@ -377,7 +382,7 @@ jobs:
                 ${{ env.ECR_REGISTRY }}
 
       - name: Create ECR repository if it doesn't exist
-        if: ${{ secrets.AWS_ROLE_ARN != '' }}
+        if: ${{ env.HAS_AWS == 'true' }}
         run: |
           aws ecr describe-repositories \
             --repository-names ${{ env.IMAGE_NAME }} \
@@ -389,7 +394,7 @@ jobs:
               --region ${{ env.AWS_REGION }}
 
       - name: Tag and push to ECR
-        if: ${{ secrets.AWS_ROLE_ARN != '' }}
+        if: ${{ env.HAS_AWS == 'true' }}
         run: |
           FULL_REF="${{ steps.meta.outputs.full_ref }}"
 
