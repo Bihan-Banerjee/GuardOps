@@ -441,6 +441,10 @@ jobs:
       id-token: write
       contents: read
 
+    # Hoist the secret to an env var since step `if`s cannot process `secrets.` directly
+    env:
+      HAS_ZAP_ENABLED: ${{ secrets.HAS_ZAP_ENABLED }}
+
     # Triple guard: main branch only + push event only + EKS cluster exists
     if: |
       github.ref == 'refs/heads/main' &&
@@ -526,7 +530,7 @@ jobs:
       # other than "true". The step is a no-op without it.
 
       - name: Port-forward app for ZAP
-        if: ${{ secrets.HAS_ZAP_ENABLED == 'true' }}
+        if: ${{ env.HAS_ZAP_ENABLED == 'true' }}
         run: |
           # Forward the deployed service to localhost:8090.
           # Port 8090 avoids clashing with anything already on 8080.
@@ -547,7 +551,7 @@ jobs:
             || (echo "::warning::Health check failed — ZAP may produce unreliable results" && true)
 
       - name: Run OWASP ZAP baseline scan
-        if: ${{ secrets.HAS_ZAP_ENABLED == 'true' }}
+        if: ${{ env.HAS_ZAP_ENABLED == 'true' }}
         run: |
           mkdir -p security/reports
 
@@ -575,11 +579,11 @@ jobs:
           || true
 
       - name: Kill port-forward
-        if: ${{ secrets.HAS_ZAP_ENABLED == 'true' && always() }}
+        if: ${{ env.HAS_ZAP_ENABLED == 'true' && always() }}
         run: kill ${{ env.PORT_FORWARD_PID }} 2>/dev/null || true
 
       - name: Upload ZAP report artifact
-        if: ${{ secrets.HAS_ZAP_ENABLED == 'true' && always() }}
+        if: ${{ env.HAS_ZAP_ENABLED == 'true' && always() }}
         uses: actions/upload-artifact@v4
         with:
           name: zap-dast-report
@@ -587,7 +591,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Gate on DAST severity + auto-rollback on CRITICAL
-        if: ${{ secrets.HAS_ZAP_ENABLED == 'true' }}
+        if: ${{ env.HAS_ZAP_ENABLED == 'true' }}
         # Language: plain Python inline — no extra deps, runs on ubuntu-latest
         run: |
           python3 - << 'PYEOF'
@@ -649,7 +653,7 @@ jobs:
 
       - name: Auto-rollback on CRITICAL DAST findings
         # Only runs if the gate step detected CRITICAL findings
-        if: steps.zap-gate.outcome == 'failure' && secrets.HAS_ZAP_ENABLED == 'true'
+        if: steps.zap-gate.outcome == 'failure' && env.HAS_ZAP_ENABLED == 'true'
         run: |
           echo "Rolling back Helm release due to CRITICAL DAST findings..."
 
@@ -701,7 +705,6 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: guardops-upload-reports-${{ github.run_id }}
-          aws-region: ${{ env.AWS_REGION }}
 
       - name: Upload reports to S3
         run: |
