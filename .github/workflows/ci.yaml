@@ -535,8 +535,8 @@ jobs:
           # Forward the deployed service to localhost:8090.
           # Port 8090 avoids clashing with anything already on 8080.
           kubectl port-forward \
-            svc/${{ env.IMAGE_NAME }} \
-            8090:8080 \
+            svc/${{ env.IMAGE_NAME }}-guardops-app \
+            8090:80 \
             -n ${{ env.K8S_NAMESPACE }} &
           echo "PORT_FORWARD_PID=$!" >> $GITHUB_ENV
 
@@ -569,7 +569,7 @@ jobs:
           docker run --rm \
             --network host \
             -v "${{ github.workspace }}/security/reports:/zap/wrk:rw" \
-            owasp/zap2docker-stable \
+            ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
             -t http://localhost:8090 \
             -J zap-report.json \

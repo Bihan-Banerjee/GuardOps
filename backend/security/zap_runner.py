@@ -195,9 +195,8 @@ def run_zap_baseline(
 
     cmd = [
         "docker", "run", "--rm",
-        "--network", "host",             # lets ZAP reach port-forwarded services
         "-v", f"{out_path.resolve()}:/zap/wrk:rw",
-        "owasp/zap2docker-stable",
+        "ghcr.io/zaproxy/zaproxy:stable",
         "zap-baseline.py",
         "-t", target_url,
         "-J", "zap-report.json",

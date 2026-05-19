@@ -58,8 +58,15 @@ Write-Host "[4/6] Upgrading test-app with monitoring.enabled=true..." -Foregroun
 
 # Get the current image from the running deployment
 # Release name is "test-app", deployment name is "test-app"
-$CURRENT_IMAGE = kubectl get deployment test-app -n $APP_NS `
-    -o jsonpath='{.spec.template.spec.containers[0].image}' 2>$null
+# Use try/catch because $ErrorActionPreference = "Stop" turns kubectl's
+# stderr (NotFound) into a terminating error before the assignment completes.
+$CURRENT_IMAGE = $null
+try {
+    $CURRENT_IMAGE = & kubectl get deployment test-app -n $APP_NS `
+        -o jsonpath='{.spec.template.spec.containers[0].image}' 2>$null
+} catch {
+    $CURRENT_IMAGE = $null
+}
 
 if (-not $CURRENT_IMAGE) {
     Write-Host "      WARNING: test-app not yet deployed. Run 'guardops deploy --env prod' first," -ForegroundColor Red
@@ -70,7 +77,7 @@ if (-not $CURRENT_IMAGE) {
     $IMAGE_REPO = $CURRENT_IMAGE.Substring(0, $LAST_COLON)
     $IMAGE_TAG  = $CURRENT_IMAGE.Substring($LAST_COLON + 1)
 
-    Write-Host "      Current image: $IMAGE_REPO:$IMAGE_TAG" -ForegroundColor DarkGray
+    Write-Host "      Current image: ${IMAGE_REPO}:${IMAGE_TAG}" -ForegroundColor DarkGray
 
     helm upgrade test-app $CHART_PATH `
         --namespace $APP_NS `
