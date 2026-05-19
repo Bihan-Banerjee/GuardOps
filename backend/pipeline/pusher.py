@@ -17,7 +17,7 @@ import base64
 import json
 import os
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 import boto3
