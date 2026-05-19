@@ -2,23 +2,47 @@ project:
   name: test-app
   description: ''
   cloud: local
+
 docker:
   dockerfile: Dockerfile
   context: .
   registry: local
   image_name: test-app
+
 kubernetes:
   namespace: default
   cluster_context: k3d-guardops-local
   deployment_name: test-app
+
 security:
-  fail_on_severity: HIGH
+  fail_on_severity: HIGH      # pre-deploy SAST gate (Semgrep, Bandit, Trivy)
+  report_dir: security/reports
+
   tools:
     semgrep: true
     bandit: true
     trivy: true
     sonarqube: false
-    owasp_zap: false
+    owasp_zap: false          # set to true in prod to enable Phase 6 DAST
+
+  # ── DAST (Phase 6) ──────────────────────────────────────────────────────
+  # owasp_zap must be true above for these to take effect.
+  #
+  # zap_target_url: explicit target for `guardops deploy` local runs.
+  #   Leave empty ("") to auto-detect from deploy_result.service_url (recommended
+  #   for prod — the deployer knows the URL after Helm finishes).
+  #
+  # zap_fail_on: severity that blocks the deploy and triggers auto-rollback.
+  #   CRITICAL = ZAP High findings (confirmed HTTP-level vulnerabilities).
+  #   Set to HIGH to also block on ZAP Medium findings (more aggressive).
+  #
+  # zap_timeout_seconds: max time to wait for ZAP scan to complete.
+  #   300s (5 min) is sufficient for most baseline scans. Increase for large apps.
+
+  zap_target_url: ""          # e.g. "http://my-app.example.com" for manual override
+  zap_fail_on: CRITICAL       # CRITICAL | HIGH | MEDIUM | LOW
+  zap_timeout_seconds: 300    # seconds before ZAP scan is forcibly killed
+
 monitoring:
   grafana_url: ''
   prometheus_url: ''

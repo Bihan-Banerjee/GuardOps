@@ -18,7 +18,7 @@ security:
     bandit: true
     trivy: true
     sonarqube: false
-    owasp_zap: false
+    owasp_zap: true
 monitoring:
   grafana_url: ''
   prometheus_url: ''

@@ -76,3 +76,12 @@ variable "enable_cloudwatch_logs" {
   type        = bool
   default     = false
 }
+
+variable "github_repo" {
+  description = <<-EOT
+    GitHub repository that is allowed to assume the CI role via OIDC.
+    Format: "owner/repo" — e.g. "Bihan-Banerjee/GuardOps"
+  EOT
+  type        = string
+  default     = "Bihan-Banerjee/GuardOps"
+}

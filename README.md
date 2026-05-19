@@ -13,11 +13,11 @@ GuardOps wraps a complete secure delivery pipeline behind a single command. Give
 guardops deploy --env prod
 ```
 
-That one command: builds a multi-stage Docker image, runs Semgrep + Bandit + Trivy + SonarQube, pushes to ECR, deploys to EKS via Helm with automatic rollback on failure, and exposes `/metrics` to a live Grafana dashboard.
+That one command: builds a multi-stage Docker image, runs Semgrep + Bandit + Trivy + SonarQube, pushes to ECR, deploys to EKS via Helm with automatic rollback on failure, runs OWASP ZAP DAST against the live application with auto-rollback on CRITICAL findings, and exposes `/metrics` to a live Grafana dashboard.
 
 ---
 
-## Current Status — v0.5.0
+## Current Status — v0.6.1
 
 | Phase | Version | Status | What was built |
 |-------|---------|--------|----------------|
@@ -25,8 +25,9 @@ That one command: builds a multi-stage Docker image, runs Semgrep + Bandit + Tri
 | 2 — Security Scanning + CI | v0.2.0 | ✅ Done | Semgrep, Bandit, Trivy, SonarQube, 154 tests, GitHub Actions |
 | 3 — Helm + EKS Infrastructure | v0.3.0 | ✅ Done | Helm deploy, rollback command, Terraform VPC/EKS/IAM/ECR/S3 |
 | 4 — Full AWS Pipeline | v0.4.0 | ✅ Done | ECR push, EKS deploy, S3 report upload, cost-optimised infra |
-| 4.5 — Reliability Hardening | v0.4.5 | ✅ Done | Remote Terraform state (S3+DynamoDB), multi-stage Docker build, subprocess timeout+encoding fixes, Trivy DB cache in CI |
+| 4.5 — Reliability Hardening | v0.4.1 | ✅ Done | Remote Terraform state (S3+DynamoDB), multi-stage Docker build, subprocess timeout+encoding fixes, Trivy DB cache in CI |
 | 5 — Observability | v0.5.0 | ✅ Done | Prometheus + Grafana via kube-prometheus-stack, `/metrics` endpoint, ServiceMonitor, EBS CSI driver, custom dashboards |
+| 6 — Security Hardening | v0.6.1 | ✅ Done | GitHub OIDC replaces IAM user (no more static keys), DAST via OWASP ZAP with post-deploy scan and auto-rollback on CRITICAL |
 
 ---
 
@@ -34,7 +35,6 @@ That one command: builds a multi-stage Docker image, runs Semgrep + Bandit + Tri
 
 | Phase | Target | What it adds |
 |-------|--------|-------------|
-| 6 — Security Hardening | v0.6.0 | GitHub OIDC replaces IAM user (no more static keys), DAST via OWASP ZAP with post-deploy scan and auto-rollback on CRITICAL |
 | 7 — Runtime Security | v0.7.0 | Falco with eBPF, custom rules (alert on shell spawn inside pod), alerts routed to Loki |
 | 8 — Self-Healing | v0.8.0 | Alertmanager webhook receiver, automatic NetworkPolicy quarantine on Falco alert, node drain on resource exhaustion |
 | 9 — Multi-Environment | v0.9.0 | Staging + prod namespaces, blue-green deploy strategy, `guardops switch --slot green` |
@@ -55,7 +55,7 @@ guardops deploy
     |       pip/wheel absent from final image           |
     |       Non-root user (UID 10001), no shell         |
     |                                                   |
-    +-- Step 2: Security Scans ────────────────────────+
+    +-- Step 2: Security Scans (SAST) ─────────────────+
     |       Semgrep    (SAST, code patterns)            |
     |       Bandit     (Python-specific vulns)          |
     |       Trivy fs   (secrets, IaC misconfigs)        |
@@ -70,10 +70,17 @@ guardops deploy
     |       prod:  docker push -> AWS ECR               |
     |                                                   |
     +-- Step 4: Helm Deploy ───────────────────────────+
-            helm upgrade --install --atomic
-            local: k3d + values.yaml
-            prod:  EKS + values-prod.yaml
-            Automatic rollback on timeout or error
+    |       helm upgrade --install --atomic             |
+    |       local: k3d + values.yaml                   |
+    |       prod:  EKS + values-prod.yaml              |
+    |       Automatic rollback on timeout or error      |
+    |                                                   |
+    +-- Step 5: DAST (Phase 6) ────────────────────────+
+            OWASP ZAP baseline scan (passive)
+            Target: live deployed application
+            BLOCKED + auto-rollback if CRITICAL found
+            Report written to security/reports/
+            Skipped for local env (no stable URL)
 ```
 
 ### Infrastructure (AWS, Terraform-managed)
@@ -103,6 +110,7 @@ ap-south-1 (Mumbai)
 |  S3:  guardops-reports-* (scan reports, versioned)               |
 |  S3:  guardops-tfstate-* (Terraform remote state)               |
 |  DynamoDB: guardops-tf-lock (state locking)                      |
+|  IAM: github-actions-role (OIDC, no static keys)                 |
 +------------------------------------------------------------------+
 ```
 
@@ -123,12 +131,14 @@ Job 2: sast
 Job 3: container-scan
     Docker build (multi-stage) + Trivy (cached DB)
     Gates on fixable HIGH/CRITICAL CVEs
-    ECR push (if AWS creds present)
+    ECR push via GitHub OIDC (no static IAM keys)
     |
     v
 Job 4: deploy              <-- active when HAS_EKS_CLUSTER=true
     helm upgrade --install --atomic --timeout 5m
     kubectl rollout status verify
+    OWASP ZAP DAST scan (passive baseline)  <-- Phase 6
+    Auto-rollback on CRITICAL DAST findings <-- Phase 6
     |
     v
 Job 5: upload-reports      <-- always runs
@@ -167,6 +177,9 @@ guardops deploy --env prod
 
 # Skip SonarQube if not configured
 guardops deploy --env prod --skip-sonarqube
+
+# Skip DAST scan (dev only)
+guardops deploy --env prod --skip-dast
 
 # View running pod health
 guardops status
@@ -249,6 +262,64 @@ Start-Sleep -Seconds 30
 
 ---
 
+## Security Pipeline
+
+Four pre-deploy tools run in sequence, followed by one post-deploy DAST scan. All findings are normalised to a unified severity scale before gating.
+
+| Tool | Phase | Type | What it catches | Severity mapping |
+|------|-------|------|-----------------|-----------------|
+| Semgrep | Pre-deploy | SAST | Code patterns, secrets, OWASP Top 10 | ERROR=HIGH, WARNING=MEDIUM, INFO=LOW |
+| Bandit | Pre-deploy | SAST | Python-specific vulnerabilities | Adjusted by confidence level |
+| Trivy (fs) | Pre-deploy | Secret/IaC | Hardcoded secrets, misconfigs | Direct |
+| Trivy (image) | Pre-deploy | SCA | CVEs in OS packages and Python deps | UNKNOWN mapped to LOW |
+| SonarQube | Pre-deploy | Quality gate | Security hotspots, code smells | BLOCKER=CRITICAL, CRITICAL=HIGH, MAJOR=MEDIUM |
+| OWASP ZAP | Post-deploy | DAST | Runtime HTTP vulns, missing headers, exposed endpoints | High=CRITICAL, Medium=HIGH, Low=MEDIUM, Info=LOW |
+
+**Bandit confidence adjustment:**
+
+| Severity | Confidence | Unified result |
+|----------|-----------|----------------|
+| HIGH | HIGH | CRITICAL |
+| HIGH | LOW | MEDIUM |
+| MEDIUM | HIGH | HIGH |
+| LOW | HIGH | MEDIUM |
+
+**ZAP severity is bumped one tier** vs SAST because a live runtime finding has a shorter exploit distance than a code pattern finding.
+
+Reports are written to `security/reports/latest.html` and `latest.json` after every scan. In CI, reports are uploaded to S3 automatically. ZAP reports are uploaded as the `zap-dast-report` artifact in every deploy run.
+
+---
+
+## GitHub OIDC (Phase 6)
+
+Static IAM user credentials (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) are fully replaced by GitHub OIDC. GitHub generates a short-lived JWT per workflow run; the CI runner exchanges it for temporary STS credentials valid for 1 hour. No long-lived secrets are stored anywhere.
+
+**Required GitHub secrets (Phase 6+):**
+
+| Secret | Value |
+|--------|-------|
+| `AWS_ROLE_ARN` | `terraform output github_actions_role_arn` |
+| `AWS_ACCOUNT_ID` | Your 12-digit AWS account ID |
+| `GUARDOPS_S3_BUCKET` | `terraform output s3_reports_bucket_name` |
+
+**Required GitHub variables:**
+
+| Variable | Value |
+|----------|-------|
+| `HAS_EKS_CLUSTER` | `true` (set after EKS is provisioned) |
+| `HAS_AWS_ROLE` | `true` (set after OIDC terraform apply) |
+
+**Optional secrets:**
+
+| Secret | Purpose |
+|--------|---------|
+| `HAS_ZAP_ENABLED` | Set to `true` to enable ZAP DAST in CI deploy job |
+| `SEMGREP_APP_TOKEN` | Semgrep cloud dashboard |
+| `SONAR_TOKEN` | SonarQube |
+| `SONAR_HOST_URL` | SonarQube |
+
+---
+
 ## Configuration
 
 GuardOps reads `.guardops.yaml` from your project directory.
@@ -266,34 +337,16 @@ docker:
   registry: ""            # ECR URL for prod (e.g. 123.dkr.ecr.ap-south-1.amazonaws.com)
 
 security:
-  fail_on_severity: HIGH  # LOW | MEDIUM | HIGH | CRITICAL
+  fail_on_severity: HIGH  # LOW | MEDIUM | HIGH | CRITICAL  (pre-deploy gate)
   skip_sonarqube: false
+
+  # DAST (Phase 6)
+  tools:
+    owasp_zap: false      # set true in prod to enable post-deploy ZAP scan
+  zap_target_url: ""      # leave empty to auto-detect from deploy result
+  zap_fail_on: CRITICAL   # severity that blocks and triggers auto-rollback
+  zap_timeout_seconds: 300
 ```
-
----
-
-## Security Pipeline
-
-Four tools run in sequence. All findings are normalised to a unified severity scale before gating.
-
-| Tool | Type | What it catches | Severity mapping |
-|------|------|-----------------|-----------------|
-| Semgrep | SAST | Code patterns, secrets, OWASP Top 10 | ERROR=HIGH, WARNING=MEDIUM, INFO=LOW |
-| Bandit | SAST | Python-specific vulnerabilities | Adjusted by confidence level |
-| Trivy (fs) | Secret/IaC | Hardcoded secrets, misconfigs | Direct |
-| Trivy (image) | SCA | CVEs in OS packages and Python deps | UNKNOWN mapped to LOW |
-| SonarQube | Quality gate | Security hotspots, code smells | BLOCKER=CRITICAL, CRITICAL=HIGH, MAJOR=MEDIUM |
-
-**Bandit confidence adjustment:**
-
-| Severity | Confidence | Unified result |
-|----------|-----------|----------------|
-| HIGH | HIGH | CRITICAL |
-| HIGH | LOW | MEDIUM |
-| MEDIUM | HIGH | HIGH |
-| LOW | HIGH | MEDIUM |
-
-Reports are written to `security/reports/latest.html` and `latest.json` after every scan. In CI, reports are uploaded to S3 automatically.
 
 ---
 
@@ -308,6 +361,7 @@ Options:
   --skip-build           Reuse existing image.
   --skip-sonarqube       Skip SonarQube scan.
   --skip-trivy           Skip Trivy scans.
+  --skip-dast            Skip OWASP ZAP DAST scan. Never use in prod.
   --fail-on [LOW|MEDIUM|HIGH|CRITICAL]
                          Severity threshold that blocks deploy. Default: HIGH
   --replicas INTEGER     Override replica count.
@@ -315,7 +369,7 @@ Options:
 
 ### `guardops scan`
 
-Runs the full security scan pipeline without deploying. Writes HTML and JSON reports to `security/reports/`.
+Runs the full pre-deploy security scan pipeline without deploying. Writes HTML and JSON reports to `security/reports/`.
 
 ### `guardops rollback`
 
@@ -374,13 +428,13 @@ infra/terraform/
         ecr/        ECR repository, scan-on-push, 10-image lifecycle policy
         s3/         Reports bucket, versioning, AES256, Glacier after 90 days
         vpc/        Public + private subnets, NAT, IGW, route tables
-        iam/        EKS cluster role, node role, CI user (least-privilege),
-                    AmazonEBSCSIDriverPolicy for Prometheus PVC provisioning
+        iam/        EKS cluster role, node role, AmazonEBSCSIDriverPolicy
+        iam_oidc/   GitHub OIDC provider + CI role (Phase 6, replaces IAM user)
         eks/        Managed node group (t3.large), CoreDNS, kube-proxy,
                     VPC CNI, EBS CSI driver, launch template (IMDSv2 hop limit=2)
 ```
 
-**Always-on (near-zero cost):** ECR, S3, DynamoDB, remote state bucket.
+**Always-on (near-zero cost):** ECR, S3, DynamoDB, remote state bucket, OIDC provider, IAM role.
 
 **Destroy nightly (~$5.28/day when running):** EKS control plane ($0.10/hr), t3.large node ($0.075/hr), NAT gateways ($0.045/hr each).
 
@@ -394,8 +448,8 @@ cd infra/terraform
 terraform init -migrate-state
 
 # Daily operations
-terraform apply -auto-approve    # morning
-terraform destroy -auto-approve  # evening
+terraform apply -auto-approve    # morning (~12 min)
+terraform destroy -auto-approve  # evening (~8 min)
 ```
 
 ---
@@ -491,6 +545,9 @@ EKS AL2023 nodes default to IMDSv2 hop limit of 1, which blocks pod-level AWS SD
 **Prometheus not scraping test-app:**
 Always use `helm install` (not `helm upgrade --install`) for kube-prometheus-stack on a fresh cluster. Upgrading over a previous release can silently preserve stale `serviceMonitorNamespaceSelector` settings that restrict scraping to the `monitoring` namespace only.
 
+**ZAP on Windows (local runs):**
+`--network host` is not supported on Docker Desktop for Windows. The ZAP runner automatically omits this flag locally. Use `host.docker.internal` as the target hostname instead of `localhost` when port-forwarding a service for local DAST testing.
+
 **Nightly shutdown order matters:**
 ```powershell
 helm uninstall kube-prometheus-stack -n monitoring  # triggers EBS volume deletion
@@ -510,9 +567,10 @@ Skipping the Helm uninstall leaves orphaned EBS volumes that persist after `terr
 | v0.2.0 | Published | Security scanning pipeline, 154 tests, GitHub Actions CI |
 | v0.3.0 | Published | Helm deploy, rollback command, EKS Terraform modules |
 | v0.4.0 | Published | Full AWS pipeline: ECR push, EKS deploy, S3 report upload |
-| v0.4.5 | Published | Remote TF state, multi-stage Docker, subprocess hardening, Trivy CI cache |
-| v0.5.0 | Current | Prometheus + Grafana, `/metrics` endpoint, ServiceMonitor, EBS CSI, custom metrics |
-| v0.6.0 | Planned | GitHub OIDC (no IAM user), DAST via OWASP ZAP with auto-rollback |
+| v0.4.1 | Published | Remote TF state, multi-stage Docker, subprocess hardening, Trivy CI cache |
+| v0.5.0 | Published | Prometheus + Grafana, `/metrics` endpoint, ServiceMonitor, EBS CSI, custom metrics |
+| v0.6.0 | Published | GitHub OIDC replaces static IAM keys, no more AWS_ACCESS_KEY_ID in CI |
+| v0.6.1 | Current | OWASP ZAP DAST post-deploy scan, auto-rollback on CRITICAL, ZAP image fix (ghcr.io), Windows Docker compat |
 | v0.7.0 | Planned | Falco runtime security, eBPF, alert routing to Loki |
 | v0.8.0 | Planned | Self-healing: Alertmanager webhook → NetworkPolicy quarantine, node drain |
 | v0.9.0 | Planned | Multi-environment: staging + prod namespaces, blue-green deploy |
