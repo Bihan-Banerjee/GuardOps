@@ -1,0 +1,180 @@
+# k8s/falco/custom-rules.yaml
+#
+# GuardOps Phase 7 — Custom Falco Runtime Security Rules
+#
+# These rules are loaded ALONGSIDE Falco's default ruleset (not instead of it).
+# They are mounted via the Falco Helm chart's customRules value:
+#
+#   customRules:
+#     guardops-rules.yaml: |
+#       <contents of this file>
+#
+# Falco condition DSL quick reference:
+#   spawned_process    macro: evt.type=execve and evt.dir=<
+#   container          macro: container.id != host and container.id != ""
+#   open_read          macro: evt.type in (open,openat) and evt.dir=< and fd.typechar='f' and (evt.arg.flags contains O_RDONLY or not evt.arg.flags contains O_WRONLY)
+#   open_write         macro: evt.type in (open,openat) and evt.dir=< and fd.typechar='f' and evt.arg.flags contains O_WRONLY
+#   outbound           macro: evt.type=connect and evt.dir=< and fd.typechar=4
+#   proc.name          name of the process (argv[0])
+#   proc.pname         name of the parent process
+#   proc.cmdline       full command line
+#   fd.name            file descriptor path (files) or IP:port (sockets)
+#   container.image.repository   image name without tag
+#   k8s.pod.name       pod name from cgroup labels
+#   k8s.ns.name        namespace from cgroup labels
+#
+# Priority levels (syslog-style, high→low):
+#   EMERGENCY > ALERT > CRITICAL > ERROR > WARNING > NOTICE > INFORMATIONAL > DEBUG
+#
+# GuardOps maps these to: CRITICAL | HIGH | MEDIUM | LOW (see falco_reader.py)
+#
+# Tuning guide:
+#   - Add process exceptions with:  and not proc.name in (my_allowed_proc)
+#   - Add image exceptions with:    and not container.image.repository in (trusted_images)
+#   - Reduce priority to WARNING/NOTICE for noisy rules until tuned
+#   - Test with: falco -r this-file.yaml --validate
+
+
+# ── Lists ─────────────────────────────────────────────────────────────────────
+# Lists referenced in rules. Extend these to reduce noise for your app.
+
+- list: guardops_shell_binaries
+  # Common interactive shells that have no place in a production container.
+  items: [sh, bash, dash, zsh, ksh, tcsh, fish, ash]
+
+- list: guardops_trusted_images
+  # Images that legitimately run shells or need special access.
+  # Falco itself uses a shell for health checks; monitoring agents may too.
+  items:
+    - falcosecurity/falco
+    - falco
+    - prom/prometheus
+    - grafana/grafana
+    - quay.io/prometheus/prometheus
+
+- list: guardops_sensitive_files
+  # Files that application code should never read directly.
+  items:
+    - /etc/shadow
+    - /etc/sudoers
+    - /root/.ssh/authorized_keys
+    - /root/.ssh/id_rsa
+    - /run/secrets/kubernetes.io/serviceaccount/token
+    - /var/run/secrets/kubernetes.io/serviceaccount/token
+
+- list: guardops_sensitive_dirs
+  # Directory prefixes — matched with startswith in conditions.
+  items: [/proc/1, /etc/cron, /etc/cron.d]
+
+- list: guardops_package_managers
+  # Package managers executed inside a running container signal post-start
+  # modification — a red flag for persistence or supply chain attacks.
+  items: [apt, apt-get, yum, dnf, pip, pip3, npm, yarn, apk, gem, cargo, go]
+
+- list: guardops_etc_write_allowed
+  # Processes legitimately writing to /etc (e.g. during image entrypoint init).
+  items: [dpkg, rpm, update-ca-certificates, adduser, useradd]
+
+- list: guardops_known_network_processes
+  # Processes that legitimately make outbound connections in your app.
+  # Extend this list after reviewing your initial alert output.
+  items: [python3, python, node, java, curl, wget, aws]
+
+
+# ── Rules ─────────────────────────────────────────────────────────────────────
+
+- rule: GuardOps Shell Spawned Inside Container
+  desc: >
+    A shell process was executed inside a running container pod. Shells
+    have no legitimate purpose in production GuardOps application pods and
+    are a common first step in container escape and lateral movement attacks.
+  condition: >
+    spawned_process
+    and container
+    and proc.name in (guardops_shell_binaries)
+    and not container.image.repository in (guardops_trusted_images)
+  output: >
+    Shell spawned inside container
+    (user=%user.name shell=%proc.name parent=%proc.pname
+    cmdline=%proc.cmdline pod=%k8s.pod.name ns=%k8s.ns.name
+    image=%container.image.repository)
+  priority: CRITICAL
+  tags: [shell_spawned, container, process, guardops, mitre_execution]
+
+- rule: GuardOps Package Manager Executed in Container
+  desc: >
+    A package manager (apt, pip, npm, etc.) ran inside a live container.
+    Legitimate production images install all dependencies at build time.
+    Runtime package installation may indicate persistence or supply chain
+    compromise.
+  condition: >
+    spawned_process
+    and container
+    and proc.name in (guardops_package_managers)
+  output: >
+    Package manager executed in container
+    (user=%user.name proc=%proc.name cmdline=%proc.cmdline
+    pod=%k8s.pod.name ns=%k8s.ns.name
+    image=%container.image.repository)
+  priority: ERROR
+  tags: [package_manager, supply_chain, guardops, mitre_persistence]
+
+- rule: GuardOps Sensitive File Read in Container
+  desc: >
+    A process inside a container read a sensitive credential or system file.
+    Application pods never need to read /etc/shadow, SSH keys, or the
+    Kubernetes service account token unless specifically designed to do so.
+    This may indicate credential harvesting or privilege escalation.
+  condition: >
+    open_read
+    and container
+    and fd.name in (guardops_sensitive_files)
+    and not proc.name in (guardops_known_network_processes)
+  output: >
+    Sensitive file read inside container
+    (user=%user.name proc=%proc.name file=%fd.name
+    pod=%k8s.pod.name ns=%k8s.ns.name
+    image=%container.image.repository)
+  priority: ERROR
+  tags: [file_access, credential_access, guardops, mitre_credential_access]
+
+- rule: GuardOps Write to /etc Inside Container
+  desc: >
+    A process wrote to /etc inside a running container. Application code
+    has no legitimate reason to modify system configuration at runtime.
+    This may indicate tampering with sudoers, cron, or hosts entries for
+    persistence or privilege escalation.
+  condition: >
+    open_write
+    and container
+    and fd.name startswith /etc
+    and not proc.name in (guardops_etc_write_allowed)
+    and not container.image.repository in (guardops_trusted_images)
+  output: >
+    Write to /etc inside container
+    (user=%user.name proc=%proc.name file=%fd.name
+    pod=%k8s.pod.name ns=%k8s.ns.name
+    image=%container.image.repository)
+  priority: WARNING
+  tags: [file_write, etc, persistence, guardops, mitre_persistence]
+
+- rule: GuardOps Container Running as Root
+  desc: >
+    A process is running as UID 0 (root) inside a container. The GuardOps
+    Helm chart sets runAsNonRoot=true and UID 10001. A root process indicates
+    a security context misconfiguration or a breakout attempt.
+    Note: this fires at container start, not on each process. Tune to
+    exclude init containers or debug containers by image name.
+  condition: >
+    spawned_process
+    and container
+    and user.uid = 0
+    and not container.image.repository in (guardops_trusted_images)
+    and not proc.name in (guardops_shell_binaries)
+  output: >
+    Process running as root inside container
+    (user=%user.name uid=%user.uid proc=%proc.name cmdline=%proc.cmdline
+    pod=%k8s.pod.name ns=%k8s.ns.name
+    image=%container.image.repository)
+  priority: WARNING
+  tags: [privilege_escalation, root, guardops, mitre_privilege_escalation]

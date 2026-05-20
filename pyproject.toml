@@ -1,14 +1,14 @@
 [project]
 name = "guardops"
-version = "0.6.1"
-description = "Autonomous DevSecOps CLI — build, scan, and deploy with security gates"
+version = "0.7.0"
+description = "Autonomous DevSecOps CLI — build, scan, deploy, and monitor runtime security"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [
     { name = "Bihan Banerjee", email = "bihanbanerjee26@gmail.com" }
 ]
-keywords = ["devsecops", "security", "kubernetes", "devops", "cli"]
+keywords = ["devsecops", "security", "kubernetes", "devops", "cli", "falco", "runtime-security"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
@@ -21,7 +21,7 @@ dependencies = [
     "click>=8.1.7",
     "rich>=13.7,<14.0",
     "pyyaml>=6.0.1",
-    "requests>=2.31",
+    "requests>=2.31",      # used by falco_reader.py (Loki HTTP) + existing code
     "boto3>=1.34",
     "python-dotenv>=1.0",
 ]

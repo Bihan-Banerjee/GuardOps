@@ -1,0 +1,100 @@
+# k8s/observability/loki-values.yaml
+#
+# GuardOps Phase 7 - Loki log aggregation (single-binary, no cache)
+#
+# Tuned for a single t3.large node already running kube-prometheus-stack.
+#
+# Key decisions vs loki chart 6.x defaults:
+#   chunksCache disabled  — default requests 9830Mi, kills the node
+#   resultsCache disabled — default requests 1229Mi, wastes RAM
+#   lokiCanary disabled   — not needed for dev/portfolio use
+#   gateway disabled      — not needed for single-node
+#   selfMonitoring off    — reduces complexity
+
+deploymentMode: SingleBinary
+
+singleBinary:
+  replicas: 1
+
+  resources:
+    requests:
+      memory: 128Mi
+      cpu: 50m
+    limits:
+      memory: 256Mi
+      cpu: 200m
+
+  persistence:
+    enabled: true
+    storageClassName: gp2
+    size: 10Gi
+    accessModes:
+      - ReadWriteOnce
+
+# Must explicitly zero these out in chart 6.x to avoid the
+# "replicas configured for both single binary and simple scalable" error
+read:
+  replicas: 0
+write:
+  replicas: 0
+backend:
+  replicas: 0
+
+# CRITICAL: disable memcached caches
+# chunksCache default = 9830Mi request — exceeds t3.large total RAM
+# resultsCache default = 1229Mi request — wastes remaining headroom
+chunksCache:
+  enabled: false
+
+resultsCache:
+  enabled: false
+
+# Disable canary — not needed for dev use
+lokiCanary:
+  enabled: false
+
+# Loki configuration
+loki:
+  auth_enabled: false
+
+  commonConfig:
+    replication_factor: 1
+
+  storage:
+    type: filesystem
+
+  schemaConfig:
+    configs:
+      - from: "2024-01-01"
+        store: tsdb
+        object_store: filesystem
+        schema: v13
+        index:
+          prefix: loki_index_
+          period: 24h
+
+  limits_config:
+    retention_period: 168h
+    ingestion_rate_mb: 4
+    ingestion_burst_size_mb: 8
+    max_query_series: 500
+    max_entries_limit_per_query: 5000
+
+service:
+  type: ClusterIP
+
+gateway:
+  enabled: false
+
+monitoring:
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: kube-prometheus-stack
+  selfMonitoring:
+    enabled: false
+    grafanaAgent:
+      installOperator: false
+
+test:
+  enabled: false

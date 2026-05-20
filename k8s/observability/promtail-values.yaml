@@ -1,0 +1,81 @@
+# k8s/observability/promtail-values.yaml
+#
+# GuardOps Phase 7 — Promtail DaemonSet configuration
+#
+# Promtail is a log shipping agent that runs as a DaemonSet (one pod per
+# node). It tails all pod logs from /var/log/pods/, applies labels from
+# Kubernetes metadata, and pushes to Loki.
+#
+# The critical label for `guardops runtime-status` is {app="falco"}.
+# Promtail derives this from the Falco pod's app.kubernetes.io/name label,
+# which the Falco Helm chart sets automatically. The relabeling rule below
+# promotes it to the {app} stream label so our LogQL selector works.
+#
+# Install (after Loki):
+#   helm upgrade --install promtail grafana/promtail \
+#     --namespace monitoring \
+#     --values k8s/observability/promtail-values.yaml \
+#     --timeout 5m \
+#     --wait
+
+# ── Loki push target ──────────────────────────────────────────────────────────
+config:
+  clients:
+    - url: http://loki:3100/loki/api/v1/push
+      # 'loki' resolves to the Loki ClusterIP service in the same namespace.
+      # If Loki is in a different namespace: http://loki.monitoring.svc.cluster.local:3100
+
+  # ── Scrape config ──────────────────────────────────────────────────────────
+  # Default: scrapes all pods in all namespaces from /var/log/pods/
+  # The extraRelabelConfigs below handle the Falco-specific label promotion.
+  snippets:
+    extraRelabelConfigs:
+      # Promote app.kubernetes.io/name → app label.
+      # This makes {app="falco"} work in LogQL without needing the full
+      # k8s label selector syntax every time.
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+        target_label: app
+        action: replace
+
+      # Also keep the raw pod label for backwards compatibility
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        target_label: app
+        action: replace
+        regex: (.+)    # only overwrite if the pod has an 'app' label
+
+    # Add Kubernetes metadata as stream labels.
+    # These appear in Grafana Explore as filterable dimensions.
+    pipelineStages:
+      - cri: {}       # parse CRI log format (timestamp, stream, log fields)
+      - json:
+          # If the log line is JSON (i.e., from Falco), parse and expose fields.
+          # Non-JSON lines pass through unchanged.
+          expressions:
+            priority: priority
+            rule:     rule
+        # Continue even if json parsing fails (non-Falco pods)
+      - labels:
+          priority:
+          rule:
+
+# ── Resources ─────────────────────────────────────────────────────────────────
+resources:
+  requests:
+    memory: 64Mi
+    cpu: 20m
+  limits:
+    memory: 128Mi
+    cpu: 100m
+
+# ── Tolerations ───────────────────────────────────────────────────────────────
+# Allows Promtail to run on tainted nodes (e.g. control plane nodes if any).
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+
+# ── Service monitor ───────────────────────────────────────────────────────────
+serviceMonitor:
+  enabled: true
+  labels:
+    release: kube-prometheus-stack
