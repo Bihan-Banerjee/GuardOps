@@ -4,12 +4,12 @@
 #
 # Tuned for a single t3.large node already running kube-prometheus-stack.
 #
-# Key decisions vs loki chart 6.x defaults:
-#   chunksCache disabled  — default requests 9830Mi, kills the node
-#   resultsCache disabled — default requests 1229Mi, wastes RAM
-#   lokiCanary disabled   — not needed for dev/portfolio use
-#   gateway disabled      — not needed for single-node
-#   selfMonitoring off    — reduces complexity
+# Loki chart 6.x quirks accounted for here:
+#   - singleBinary.persistence uses `storageClass` not `storageClassName`
+#   - chunksCache and resultsCache must be explicitly disabled
+#     (defaults request 9830Mi + 1229Mi — exceeds t3.large RAM)
+#   - read/write/backend must be zeroed out to avoid SingleBinary validation error
+#   - lokiCanary must be disabled (not needed for dev use)
 
 deploymentMode: SingleBinary
 
@@ -26,13 +26,12 @@ singleBinary:
 
   persistence:
     enabled: true
-    storageClassName: gp2
+    storageClass: gp2    # NOTE: chart 6.x uses storageClass, NOT storageClassName
     size: 10Gi
     accessModes:
       - ReadWriteOnce
 
-# Must explicitly zero these out in chart 6.x to avoid the
-# "replicas configured for both single binary and simple scalable" error
+# Zero out scalable components — required in chart 6.x when using SingleBinary
 read:
   replicas: 0
 write:
@@ -40,20 +39,16 @@ write:
 backend:
   replicas: 0
 
-# CRITICAL: disable memcached caches
-# chunksCache default = 9830Mi request — exceeds t3.large total RAM
-# resultsCache default = 1229Mi request — wastes remaining headroom
+# Disable memcached caches — default requests exceed t3.large RAM
 chunksCache:
   enabled: false
-
 resultsCache:
   enabled: false
 
-# Disable canary — not needed for dev use
+# Disable canary — not needed for dev/portfolio use
 lokiCanary:
   enabled: false
 
-# Loki configuration
 loki:
   auth_enabled: false
 

@@ -1,0 +1,74 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: falco-simulator
+  namespace: monitoring
+data:
+  simulate.py: |
+    import json, random, datetime
+
+    ALERTS = [
+      {
+        "rule": "GuardOps Shell Spawned Inside Container",
+        "priority": "Critical",
+        "output_fields": {
+          "proc.name": "sh",
+          "proc.cmdline": "sh -c id",
+          "k8s.pod.name": "test-app-guardops-app-7d9f6b-xk2pq",
+          "k8s.ns.name": "default",
+          "container.name": "test-app",
+          "user.name": "root"
+        }
+      },
+      {
+        "rule": "GuardOps Sensitive File Read in Container",
+        "priority": "Error",
+        "output_fields": {
+          "proc.name": "cat",
+          "fd.name": "/etc/shadow",
+          "k8s.pod.name": "test-app-guardops-app-7d9f6b-xk2pq",
+          "k8s.ns.name": "default",
+          "container.name": "test-app",
+          "user.name": "nobody"
+        }
+      },
+      {
+        "rule": "GuardOps Package Manager Executed in Container",
+        "priority": "Error",
+        "output_fields": {
+          "proc.name": "pip3",
+          "proc.cmdline": "pip3 install requests",
+          "k8s.pod.name": "test-app-guardops-app-7d9f6b-xk2pq",
+          "k8s.ns.name": "default",
+          "container.name": "test-app",
+          "user.name": "nobody"
+        }
+      },
+      {
+        "rule": "GuardOps Write to /etc Inside Container",
+        "priority": "Warning",
+        "output_fields": {
+          "proc.name": "python3",
+          "fd.name": "/etc/hosts",
+          "k8s.pod.name": "test-app-guardops-app-7d9f6b-xk2pq",
+          "k8s.ns.name": "default",
+          "container.name": "test-app",
+          "user.name": "nobody"
+        }
+      }
+    ]
+
+    alert = random.choice(ALERTS)
+    fields = alert["output_fields"]
+    event = {
+      "hostname": "ip-10-0-11-163",
+      "output": "{} ({})".format(
+        alert["rule"],
+        ", ".join("{}={}".format(k, v) for k, v in fields.items())
+      ),
+      "priority": alert["priority"],
+      "rule": alert["rule"],
+      "time": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000000000Z"),
+      "output_fields": fields
+    }
+    print(json.dumps(event), flush=True)

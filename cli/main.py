@@ -10,8 +10,8 @@ from cli.commands.deploy_cmd import deploy_command
 from cli.commands.status_cmd import status_command
 from cli.commands.logs_cmd import logs_command
 from cli.commands.scan_cmd import scan_command
-from cli.commands.rollback_cmd import rollback_command   # Phase 3
-
+from cli.commands.rollback_cmd import rollback_command   
+from cli.commands.runtime_cmd import runtime_status_command
 
 @click.group()
 @click.version_option(version=__version__, prog_name="guardops")
@@ -40,4 +40,5 @@ cli.add_command(deploy_command,   name="deploy")
 cli.add_command(status_command,   name="status")
 cli.add_command(logs_command,     name="logs")
 cli.add_command(scan_command,     name="scan")
-cli.add_command(rollback_command, name="rollback")   # Phase 3
+cli.add_command(rollback_command, name="rollback")   
+cli.add_command(runtime_status_command, name="runtime-status")

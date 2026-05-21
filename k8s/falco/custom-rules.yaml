@@ -62,9 +62,6 @@
     - /run/secrets/kubernetes.io/serviceaccount/token
     - /var/run/secrets/kubernetes.io/serviceaccount/token
 
-- list: guardops_sensitive_dirs
-  # Directory prefixes — matched with startswith in conditions.
-  items: [/proc/1, /etc/cron, /etc/cron.d]
 
 - list: guardops_package_managers
   # Package managers executed inside a running container signal post-start

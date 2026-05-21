@@ -120,7 +120,7 @@ $TempValuesFile = [System.IO.Path]::GetTempFileName() + ".yaml"
 
 $falcoHeader = @"
 driver:
-  kind: modern_ebpf
+  kind: ebpf
 
 falco:
   json_output: true
