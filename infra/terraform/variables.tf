@@ -72,6 +72,17 @@ variable "node_max_size" {
   default = 1
 }
 
+variable "enable_self_healing" {
+  description = "Phase 8: deploy the Alertmanager webhook handler."
+  type        = bool
+  default     = false
+}
+
+variable "webhook_image" {
+  description = "Full ECR image reference for the alertmanager webhook handler."
+  type        = string
+  default     = ""
+}
 variable "node_desired_size" {
   type    = number
   default = 1
