@@ -161,6 +161,6 @@ else {
     Write-Host "  EBS volumes    : NONE in-use (good)" -ForegroundColor Green
 }
 
-Write-Host "  Billing        : ~$0.00/hr until morning-start.ps1" -ForegroundColor Green
+Write-Host "  Billing        : ~`$0.00/hr until morning-start.ps1" -ForegroundColor Green
 Write-Host "======================================" -ForegroundColor Green
 Write-Host ""
