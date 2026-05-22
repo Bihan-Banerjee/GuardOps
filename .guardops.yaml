@@ -46,4 +46,30 @@ security:
 monitoring:
   grafana_url: ''
   prometheus_url: ''
-  loki_url: ''
+  loki_url: ''                # set after Phase 7 setup, e.g. 'http://localhost:3100'
+                              # get the in-cluster URL from: terraform output falco_loki_url
+                              # or run: .\scripts\setup-runtime-security.ps1
+
+# ── Runtime Security (Phase 7) ──────────────────────────────────────────────
+# Controls `guardops runtime-status` behaviour.
+#
+# enabled: master switch. When false, runtime-status exits with a setup hint
+#   instead of querying Loki. Set to true after Falco + Loki are deployed.
+#
+# falco_alert_window: default time window for `guardops runtime-status`.
+#   Passed as --since if not overridden on the CLI. 1h is a good starting
+#   point for post-deploy checks; use 24h for morning review.
+#
+# alert_fail_on: severity threshold for `--fail-on` in CI runtime gate jobs.
+#   CRITICAL = only alert on confirmed shell spawns / file reads (low noise).
+#   HIGH     = also gate on ERROR-priority Falco events (more defensive).
+#
+# namespaces_to_watch: if set, `guardops runtime-status` defaults to
+#   filtering these namespaces. Leave empty [] to query all namespaces.
+#   Equivalent to passing --namespace on the CLI each time.
+
+runtime_security:
+  enabled: false              # set true after .\scripts\setup-runtime-security.ps1
+  falco_alert_window: 1h      # default --since for runtime-status
+  alert_fail_on: CRITICAL     # default --fail-on for CI gate
+  namespaces_to_watch: []     # e.g. [default, production]

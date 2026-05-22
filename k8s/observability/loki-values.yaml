@@ -1,0 +1,95 @@
+# k8s/observability/loki-values.yaml
+#
+# GuardOps Phase 7 - Loki log aggregation (single-binary, no cache)
+#
+# Tuned for a single t3.large node already running kube-prometheus-stack.
+#
+# Loki chart 6.x quirks accounted for here:
+#   - singleBinary.persistence uses `storageClass` not `storageClassName`
+#   - chunksCache and resultsCache must be explicitly disabled
+#     (defaults request 9830Mi + 1229Mi — exceeds t3.large RAM)
+#   - read/write/backend must be zeroed out to avoid SingleBinary validation error
+#   - lokiCanary must be disabled (not needed for dev use)
+
+deploymentMode: SingleBinary
+
+singleBinary:
+  replicas: 1
+
+  resources:
+    requests:
+      memory: 128Mi
+      cpu: 50m
+    limits:
+      memory: 256Mi
+      cpu: 200m
+
+  persistence:
+    enabled: true
+    storageClass: gp2    # NOTE: chart 6.x uses storageClass, NOT storageClassName
+    size: 10Gi
+    accessModes:
+      - ReadWriteOnce
+
+# Zero out scalable components — required in chart 6.x when using SingleBinary
+read:
+  replicas: 0
+write:
+  replicas: 0
+backend:
+  replicas: 0
+
+# Disable memcached caches — default requests exceed t3.large RAM
+chunksCache:
+  enabled: false
+resultsCache:
+  enabled: false
+
+# Disable canary — not needed for dev/portfolio use
+lokiCanary:
+  enabled: false
+
+loki:
+  auth_enabled: false
+
+  commonConfig:
+    replication_factor: 1
+
+  storage:
+    type: filesystem
+
+  schemaConfig:
+    configs:
+      - from: "2024-01-01"
+        store: tsdb
+        object_store: filesystem
+        schema: v13
+        index:
+          prefix: loki_index_
+          period: 24h
+
+  limits_config:
+    retention_period: 168h
+    ingestion_rate_mb: 4
+    ingestion_burst_size_mb: 8
+    max_query_series: 500
+    max_entries_limit_per_query: 5000
+
+service:
+  type: ClusterIP
+
+gateway:
+  enabled: false
+
+monitoring:
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: kube-prometheus-stack
+  selfMonitoring:
+    enabled: false
+    grafanaAgent:
+      installOperator: false
+
+test:
+  enabled: false

@@ -1,4 +1,4 @@
-project:
+﻿project:
   name: test-app
   description: ''
   cloud: aws
@@ -22,4 +22,5 @@ security:
 monitoring:
   grafana_url: ''
   prometheus_url: ''
-  loki_url: ''
+  loki_url: 'http://localhost:3100'
+

@@ -10,6 +10,10 @@ comments, which hurts developer experience.
 The config file (.guardops.yaml) is the "memory" of a GuardOps project.
 It stores the project name, cloud settings, K8s namespace, etc.
 Every command reads this file to know how to behave.
+
+Phase 7 changes:
+  - Added runtime_security section to DEFAULT_CONFIG
+  - New keys: enabled, falco_alert_window, alert_fail_on, namespaces_to_watch
 """
 
 import sys
@@ -53,13 +57,26 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "bandit": True,
             "trivy": True,
             "sonarqube": False,       # Needs external server; disabled by default
-            "owasp_zap": False,       # Needs running app; used in phase 4
+            "owasp_zap": False,       # Phase 6 DAST; needs running app
         },
     },
     "monitoring": {
         "grafana_url": "",
         "prometheus_url": "",
-        "loki_url": "",
+        "loki_url": "",               # Phase 7: Loki URL for guardops runtime-status
+    },
+    # ── Phase 7: Runtime Security ─────────────────────────────────────────────
+    # Controls `guardops runtime-status` — queries Loki for Falco alerts.
+    # Set enabled: true after running scripts/setup-runtime-security.ps1
+    # and adding monitoring.loki_url to this file.
+    "runtime_security": {
+        "enabled": False,
+        # Default time window for `guardops runtime-status` (passed as --since)
+        "falco_alert_window": "1h",
+        # Severity threshold for CI gate jobs (--fail-on default)
+        "alert_fail_on": "CRITICAL",
+        # Namespace filter — empty list means query all namespaces
+        "namespaces_to_watch": [],
     },
 }
 

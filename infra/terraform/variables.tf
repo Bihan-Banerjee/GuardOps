@@ -19,6 +19,12 @@ variable "project_name" {
   default = "guardops"
 }
 
+variable "enable_runtime_security" {
+  description = "Install Falco + Loki + Promtail via Helm. Set false on first apply (EKS must exist first), then true once the cluster is running."
+  type        = bool
+  default     = false
+}
+
 variable "environment" {
   type    = string
   default = "prod"

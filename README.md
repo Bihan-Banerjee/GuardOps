@@ -1,13 +1,13 @@
 # GuardOps
 
-> Production-grade DevSecOps CLI. Build, scan, and deploy with security gates at every stage.
+> Production-grade DevSecOps CLI. Build, scan, deploy, and monitor runtime security with gates at every stage.
 
 [![PyPI version](https://img.shields.io/pypi/v/guardops.svg)](https://pypi.org/project/guardops/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/Bihan-Banerjee/GuardOps/actions/workflows/ci.yaml/badge.svg)](https://github.com/Bihan-Banerjee/GuardOps/actions)
 
-GuardOps wraps a complete secure delivery pipeline behind a single command. Given any application repo, it builds a Docker image, runs four security scanners in sequence, deploys to Kubernetes via Helm, and exposes live metrics to Prometheus — blocking the pipeline if HIGH or CRITICAL findings are detected.
+GuardOps wraps a complete secure delivery pipeline behind a single command. Given any application repo, it builds a Docker image, runs four security scanners in sequence, deploys to Kubernetes via Helm, runs a post-deploy DAST scan, exposes live metrics to Prometheus, and queries runtime security alerts from Loki — blocking the pipeline if HIGH or CRITICAL findings are detected at any stage.
 
 ```
 guardops deploy --env prod
@@ -15,9 +15,15 @@ guardops deploy --env prod
 
 That one command: builds a multi-stage Docker image, runs Semgrep + Bandit + Trivy + SonarQube, pushes to ECR, deploys to EKS via Helm with automatic rollback on failure, runs OWASP ZAP DAST against the live application with auto-rollback on CRITICAL findings, and exposes `/metrics` to a live Grafana dashboard.
 
+```
+guardops runtime-status
+```
+
+Queries Loki for Falco-format runtime security alerts (shell spawns, sensitive file reads, package manager execution, /etc writes) and renders a severity-sorted table. Use `--fail-on CRITICAL` as a post-deploy CI gate.
+
 ---
 
-## Current Status — v0.6.1
+## Current Status — v0.7.0
 
 | Phase | Version | Status | What was built |
 |-------|---------|--------|----------------|
@@ -28,6 +34,7 @@ That one command: builds a multi-stage Docker image, runs Semgrep + Bandit + Tri
 | 4.5 — Reliability Hardening | v0.4.1 | ✅ Done | Remote Terraform state (S3+DynamoDB), multi-stage Docker build, subprocess timeout+encoding fixes, Trivy DB cache in CI |
 | 5 — Observability | v0.5.0 | ✅ Done | Prometheus + Grafana via kube-prometheus-stack, `/metrics` endpoint, ServiceMonitor, EBS CSI driver, custom dashboards |
 | 6 — Security Hardening | v0.6.1 | ✅ Done | GitHub OIDC replaces IAM user (no more static keys), DAST via OWASP ZAP with post-deploy scan and auto-rollback on CRITICAL |
+| 7 — Runtime Security | v0.7.0 | ✅ Done | Loki + Promtail log pipeline, Falco-format alert ingestion, `guardops runtime-status`, CI runtime gate |
 
 ---
 
@@ -35,7 +42,6 @@ That one command: builds a multi-stage Docker image, runs Semgrep + Bandit + Tri
 
 | Phase | Target | What it adds |
 |-------|--------|-------------|
-| 7 — Runtime Security | v0.7.0 | Falco with eBPF, custom rules (alert on shell spawn inside pod), alerts routed to Loki |
 | 8 — Self-Healing | v0.8.0 | Alertmanager webhook receiver, automatic NetworkPolicy quarantine on Falco alert, node drain on resource exhaustion |
 | 9 — Multi-Environment | v0.9.0 | Staging + prod namespaces, blue-green deploy strategy, `guardops switch --slot green` |
 | 10 — Full Production | v1.0.0 | Real domain + TLS via cert-manager, ArgoCD GitOps, runbook documentation |
@@ -81,6 +87,13 @@ guardops deploy
             BLOCKED + auto-rollback if CRITICAL found
             Report written to security/reports/
             Skipped for local env (no stable URL)
+
+guardops runtime-status (Phase 7)
+    |
+    +-- Queries Loki HTTP API ({app="falco"} | json)
+    +-- Normalises Falco priority -> CRITICAL/HIGH/MEDIUM/LOW
+    +-- Renders severity-sorted Rich table in terminal
+    +-- --fail-on CRITICAL exits 1 for CI gate use
 ```
 
 ### Infrastructure (AWS, Terraform-managed)
@@ -105,6 +118,9 @@ ap-south-1 (Mumbai)
 |         +-- Grafana     (pre-loaded dashboards)                  |
 |         +-- Alertmanager                                         |
 |         +-- kube-state-metrics, node-exporter                    |
+|         +-- Loki        (log aggregation, 10Gi EBS)  [Phase 7]  |
+|         +-- Promtail    (log shipping DaemonSet)      [Phase 7]  |
+|         +-- falco-simulator CronJob (every 3 min)    [Phase 7]  |
 |                                                                  |
 |  ECR: guardops-app (scan-on-push, 10-image lifecycle)            |
 |  S3:  guardops-reports-* (scan reports, versioned)               |
@@ -141,7 +157,13 @@ Job 4: deploy              <-- active when HAS_EKS_CLUSTER=true
     Auto-rollback on CRITICAL DAST findings <-- Phase 6
     |
     v
-Job 5: upload-reports      <-- always runs
+Job 5: runtime-gate        <-- active when HAS_FALCO_ENABLED=true [Phase 7]
+    kubectl port-forward svc/loki 3100:3100
+    guardops runtime-status --since 30m --fail-on CRITICAL
+    Exits 1 and fails pipeline if CRITICAL alerts found
+    |
+    v
+Job 6: upload-reports      <-- always runs
     Scan artifacts -> S3 bucket
     Path: reports/<repo>/<branch>/<sha>/<run-id>/
 ```
@@ -195,6 +217,15 @@ guardops rollback
 
 # Roll back to a specific revision
 guardops rollback --revision 2
+
+# Check runtime security alerts (Phase 7)
+guardops runtime-status
+
+# Filter by time window and severity
+guardops runtime-status --since 24h --severity HIGH
+
+# Use as a CI gate (exits 1 if CRITICAL alerts found)
+guardops runtime-status --fail-on CRITICAL
 ```
 
 ---
@@ -223,6 +254,10 @@ kubectl port-forward svc/kube-prometheus-stack-grafana 3000:80 -n monitoring
 # Port-forward Prometheus
 kubectl port-forward svc/kube-prometheus-stack-prometheus 9090:9090 -n monitoring
 # Open http://localhost:9090/targets — look for serviceMonitor/default/test-app-guardops-app
+
+# Port-forward Loki (Phase 7)
+kubectl port-forward svc/loki 3100:3100 -n monitoring
+# Then: guardops runtime-status
 ```
 
 ### Useful PromQL queries
@@ -244,27 +279,109 @@ container_memory_usage_bytes{namespace="default"}
 rate(container_cpu_usage_seconds_total{namespace="default"}[5m])
 ```
 
+### Useful LogQL queries (Loki, Phase 7)
+
+```logql
+# All Falco alerts
+{app="falco"} | json
+
+# CRITICAL only (shell spawns)
+{app="falco"} | json | priority="Critical"
+
+# Specific rule
+{app="falco"} | json | rule="GuardOps Shell Spawned Inside Container"
+
+# Filter by namespace
+{app="falco"} | json | line_format "{{.output}}" | k8s_ns_name="default"
+```
+
 ### Setup (morning start)
 
 ```powershell
 # After terraform apply and kubectl configure:
 .\scripts\setup-observability.ps1
+.\scripts\setup-runtime-security.ps1   # Phase 7: Loki + Promtail + Falco simulator
 ```
 
 ### Shutdown (nightly — prevents orphaned EBS volumes)
 
 ```powershell
 helm uninstall kube-prometheus-stack -n monitoring
+helm uninstall loki -n monitoring
+helm uninstall promtail -n monitoring
 kubectl delete pvc --all -n monitoring
 Start-Sleep -Seconds 30
-.\scripts\night-shutdown.ps1
+cd infra/terraform && terraform destroy -auto-approve
+```
+
+---
+
+## Runtime Security (Phase 7)
+
+Phase 7 adds a runtime alert pipeline: structured security events are ingested into Loki and surfaced via `guardops runtime-status`.
+
+### How it works
+
+```
+Falco Simulator CronJob (every 3 min)
+    └── prints Falco-format JSON to stdout
+         └── Promtail DaemonSet tails /var/log/pods/
+              └── labels with {app="falco"}, pushes to Loki
+                   └── guardops runtime-status queries Loki HTTP API
+                        └── FalcoQueryResult -> Rich severity table
+                             └── --fail-on CRITICAL -> exit 1 for CI gate
+```
+
+### GuardOps Falco Rules (`k8s/falco/custom-rules.yaml`)
+
+| Rule | Falco Priority | GuardOps Severity |
+|------|---------------|------------------|
+| Shell Spawned Inside Container | CRITICAL | CRITICAL |
+| Package Manager Executed in Container | ERROR | HIGH |
+| Sensitive File Read in Container | ERROR | HIGH |
+| Write to /etc Inside Container | WARNING | MEDIUM |
+| Container Running as Root | WARNING | MEDIUM |
+
+### Falco Simulator
+
+The Falco eBPF kernel sensor requires kernel-level perf buffer allocation (`mmap`) that is unavailable in this environment. A Kubernetes CronJob (`k8s/falco/falco-simulator-cronjob.yaml`) fires every 3 minutes and emits identical Falco-format JSON to stdout. Promtail ships these logs to Loki with the `{app="falco"}` label — the entire downstream pipeline (Loki ingestion, `runtime-status` queries, Grafana Explore, CI gate) is functionally identical to real Falco output. Production Falco deployment is fully documented in `infra/terraform/modules/falco/` and `k8s/falco/custom-rules.yaml`.
+
+```powershell
+# Deploy the simulator
+kubectl apply -f k8s/falco/falco-simulator-configmap.yaml
+kubectl apply -f k8s/falco/falco-simulator-cronjob.yaml
+
+# Trigger an alert immediately (without waiting for 3-min cron)
+kubectl create job falco-test-1 --from=cronjob/falco-simulator -n monitoring
+
+# Wait for Promtail flush (~90s), then query
+guardops runtime-status --since 5m
+```
+
+### `guardops runtime-status` output
+
+```
+GuardOps Runtime Status — last 15m
+  Querying Loki at http://localhost:3100 ...
+  Falco alerts (15m) — CRITICAL:1  HIGH:5  MEDIUM:1  LOW:0  (query: 0.1s)
+
+SEV        RULE                                        POD              NAMESPACE  TIME (UTC)
+CRITICAL   GuardOps Shell Spawned Inside Container     test-app-...     default    09:27:00
+HIGH       GuardOps Sensitive File Read in Container   test-app-...     default    09:27:10
+HIGH       GuardOps Package Manager Executed in Con..  test-app-...     default    09:24:01
+MEDIUM     GuardOps Write to /etc Inside Container     test-app-...     default    09:15:00
+
+  Top alert (GuardOps Shell Spawned Inside Container):
+  Shell spawned inside container (user=root shell=sh proc.cmdline=sh -c id ...)
+
+  Grafana: Explore -> Loki datasource -> {app="falco"} | json
 ```
 
 ---
 
 ## Security Pipeline
 
-Four pre-deploy tools run in sequence, followed by one post-deploy DAST scan. All findings are normalised to a unified severity scale before gating.
+Four pre-deploy tools run in sequence, followed by one post-deploy DAST scan and one post-deploy runtime check. All findings are normalised to a unified severity scale before gating.
 
 | Tool | Phase | Type | What it catches | Severity mapping |
 |------|-------|------|-----------------|-----------------|
@@ -274,6 +391,7 @@ Four pre-deploy tools run in sequence, followed by one post-deploy DAST scan. Al
 | Trivy (image) | Pre-deploy | SCA | CVEs in OS packages and Python deps | UNKNOWN mapped to LOW |
 | SonarQube | Pre-deploy | Quality gate | Security hotspots, code smells | BLOCKER=CRITICAL, CRITICAL=HIGH, MAJOR=MEDIUM |
 | OWASP ZAP | Post-deploy | DAST | Runtime HTTP vulns, missing headers, exposed endpoints | High=CRITICAL, Medium=HIGH, Low=MEDIUM, Info=LOW |
+| Falco (via Loki) | Post-deploy | Runtime | Shell spawns, file reads, package managers, root processes | Maps Falco priority to unified scale |
 
 **Bandit confidence adjustment:**
 
@@ -285,6 +403,15 @@ Four pre-deploy tools run in sequence, followed by one post-deploy DAST scan. Al
 | LOW | HIGH | MEDIUM |
 
 **ZAP severity is bumped one tier** vs SAST because a live runtime finding has a shorter exploit distance than a code pattern finding.
+
+**Falco priority mapping:**
+
+| Falco Priority | GuardOps Severity |
+|---------------|------------------|
+| EMERGENCY / ALERT / CRITICAL | CRITICAL |
+| ERROR | HIGH |
+| WARNING | MEDIUM |
+| NOTICE / INFORMATIONAL / INFO / DEBUG | LOW |
 
 Reports are written to `security/reports/latest.html` and `latest.json` after every scan. In CI, reports are uploaded to S3 automatically. ZAP reports are uploaded as the `zap-dast-report` artifact in every deploy run.
 
@@ -314,6 +441,7 @@ Static IAM user credentials (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) are 
 | Secret | Purpose |
 |--------|---------|
 | `HAS_ZAP_ENABLED` | Set to `true` to enable ZAP DAST in CI deploy job |
+| `HAS_FALCO_ENABLED` | Set to `true` to enable runtime gate in CI (Phase 7) |
 | `SEMGREP_APP_TOKEN` | Semgrep cloud dashboard |
 | `SONAR_TOKEN` | SonarQube |
 | `SONAR_HOST_URL` | SonarQube |
@@ -346,6 +474,18 @@ security:
   zap_target_url: ""      # leave empty to auto-detect from deploy result
   zap_fail_on: CRITICAL   # severity that blocks and triggers auto-rollback
   zap_timeout_seconds: 300
+
+monitoring:
+  grafana_url: ''
+  prometheus_url: ''
+  loki_url: 'http://localhost:3100'   # set after setup-runtime-security.ps1
+
+# Phase 7 — Runtime Security
+runtime_security:
+  enabled: true                # set true after setup-runtime-security.ps1
+  falco_alert_window: 1h       # default --since for runtime-status
+  alert_fail_on: CRITICAL      # default --fail-on for CI gate
+  namespaces_to_watch: []      # empty = query all namespaces
 ```
 
 ---
@@ -387,6 +527,25 @@ Shows pod phase, readiness, restart count, node placement, and service URL for t
 ### `guardops logs`
 
 Streams logs from the running pod. Accepts `--tail` and `--follow` flags.
+
+### `guardops runtime-status` (Phase 7)
+
+```
+Options:
+  --since [15m|30m|1h|3h|6h|12h|24h|7d]
+                         Time window to query Loki. Default: 1h
+  --namespace TEXT       Filter alerts to a specific Kubernetes namespace.
+  --severity [LOW|MEDIUM|HIGH|CRITICAL]
+                         Minimum severity to display. Default: LOW (show all)
+  --tail INTEGER         Maximum number of alerts to display. Default: 50
+  --loki-url TEXT        Loki base URL. Overrides monitoring.loki_url in config.
+                         Default: http://localhost:3100
+  --fail-on [LOW|MEDIUM|HIGH|CRITICAL]
+                         Exit 1 if alerts at or above this severity are found.
+                         Intended for CI post-deploy gates.
+```
+
+**Prerequisites:** Loki must be reachable. Run `kubectl port-forward svc/loki 3100:3100 -n monitoring` first.
 
 ---
 
@@ -432,6 +591,10 @@ infra/terraform/
         iam_oidc/   GitHub OIDC provider + CI role (Phase 6, replaces IAM user)
         eks/        Managed node group (t3.large), CoreDNS, kube-proxy,
                     VPC CNI, EBS CSI driver, launch template (IMDSv2 hop limit=2)
+        falco/      Falco + Loki + Promtail via Helm provider (Phase 7)
+                    Requires live EKS + monitoring namespace. Use
+                    enable_runtime_security=true in terraform.tfvars.
+                    Alternative: scripts/setup-runtime-security.ps1
 ```
 
 **Always-on (near-zero cost):** ECR, S3, DynamoDB, remote state bucket, OIDC provider, IAM role.
@@ -534,9 +697,16 @@ mypy cli/ backend/ --ignore-missing-imports
 **State lock after interrupted apply:**
 ```powershell
 # If terraform hangs on "Acquiring state lock":
-aws dynamodb scan --table-name guardops-tf-lock --region ap-south-1 --query "Items[0].Info.S" --output text
-# Copy the ID field from the output, then:
-terraform force-unlock -force <ID>
+terraform force-unlock -force <LOCK_ID>
+```
+
+**Subnet CIDR conflict after incomplete destroy:**
+```powershell
+# If terraform apply fails with InvalidSubnet.Conflict:
+aws ec2 describe-subnets --filters "Name=cidrBlock,Values=10.0.1.0/24" `
+    --query "Subnets[0].SubnetId" --output text
+terraform import module.vpc.aws_subnet.public[1] <subnet-id>
+terraform apply -auto-approve
 ```
 
 **EBS CSI driver / IMDS hop limit:**
@@ -548,9 +718,19 @@ Always use `helm install` (not `helm upgrade --install`) for kube-prometheus-sta
 **ZAP on Windows (local runs):**
 `--network host` is not supported on Docker Desktop for Windows. The ZAP runner automatically omits this flag locally. Use `host.docker.internal` as the target hostname instead of `localhost` when port-forwarding a service for local DAST testing.
 
+**Loki chart 6.x — important values quirks:**
+- Use `storageClass: gp2` not `storageClassName: gp2` under `singleBinary.persistence`
+- Must set `chunksCache.enabled: false` and `resultsCache.enabled: false` — defaults request ~11GB RAM, exceeding t3.large capacity
+- Must set `read.replicas: 0`, `write.replicas: 0`, `backend.replicas: 0` or chart validation fails in SingleBinary mode
+
+**Falco eBPF on EKS + t3.large:**
+The Falco eBPF sensor requires kernel-level contiguous memory for perf ring buffer allocation. On a t3.large running the full monitoring stack, this allocation fails with `unable to mmap the perf-buffer`. The Falco simulator CronJob (`k8s/falco/`) provides identical JSON output for portfolio/dev use. See `infra/terraform/modules/falco/` for production deployment documentation.
+
 **Nightly shutdown order matters:**
 ```powershell
 helm uninstall kube-prometheus-stack -n monitoring  # triggers EBS volume deletion
+helm uninstall loki -n monitoring
+helm uninstall promtail -n monitoring
 kubectl delete pvc --all -n monitoring              # ensures PVCs are removed
 Start-Sleep -Seconds 30                             # wait for ec2:DeleteVolume
 cd infra/terraform && terraform destroy -auto-approve
@@ -570,11 +750,24 @@ Skipping the Helm uninstall leaves orphaned EBS volumes that persist after `terr
 | v0.4.1 | Published | Remote TF state, multi-stage Docker, subprocess hardening, Trivy CI cache |
 | v0.5.0 | Published | Prometheus + Grafana, `/metrics` endpoint, ServiceMonitor, EBS CSI, custom metrics |
 | v0.6.0 | Published | GitHub OIDC replaces static IAM keys, no more AWS_ACCESS_KEY_ID in CI |
-| v0.6.1 | Current | OWASP ZAP DAST post-deploy scan, auto-rollback on CRITICAL, ZAP image fix (ghcr.io), Windows Docker compat |
-| v0.7.0 | Planned | Falco runtime security, eBPF, alert routing to Loki |
-| v0.8.0 | Planned | Self-healing: Alertmanager webhook → NetworkPolicy quarantine, node drain |
+| v0.6.1 | Published | OWASP ZAP DAST post-deploy scan, auto-rollback on CRITICAL, ZAP image fix (ghcr.io), Windows Docker compat |
+| v0.7.0 | **Current** | Loki + Promtail log pipeline, Falco-format alert ingestion, `guardops runtime-status` CLI, CI runtime gate job, Falco rules + simulator |
+| v0.8.0 | Planned | Self-healing: Alertmanager webhook -> NetworkPolicy quarantine, node drain |
 | v0.9.0 | Planned | Multi-environment: staging + prod namespaces, blue-green deploy |
 | v1.0.0 | Planned | Real domain, TLS, ArgoCD GitOps, full runbooks |
+
+---
+## Planned Future Updates
+
+| Version | Status | Description |
+|---------|--------|-------------|
+| v1.1.0 | Planned |  SBOM + Cosign signing  |
+| v1.2.0 | Planned | Kyverno admission control |
+| v1.3.0 | Planned | Scan metadata database |
+| v1.4.0 | Planned | Web dashboard |
+| v1.5.0 | Planned | Vulnerability waivers |
+| v1.6.0 | Planned | LLM=assisted triage |
+| v1.7.0 | Planned | Risk-based scoring (scoped) |
 
 ---
 

@@ -1,0 +1,28 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: falco-simulator
+  namespace: monitoring
+spec:
+  schedule: "*/3 * * * *"
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 300
+      template:
+        metadata:
+          labels:
+            app: falco
+            app.kubernetes.io/name: falco
+        spec:
+          restartPolicy: Never
+          containers:
+          - name: falco
+            image: python:3.11-slim
+            command: ["python3", "/scripts/simulate.py"]
+            volumeMounts:
+            - name: script
+              mountPath: /scripts
+          volumes:
+          - name: script
+            configMap:
+              name: falco-simulator
