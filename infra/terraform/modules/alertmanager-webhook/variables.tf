@@ -1,12 +1,6 @@
 # infra/terraform/modules/alertmanager-webhook/variables.tf
 #
-# GuardOps — Phase 8 — Alertmanager Webhook Handler Module — Input Variables
-#
-# All variables follow the same conventions as other GuardOps modules:
-#   - project_name and environment are always required (no defaults) so the
-#     root module must pass them explicitly — prevents silent misconfiguration.
-#   - Operational knobs (replicas, image, port) have sensible defaults that
-#     match the alertmanager_handler.py constants and the test-project setup.
+# GuardOps - Phase 8 - Alertmanager Webhook Handler Module - Input Variables
 
 # ── Required (no defaults) ─────────────────────────────────────────────────────
 
@@ -31,12 +25,8 @@ variable "environment" {
 }
 
 variable "webhook_image" {
-  description = (
-    "Full Docker image reference for the alertmanager webhook handler. "
-    "Should point to the ECR image built from the GuardOps repo root. "
-    "Example: 123456789012.dkr.ecr.ap-south-1.amazonaws.com/guardops-prod:webhook-latest"
-  )
-  type = string
+  description = "Full Docker image reference for the alertmanager webhook handler. Example: 123456789012.dkr.ecr.ap-south-1.amazonaws.com/guardops-prod:webhook-latest"
+  type        = string
 
   validation {
     condition     = length(var.webhook_image) > 0
@@ -47,23 +37,15 @@ variable "webhook_image" {
 # ── Optional (have defaults) ──────────────────────────────────────────────────
 
 variable "monitoring_namespace" {
-  description = (
-    "Kubernetes namespace where the webhook handler is deployed. "
-    "Should match the namespace where Alertmanager runs so they share "
-    "the same network segment. Default: 'monitoring' (set by setup-observability.ps1)."
-  )
-  type    = string
-  default = "monitoring"
+  description = "Kubernetes namespace where the webhook handler is deployed. Should match the namespace where Alertmanager runs. Default: 'monitoring'."
+  type        = string
+  default     = "monitoring"
 }
 
 variable "webhook_port" {
-  description = (
-    "Port the FastAPI handler listens on inside the pod. "
-    "Must match the WEBHOOK_PORT constant in alertmanager_handler.py (default: 9095). "
-    "Override if 9095 conflicts with another service in your cluster."
-  )
-  type    = number
-  default = 9095
+  description = "Port the FastAPI handler listens on. Must match WEBHOOK_PORT in alertmanager_handler.py (default: 9095)."
+  type        = number
+  default     = 9095
 
   validation {
     condition     = var.webhook_port >= 1024 && var.webhook_port <= 65535
@@ -72,14 +54,9 @@ variable "webhook_port" {
 }
 
 variable "replicas" {
-  description = (
-    "Number of handler pod replicas. "
-    "Default is 1 because the handler is stateless and Alertmanager retries "
-    "on failure — a single replica avoids double-quarantine from concurrent "
-    "deliveries. Scale to 2+ only if you add external deduplication."
-  )
-  type    = number
-  default = 1
+  description = "Number of handler pod replicas. Default is 1 - handler is stateless and Alertmanager retries on failure. Scale to 2+ only with external deduplication."
+  type        = number
+  default     = 1
 
   validation {
     condition     = var.replicas >= 1 && var.replicas <= 5
@@ -88,13 +65,13 @@ variable "replicas" {
 }
 
 variable "cpu_request" {
-  description = "CPU request for the webhook handler container (Kubernetes resource string)."
+  description = "CPU request for the webhook handler container."
   type        = string
   default     = "50m"
 }
 
 variable "memory_request" {
-  description = "Memory request for the webhook handler container (Kubernetes resource string)."
+  description = "Memory request for the webhook handler container."
   type        = string
   default     = "64Mi"
 }

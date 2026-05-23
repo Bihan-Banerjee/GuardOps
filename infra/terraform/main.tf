@@ -213,7 +213,7 @@ module "iam_oidc" {
 }
 
 output "github_actions_role_arn" {
-  description = "Copy this value → GitHub secret AWS_ROLE_ARN"
+  description = "Copy this value - set as GitHub secret AWS_ROLE_ARN"
   value       = module.iam_oidc.github_actions_role_arn
 }
 
@@ -265,12 +265,8 @@ module "falco" {
 }
 
 output "falco_loki_url" {
-  description = "In-cluster Loki URL — set as monitoring.loki_url in .guardops.yaml"
-  value = (
-    var.enable_runtime_security
-    ? module.falco[0].loki_service_url
-    : "Runtime security not enabled — set enable_runtime_security = true"
-  )
+  description = "In-cluster Loki URL - set as monitoring.loki_url in .guardops.yaml"
+  value       = var.enable_runtime_security ? module.falco[0].loki_service_url : "Runtime security not enabled - set enable_runtime_security = true"
 }
 
 # ── Phase 8: Self-Healing (Alertmanager Webhook Handler) ─────────────────────
@@ -322,13 +318,6 @@ module "alertmanager_webhook" {
 }
 
 output "webhook_service_url" {
-  description = (
-    "In-cluster webhook URL — paste into k8s/alertmanager/quarantine-webhook.yaml "
-    "receivers[*].webhookConfigs[*].url, then kubectl apply that file."
-  )
-  value = (
-    var.enable_self_healing
-    ? module.alertmanager_webhook[0].service_url
-    : "Self-healing not enabled — set enable_self_healing = true in terraform.tfvars"
-  )
+  description = "In-cluster webhook URL - paste into k8s/alertmanager/quarantine-webhook.yaml receivers[*].webhookConfigs[*].url, then kubectl apply that file."
+  value       = var.enable_self_healing ? module.alertmanager_webhook[0].service_url : "Self-healing not enabled - set enable_self_healing = true in terraform.tfvars"
 }

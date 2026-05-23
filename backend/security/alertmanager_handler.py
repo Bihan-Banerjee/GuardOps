@@ -923,7 +923,7 @@ async def readyz() -> dict:
     working.  K8s removes the pod from the Service endpoints if this fails,
     so Alertmanager won't send webhooks to a handler that can't act on them.
     """
-    ok, stdout, stderr = _run_kubectl(["version", "--client", "--short"])
+    ok, stdout, stderr = _run_kubectl(["version", "--client", ])
     if not ok:
         raise HTTPException(
             status_code=503,
@@ -1005,3 +1005,5 @@ if __name__ == "__main__":
         log_level = "info",
         access_log = True,
     )
+
+

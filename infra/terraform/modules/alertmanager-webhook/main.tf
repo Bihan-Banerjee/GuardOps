@@ -1,6 +1,6 @@
 # infra/terraform/modules/alertmanager-webhook/main.tf
 #
-# GuardOps — Phase 8 — Alertmanager Webhook Handler Module
+# GuardOps - Phase 8 - Alertmanager Webhook Handler Module
 #
 # PURPOSE:
 #   Deploys the alertmanager_handler.py FastAPI service as a Kubernetes
@@ -11,11 +11,11 @@
 #   Prometheus, and Loki so it shares the observability network segment.
 #
 # WHAT THIS MODULE CREATES:
-#   1. Kubernetes Namespace resource guard  (idempotent — uses `data` if exists)
+#   1. Kubernetes Namespace resource guard  (idempotent - uses `data` if exists)
 #   2. ServiceAccount                        (runs the handler pod)
 #   3. ClusterRole                           (kubectl permissions: pods, networkpolicies, nodes)
 #   4. ClusterRoleBinding                    (binds the role to the ServiceAccount)
-#   5. Deployment                            (handler pod — FastAPI + uvicorn)
+#   5. Deployment                            (handler pod - FastAPI + uvicorn)
 #   6. Service (ClusterIP)                   (stable DNS: alertmanager-webhook.monitoring.svc)
 #
 # RBAC PERMISSIONS:
@@ -25,7 +25,7 @@
 #   needs and nothing more:
 #     - pods:           get, list, patch     (label the offending pod)
 #     - networkpolicies: get, list, create, delete (apply/remove quarantine policy)
-#     - nodes:          get, list, patch, cordon  (for drain path — cordon is a patch)
+#     - nodes:          get, list, patch, cordon  (for drain path - cordon is a patch)
 #
 # ALERTMANAGER INTEGRATION:
 #   After applying this module, set the webhook URL in your Alertmanager config:
@@ -42,11 +42,11 @@
 #   Default is the ECR pattern used throughout GuardOps.
 #
 # RELATED FILES:
-#   backend/security/alertmanager_handler.py     — FastAPI handler source
-#   k8s/alertmanager/quarantine-webhook.yaml     — Alertmanager receiver config
-#   k8s/networkpolicy/quarantine-template.yaml   — reference NetworkPolicy
-#   cli/commands/quarantine_cmd.py               — guardops quarantine-status
-#   infra/terraform/main.tf                      — root module (wires this module)
+#   backend/security/alertmanager_handler.py     - FastAPI handler source
+#   k8s/alertmanager/quarantine-webhook.yaml     - Alertmanager receiver config
+#   k8s/networkpolicy/quarantine-template.yaml   - reference NetworkPolicy
+#   cli/commands/quarantine_cmd.py               - guardops quarantine-status
+#   infra/terraform/main.tf                      - root module (wires this module)
 
 terraform {
   required_providers {
@@ -64,7 +64,7 @@ locals {
   name      = "${var.project_name}-alertmanager-webhook"
   namespace = var.monitoring_namespace
 
-  # Labels applied to every resource in this module — consistent with the
+  # Labels applied to every resource in this module - consistent with the
   # label strategy used across GuardOps Helm charts and Terraform modules.
   common_labels = {
     "app.kubernetes.io/name"       = "alertmanager-webhook"
@@ -90,10 +90,7 @@ resource "kubernetes_service_account" "webhook" {
     labels    = local.common_labels
 
     annotations = {
-      "guardops.io/description" = (
-        "ServiceAccount for the Phase 8 Alertmanager webhook handler. "
-        "Used for in-cluster kubectl calls to quarantine pods and drain nodes."
-      )
+      "guardops.io/description" = "ServiceAccount for the Phase 8 Alertmanager webhook handler. Used for in-cluster kubectl calls to quarantine pods and drain nodes."
     }
   }
 }
@@ -104,13 +101,13 @@ resource "kubernetes_service_account" "webhook" {
 # Grants the minimal set of API permissions needed by alertmanager_handler.py.
 #
 # Rule breakdown:
-#   pods/patch           — `kubectl label pod` patches the pod metadata.
-#   networkpolicies      — create, list, delete quarantine NetworkPolicies.
-#   nodes/patch          — `kubectl cordon` patches the node's spec.unschedulable.
-#   nodes/drain          — `kubectl drain` is a client-side operation that
+#   pods/patch           - `kubectl label pod` patches the pod metadata.
+#   networkpolicies      - create, list, delete quarantine NetworkPolicies.
+#   nodes/patch          - `kubectl cordon` patches the node's spec.unschedulable.
+#   nodes/drain          - `kubectl drain` is a client-side operation that
 #                          combines pod eviction + node cordon; the eviction
 #                          sub-resource is covered by pods/eviction below.
-#   pods/eviction        — required for `kubectl drain` to evict pods gracefully.
+#   pods/eviction        - required for `kubectl drain` to evict pods gracefully.
 
 resource "kubernetes_cluster_role" "webhook" {
   metadata {
@@ -125,7 +122,7 @@ resource "kubernetes_cluster_role" "webhook" {
     verbs      = ["get", "list", "patch", "create"]
   }
 
-  # NetworkPolicy CRUD — create quarantine policy, delete on resolve
+  # NetworkPolicy CRUD - create quarantine policy, delete on resolve
   rule {
     api_groups = ["networking.k8s.io"]
     resources  = ["networkpolicies"]
@@ -167,7 +164,7 @@ resource "kubernetes_cluster_role_binding" "webhook" {
 #
 # Runs the alertmanager_handler.py FastAPI service.
 #
-# Single replica — the handler is stateless (all state lives in K8s API objects)
+# Single replica - the handler is stateless (all state lives in K8s API objects)
 # so a single replica is safe and avoids double-quarantine from concurrent
 # webhook deliveries.  Alertmanager retries on failure, so availability
 # is handled by the deployment controller restarting the pod on crash.
@@ -180,7 +177,7 @@ resource "kubernetes_deployment" "webhook" {
   }
 
   spec {
-    # Single replica — see comment above. Scale to 2+ only if you add
+    # Single replica - see comment above. Scale to 2+ only if you add
     # an external deduplication mechanism (e.g. Redis lock on fingerprint).
     replicas = var.replicas
 
@@ -220,7 +217,11 @@ resource "kubernetes_deployment" "webhook" {
           # Command runs uvicorn directly rather than using `python -m` to avoid
           # the extra process layer. --workers 1 keeps the process model simple
           # for a single-replica handler (no shared state issues).
+          image_pull_policy = "Always"
+
           command = [
+            "/venv/bin/python",
+            "-m",
             "uvicorn",
             "backend.security.alertmanager_handler:app",
             "--host", "0.0.0.0",
@@ -246,7 +247,7 @@ resource "kubernetes_deployment" "webhook" {
           }
 
           # ── Resource limits ───────────────────────────────────────────────
-          # Webhook handler is lightweight — FastAPI + small subprocess calls.
+          # Webhook handler is lightweight - FastAPI + small subprocess calls.
           # Limits prevent runaway memory if a malformed payload triggers a
           # large object allocation.
           resources {
@@ -296,7 +297,7 @@ resource "kubernetes_deployment" "webhook" {
           }
         }
 
-        # Restart policy: Always — Deployment controller handles pod lifecycle.
+        # Restart policy: Always - Deployment controller handles pod lifecycle.
         restart_policy = "Always"
       }
     }
@@ -313,7 +314,7 @@ resource "kubernetes_deployment" "webhook" {
 # Provides a stable DNS name for Alertmanager to reach the handler:
 #   http://alertmanager-webhook.monitoring.svc.cluster.local:9095/webhook
 #
-# ClusterIP (not LoadBalancer / NodePort) — the handler only needs to be
+# ClusterIP (not LoadBalancer / NodePort) - the handler only needs to be
 # reachable from inside the cluster (by Alertmanager), not from the internet.
 
 resource "kubernetes_service" "webhook" {
