@@ -152,10 +152,54 @@ jobs:
               print(f"Could not parse semgrep report: {e} — skipping gate")
               sys.exit(0)
 
-          blocking = [
+          # Intentional dev-environment tradeoffs suppressed here.
+          # Each entry is (check_id_substring, path_substring).
+          # Documented in README.md Known Operational Notes.
+          SUPPRESSED = [
+              # ECR mutable tags — intentional: rolling webhook-latest tag
+              ("aws-ecr-mutable-image-tags",                      "modules/ecr"),
+              # EKS public endpoint — intentional: kubectl access from dev machine
+              ("eks-public-endpoint-enabled",                     "modules/eks"),
+              # EKS control plane logging — disabled to avoid CloudWatch costs in dev
+              ("eks-insufficient-control-plane-logging",          "modules/eks"),
+              # IAM CI user access key — legacy resource, OIDC is the active auth path
+              ("no-iam-creds-exposure",                           "modules/iam/"),
+              # CI policy allows S3 access for report uploads
+              ("no-iam-data-exfiltration",                        "modules/iam/"),
+              # OIDC role policy — short-lived tokens only, not long-lived creds
+              ("no-iam-creds-exposure",                           "modules/iam_oidc"),
+              # Public subnet map_public_ip — required for NAT gateway and ELB
+              ("aws-subnet-has-public-ip-address",                "modules/vpc"),
+              # DynamoDB bootstrap table — dev state lock, not prod data
+              ("aws-dynamodb-table-unencrypted",                  "bootstrap/"),
+              # Falco simulator — test log-emitting job, no securityContext needed
+              ("allow-privilege-escalation-no-securitycontext",   "falco-simulator"),
+          ]
+
+          def is_suppressed(result):
+              check_id = result.get("check_id", "")
+              path     = result.get("path", "")
+              return any(
+                  rule in check_id and file_path in path
+                  for rule, file_path in SUPPRESSED
+              )
+
+          all_findings = [
               r for r in data.get("results", [])
               if r.get("extra", {}).get("severity") in ("ERROR", "WARNING")
           ]
+
+          suppressed = [r for r in all_findings if is_suppressed(r)]
+          blocking   = [r for r in all_findings if not is_suppressed(r)]
+
+          if suppressed:
+              print(f"Suppressed {len(suppressed)} known intentional finding(s):")
+              for f in suppressed:
+                  print(
+                      f"  [suppressed]  {f['extra']['severity']}  "
+                      f"{f['check_id']}  "
+                      f"{f['path']}:{f['start']['line']}"
+                  )
 
           if blocking:
               print(f"BLOCKED: {len(blocking)} HIGH/MEDIUM semgrep findings")
@@ -168,7 +212,7 @@ jobs:
               sys.exit(1)
 
           total = len(data.get("results", []))
-          print(f"OK: {total} total semgrep findings, none blocking")
+          print(f"OK: {total} total findings, {len(suppressed)} suppressed, 0 blocking")
           EOF
 
       - name: Run Bandit
