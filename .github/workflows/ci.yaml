@@ -349,7 +349,7 @@ jobs:
       - name: Install Trivy
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-            | sh -s -- -b /usr/local/bin v0.51.0
+            | sh -s -- -b /usr/local/bin v0.61.0
 
       - name: Create reports directory
         run: mkdir -p security/reports
