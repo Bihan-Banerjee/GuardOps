@@ -42,6 +42,10 @@ resource "aws_iam_openid_connect_provider" "github" {
     Phase   = "6"
     Purpose = "github-actions-ci"
   }
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # ── IAM Role ──────────────────────────────────────────────────────────────────
@@ -84,6 +88,10 @@ resource "aws_iam_role" "github_actions" {
     Phase   = "6"
     Purpose = "github-actions-ci"
   }
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # ── Inline Policy — Least Privilege ──────────────────────────────────────────
@@ -95,7 +103,9 @@ resource "aws_iam_role" "github_actions" {
 resource "aws_iam_role_policy" "ci_policy" {
   name = "${var.project_name}-ci-policy"
   role = aws_iam_role.github_actions.id
-
+  lifecycle {
+    prevent_destroy = true   
+  }
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -129,7 +139,7 @@ resource "aws_iam_role_policy" "ci_policy" {
           "arn:aws:ecr:${var.aws_region}:${var.aws_account_id}:repository/guardops*",
         ]
       },
-
+      
       # ── EKS: generate kubeconfig ──────────────────────────────────────────
       # aws eks update-kubeconfig only needs DescribeCluster
       {

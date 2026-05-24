@@ -1,42 +1,90 @@
 name: Publish to PyPI
 
+# Triggers only when you create a GitHub Release (not on every push).
+# Workflow:
+#   1. Checkout + build the package
+#   2. Verify the git tag matches the version in pyproject.toml
+#   3. Upload to PyPI using an API token stored in GitHub secrets
+#
+# To use:
+#   1. Add PYPI_API_TOKEN to GitHub secrets (Settings → Secrets → Actions)
+#   2. Create a GitHub Release with tag matching pyproject.toml version (e.g. v0.6.1)
+#   3. This workflow fires automatically on release publish
+#
+# The `pypi` environment gate (optional):
+#   Add a "pypi" environment in GitHub Settings → Environments with required reviewers
+#   for manual approval before every PyPI publish. Remove the `environment:` line
+#   if you want fully automated publishing without approval.
+
 on:
   release:
-    types: [published]   # only triggers when you create a GitHub Release
+    types: [published]
 
 jobs:
   publish:
+    name: Build & Publish to PyPI
     runs-on: ubuntu-latest
-    environment: pypi    # requires manual approval in GitHub settings
+    environment: pypi    # requires manual approval — remove if unwanted
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install build tools
-        run: pip install build twine
+        run: pip install build twine tomli
 
       - name: Build package
         run: python -m build
 
-      - name: Verify version matches tag
+      - name: Verify package version matches git tag
         env:
           REF_NAME: ${{ github.ref_name }}
         run: |
-          TAG="$REF_NAME"          # e.g. v0.2.0
-          VERSION="${TAG#v}"                     # strips the v → 0.2.0
-          PKG_VERSION=$(python -c "import cli; print(cli.__version__)")
-          if [ "$VERSION" != "$PKG_VERSION" ]; then
-            echo "Tag $TAG does not match package version $PKG_VERSION"
+          # Strip the leading 'v' from the tag: v0.6.1 → 0.6.1
+          TAG="${REF_NAME}"
+          VERSION="${TAG#v}"
+
+          # Read version from pyproject.toml — avoids needing to import the package
+          # (which would require all dependencies to be installed)
+          PKG_VERSION=$(python - << 'EOF'
+          try:
+              import tomllib
+          except ImportError:
+              import tomli as tomllib
+          with open("pyproject.toml", "rb") as f:
+              data = tomllib.load(f)
+          print(data["project"]["version"])
+          EOF
+          )
+
+          echo "Git tag version:     ${VERSION}"
+          echo "pyproject.toml version: ${PKG_VERSION}"
+
+          if [ "${VERSION}" != "${PKG_VERSION}" ]; then
+            echo "::error::Tag ${TAG} does not match pyproject.toml version ${PKG_VERSION}"
+            echo "::error::Update version in pyproject.toml to ${VERSION} before releasing"
             exit 1
           fi
+
+          echo "Version check passed: ${VERSION}"
+
+      - name: Verify dist files look correct
+        run: twine check dist/*
 
       - name: Publish to PyPI
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
         run: twine upload dist/*
+
+      - name: Confirm upload
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          VERSION="${REF_NAME#v}"
+          echo "Published guardops==${VERSION} to PyPI"
+          echo "View at: https://pypi.org/project/guardops/${VERSION}/"
