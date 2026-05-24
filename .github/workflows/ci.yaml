@@ -513,11 +513,13 @@ jobs:
 
       - name: Run OWASP ZAP baseline scan
         if: ${{ env.HAS_ZAP_ENABLED == 'true' }}
+        env:
+          WORKSPACE: ${{ github.workspace }}
         run: |
           mkdir -p security/reports
           docker run --rm \
             --network host \
-            -v "${{ github.workspace }}/security/reports:/zap/wrk:rw" \
+            -v "$WORKSPACE/security/reports:/zap/wrk:rw" \
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
             -t http://localhost:8090 \
@@ -529,7 +531,7 @@ jobs:
 
       - name: Kill port-forward
         if: always() && env.HAS_ZAP_ENABLED == 'true'
-        run: kill ${{ env.PORT_FORWARD_PID }} 2>/dev/null || true
+        run: kill "$PORT_FORWARD_PID" 2>/dev/null || true
 
       - name: Upload ZAP report artifact
         if: always() && env.HAS_ZAP_ENABLED == 'true'
@@ -598,14 +600,16 @@ jobs:
 
       - name: Auto-rollback on CRITICAL DAST findings
         if: steps.zap-gate.outcome == 'failure' && env.HAS_ZAP_ENABLED == 'true'
+        env:
+          K8S_NS: ${{ env.K8S_NAMESPACE }}
         run: |
           echo "Rolling back Helm release due to CRITICAL DAST findings..."
           helm rollback guardops-app 0 \
-            --namespace ${{ env.K8S_NAMESPACE }} \
+            --namespace "$K8S_NS" \
             --wait \
             --timeout 3m
           echo "Rollback complete. Helm history after rollback:"
-          helm history guardops-app --namespace ${{ env.K8S_NAMESPACE }}
+          helm history guardops-app --namespace "$K8S_NS"
           echo "::error::Deployment rolled back due to CRITICAL DAST findings."
           exit 1
 
@@ -698,14 +702,16 @@ jobs:
 
       - name: Kill Loki port-forward
         if: always() && env.HAS_FALCO_ENABLED == 'true'
-        run: kill ${{ env.LOKI_PF_PID }} 2>/dev/null || true
+        run: kill "$LOKI_PF_PID" 2>/dev/null || true
 
       - name: Enforce runtime gate result
         if: env.HAS_FALCO_ENABLED == 'true'
+        env:
+          GATE_OUTCOME: ${{ steps.runtime-gate.outcome }}
         run: |
-          if [ "${{ steps.runtime-gate.outcome }}" == "failure" ]; then
+          if [ "$GATE_OUTCOME" == "failure" ]; then
             echo "::error::Runtime security gate FAILED — CRITICAL Falco alerts found."
-            echo "::error::Review: Grafana → Explore → Loki → {app=\"falco\"} | json"
+            echo "::error::Review: Grafana -> Explore -> Loki -> {app=\"falco\"} | json"
             echo "::error::Or locally: guardops runtime-status --since 1h --severity CRITICAL"
             exit 1
           fi
@@ -765,7 +771,7 @@ jobs:
               --no-progress
             echo "Reports uploaded to: ${S3_PREFIX}/"
             echo ""
-            echo "View in console: https://s3.console.aws.amazon.com/s3/buckets/${{ secrets.GUARDOPS_S3_BUCKET }}"
+            echo "View in console: https://s3.console.aws.amazon.com/s3/buckets/$S3_BUCKET"
           else
             echo "No reports found to upload — this is OK if earlier jobs were skipped"
           fi
