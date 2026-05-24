@@ -4,3 +4,6 @@
 jaraco.context>=6.1.0
 urllib3>=2.7.0
 prometheus-client>=0.20.0
+
+
+wheel>=0.46.2           # CVE-2026-24049
