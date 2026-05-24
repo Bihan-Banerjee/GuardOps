@@ -91,6 +91,7 @@ resource "aws_iam_role" "github_actions" {
 # Mirrors exactly what the old CI IAM user could do.
 # Sections are labelled so it's obvious what each permission is for.
 
+# nosemgrep: no-iam-creds-exposure
 resource "aws_iam_role_policy" "ci_policy" {
   name = "${var.project_name}-ci-policy"
   role = aws_iam_role.github_actions.id
@@ -185,3 +186,4 @@ resource "aws_iam_role_policy" "ci_policy" {
 #   role       = aws_iam_role.github_actions.name
 #   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
 # }
+

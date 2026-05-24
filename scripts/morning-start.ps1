@@ -48,6 +48,11 @@ if (-not $clusterExists) {
     if ($LASTEXITCODE -ne 0) { Write-Error "terraform apply failed."; exit 1 }
 }
 
+# Verify OIDC role exists and update GitHub secret
+$roleArn = terraform output -raw github_actions_role_arn
+Write-Host "GitHub Actions role: $roleArn"
+gh secret set AWS_ROLE_ARN --body $roleArn
+
 # ── Step 2: Configure kubectl ─────────────────────────────────────────────────
 Write-Host ""
 Write-Host "[2/7] Configuring kubectl for EKS..." -ForegroundColor Green

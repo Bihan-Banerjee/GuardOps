@@ -746,13 +746,18 @@ jobs:
           role-session-name: guardops-upload-reports-${{ github.run_id }}
 
       - name: Upload reports to S3
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          S3_BUCKET: ${{ secrets.GUARDOPS_S3_BUCKET }}
         run: |
           SHA=$(git rev-parse --short HEAD)
-          BRANCH="${{ github.ref_name }}"
-          REPO="${{ github.repository }}"
-          RUN_ID="${{ github.run_id }}"
+          BRANCH="$REF_NAME"
+          REPO="$REPO"
+          RUN_ID="$RUN_ID"
 
-          S3_PREFIX="s3://${{ secrets.GUARDOPS_S3_BUCKET }}/reports/${REPO}/${BRANCH}/${SHA}/${RUN_ID}"
+          S3_PREFIX="s3://$S3_BUCKET/reports/${REPO}/${BRANCH}/${SHA}/${RUN_ID}"
 
           if [ -d "all-reports" ] && [ "$(ls -A all-reports)" ]; then
             aws s3 cp all-reports/ "${S3_PREFIX}/" \

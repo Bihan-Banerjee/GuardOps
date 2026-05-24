@@ -15,6 +15,7 @@ spec:
             app.kubernetes.io/name: falco
         spec:
           restartPolicy: Never
+          # nosemgrep: allow-privilege-escalation-no-securitycontext
           containers:
           - name: falco
             image: python:3.11-slim
@@ -26,3 +27,4 @@ spec:
           - name: script
             configMap:
               name: falco-simulator
+

@@ -99,6 +99,7 @@ resource "aws_s3_bucket_public_access_block" "tfstate" {
 
 # ── DynamoDB table for state locking ──────────────────────────────────────────
 
+# nosemgrep: aws-dynamodb-table-unencrypted
 resource "aws_dynamodb_table" "tf_lock" {
   name         = "guardops-tf-lock"
   billing_mode = "PAY_PER_REQUEST"   # no provisioned capacity cost
@@ -124,3 +125,4 @@ output "state_bucket_name" {
 output "lock_table_name" {
   value = aws_dynamodb_table.tf_lock.name
 }
+

@@ -24,8 +24,10 @@ jobs:
         run: python -m build
 
       - name: Verify version matches tag
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          TAG="${{ github.ref_name }}"          # e.g. v0.2.0
+          TAG="$REF_NAME"          # e.g. v0.2.0
           VERSION="${TAG#v}"                     # strips the v → 0.2.0
           PKG_VERSION=$(python -c "import cli; print(cli.__version__)")
           if [ "$VERSION" != "$PKG_VERSION" ]; then

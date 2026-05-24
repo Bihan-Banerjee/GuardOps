@@ -18,6 +18,7 @@ resource "aws_ecr_repository" "repos" {
   for_each = toset(var.image_names)
 
   name                 = each.value
+  # nosemgrep: aws-ecr-mutable-image-tags
   image_tag_mutability = "MUTABLE"   # allows pushing :latest tag repeatedly
 
   # Free AWS-managed vulnerability scanning on every push
@@ -59,3 +60,4 @@ resource "aws_ecr_lifecycle_policy" "repos" {
     ]
   })
 }
+

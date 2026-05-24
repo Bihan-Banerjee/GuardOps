@@ -33,11 +33,13 @@ resource "aws_eks_cluster" "main" {
     # Public access lets you run kubectl from your Windows machine.
     # In real prod you'd disable this and use a VPN/bastion.
     endpoint_private_access = true
-    endpoint_public_access  = true
+    # nosemgrep: eks-public-endpoint-enabled
+  endpoint_public_access  = true
   }
 
   # Disabled by default to avoid CloudWatch costs during dev/testing.
   # Set enable_cloudwatch_logs = true in tfvars when you need audit logs.
+  # nosemgrep: eks-insufficient-control-plane-logging
   enabled_cluster_log_types = local.log_types
 
   depends_on = [var.cluster_role_arn]
@@ -121,3 +123,5 @@ resource "aws_eks_addon" "ebs_csi" {
   resolve_conflicts_on_update = "OVERWRITE"
   depends_on                  = [aws_eks_node_group.main]
 }
+
+

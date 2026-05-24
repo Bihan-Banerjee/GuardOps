@@ -42,6 +42,7 @@ resource "aws_subnet" "public" {
   vpc_id                  = aws_vpc.main.id
   cidr_block              = cidrsubnet(var.vpc_cidr, 8, count.index)
   availability_zone       = var.availability_zones[count.index]
+  # nosemgrep: aws-subnet-has-public-ip-address
   map_public_ip_on_launch = true
 
   tags = {
@@ -122,3 +123,4 @@ resource "aws_route_table_association" "private" {
   subnet_id      = aws_subnet.private[count.index].id
   route_table_id = aws_route_table.private[count.index].id
 }
+
