@@ -118,7 +118,7 @@ def runtime_status_command(since, namespace, severity, tail, loki_url, fail_on):
     # ── Header ────────────────────────────────────────────────────────────────
     console.print()
     title_parts = [
-        f"[bold]GuardOps [cyan]Runtime Status[/cyan][/bold]",
+        "[bold]GuardOps [cyan]Runtime Status[/cyan][/bold]",
         f"last [cyan]{since}[/cyan]",
     ]
     if namespace:

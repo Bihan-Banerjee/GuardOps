@@ -1,0 +1,142 @@
+# k8s/networkpolicy/quarantine-template.yaml
+#
+# GuardOps — Phase 8 — Reference NetworkPolicy for pod quarantine.
+#
+# PURPOSE:
+#   This file is the *human-readable reference* for the quarantine policy that
+#   alertmanager_handler.py generates and applies programmatically.
+#   It documents exactly what traffic is blocked and why.
+#
+#   The handler does NOT kubectl apply this file directly — it builds an
+#   equivalent policy dict in _build_quarantine_policy() and pipes it to
+#   `kubectl apply -f -`.  Keeping this file in the repo means operators
+#   can understand and audit the quarantine mechanism without reading Python.
+#
+# HOW IT WORKS:
+#   1. A CRITICAL Falco alert fires (e.g. "Shell Spawned Inside Container").
+#   2. Alertmanager POSTs to the webhook handler pod.
+#   3. alertmanager_handler._quarantine_pod() runs two kubectl commands:
+#        a. kubectl label pod <pod-name> guardops.io/quarantine=true -n <ns>
+#        b. kubectl apply -f - (piped YAML matching this structure)
+#   4. This NetworkPolicy immediately takes effect:
+#        - ALL inbound traffic to the pod is dropped (ingress: []).
+#        - ALL outbound is blocked EXCEPT DNS on port 53 UDP+TCP.
+#   5. When the alert resolves, _handle_resolved() deletes the policy and
+#      removes the quarantine label from the pod.
+#
+# WHY THIS LABEL SELECTOR (guardops.io/quarantine: "true"):
+#   Using a dedicated quarantine label — rather than the pod's existing app
+#   label — gives pod-level precision.  If three replicas of "my-app" are
+#   running, only the offending pod gets the label; its siblings are unaffected
+#   and continue serving traffic normally.
+#
+# WHY ALLOW DNS (port 53):
+#   Logging agents (Promtail, Fluent Bit) and the pod's own health-check
+#   infrastructure rely on DNS lookups.  Allowing port 53 keeps the pod
+#   observable while blocking all other outbound channels that could be used
+#   for data exfiltration or C2 communication.
+#
+# NAMING CONVENTION (set by alertmanager_handler.py):
+#   guardops-quarantine-<fingerprint[:8]>
+#   e.g. guardops-quarantine-a1b2c3d4
+#
+#   The Alertmanager fingerprint suffix makes each policy unique per alert
+#   series and lets _handle_resolved() compute the policy name from the
+#   fingerprint alone (no external state needed).
+#
+# TO MANUALLY APPLY THIS TEMPLATE (fill in NAMESPACE + FINGERPRINT first):
+#   kubectl apply -f k8s/networkpolicy/quarantine-template.yaml
+#
+# TO LIST ALL ACTIVE QUARANTINE POLICIES:
+#   kubectl get networkpolicy -A -l guardops.io/managed-by=guardops
+#
+# TO MANUALLY RELEASE A QUARANTINED POD:
+#   kubectl delete networkpolicy guardops-quarantine-<fp8> -n <namespace>
+#   kubectl label pod <pod-name> guardops.io/quarantine- -n <namespace>
+#   (The trailing `-` on the label key removes the label.)
+#
+# RELATED FILES:
+#   backend/security/alertmanager_handler.py  — handler that applies this policy
+#   k8s/alertmanager/quarantine-webhook.yaml  — Alertmanager receiver config
+#   cli/commands/quarantine_cmd.py            — guardops quarantine-status
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  # Replace <FINGERPRINT_8> with the first 8 chars of the Alertmanager fingerprint.
+  # The handler generates: guardops-quarantine-<fingerprint[:8]>
+  name: guardops-quarantine-<FINGERPRINT_8>
+
+  # Replace <NAMESPACE> with the namespace of the quarantined pod.
+  namespace: <NAMESPACE>
+
+  labels:
+    # Managed-by label lets `guardops quarantine-status` and `kubectl get`
+    # efficiently list all policies created by this handler.
+    guardops.io/managed-by: guardops
+    guardops.io/phase: "8"
+    guardops.io/policy-type: quarantine
+
+  annotations:
+    # Human-readable reason this policy exists — visible in kubectl describe.
+    guardops.io/quarantine-reason: automatic-quarantine-on-critical-falco-alert
+
+    # Alertmanager fingerprint — tie this policy back to the triggering alert.
+    # Replace <FINGERPRINT_FULL> with the full fingerprint string.
+    guardops.io/alert-fingerprint: <FINGERPRINT_FULL>
+
+    # Falco rule that triggered the quarantine.
+    # Replace <FALCO_RULE> with the rule name from the alert labels.
+    guardops.io/falco-rule: <FALCO_RULE>
+
+spec:
+  # ── Pod selector ─────────────────────────────────────────────────────────────
+  #
+  # Selects ONLY pods that have been explicitly labelled by the handler.
+  # Normal pods without the quarantine label are not affected by this policy.
+  podSelector:
+    matchLabels:
+      guardops.io/quarantine: "true"
+
+  # ── Policy types ─────────────────────────────────────────────────────────────
+  #
+  # Declare both Ingress and Egress so Kubernetes applies rules for both
+  # directions.  Without this, only the explicitly listed direction is managed.
+  policyTypes:
+    - Ingress
+    - Egress
+
+  # ── Ingress rules ─────────────────────────────────────────────────────────────
+  #
+  # An empty list means DENY ALL inbound traffic.
+  # The field must be present and explicitly set to [] — omitting the ingress
+  # key entirely would mean "allow all" (not what we want).
+  #
+  # Effect: no other pod, service, or external client can initiate a connection
+  # to the quarantined pod.  Existing long-lived connections (e.g. TCP keepalives)
+  # are also dropped once the policy is applied.
+  ingress: []
+
+  # ── Egress rules ──────────────────────────────────────────────────────────────
+  #
+  # ALLOW: DNS only (UDP+TCP port 53, any destination).
+  # DENY:  All other outbound traffic (HTTP, HTTPS, database connections, etc.).
+  #
+  # Why allow DNS:
+  #   - Logging/telemetry agents inside the pod need name resolution.
+  #   - Kubernetes liveness probes that use hostnames continue to work,
+  #     which lets the kubelet correctly report pod state.
+  #   - Blocks real exfiltration vectors (TCP/443, TCP/80, raw sockets)
+  #     while keeping the pod observable.
+  #
+  # Why no ipBlock or namespaceSelector on the DNS rule:
+  #   CoreDNS lives in kube-system; in-cluster DNS resolvers vary by
+  #   cluster CNI setup.  An open port-53 rule is safer than hard-coding
+  #   the CoreDNS ClusterIP, which can change between cluster recreates.
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

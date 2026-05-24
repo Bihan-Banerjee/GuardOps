@@ -1,0 +1,277 @@
+# k8s/alertmanager/quarantine-webhook.yaml
+#
+# GuardOps Phase 8 — Self-Healing: Alertmanager → Webhook Wiring
+#
+# This file contains two resources that connect Prometheus alerting to the
+# GuardOps self-healing webhook handler:
+#
+#   1. PrometheusRule — defines the alert conditions that fire when Falco
+#      detects a critical runtime event or a node is under resource pressure.
+#
+#   2. AlertmanagerConfig — routes those alerts to the webhook handler service
+#      and configures retry / send-resolved behaviour.
+#
+# PREREQUISITES:
+#   - kube-prometheus-stack installed (Phase 5)
+#   - Falco installed with metrics enabled (Phase 7)
+#   - guardops-alertmanager-webhook Service deployed (Terraform module)
+#
+# APPLY:
+#   kubectl apply -f k8s/alertmanager/quarantine-webhook.yaml
+#
+# VERIFY:
+#   kubectl get prometheusrule guardops-self-healing -n monitoring
+#   kubectl get alertmanagerconfig guardops-self-healing -n monitoring
+#   # Trigger a test alert:
+#   kubectl create job falco-test-$(Get-Date -Format 'mmss') \
+#     --from=cronjob/falco-simulator -n monitoring
+#   # Check Alertmanager UI: kubectl port-forward svc/alertmanager 9093:9093 -n monitoring
+#
+# NOTE ON POD-LEVEL LABELS:
+#   The webhook handler reads alert.labels.pod and alert.labels.namespace to
+#   identify which pod to quarantine.  These labels must be present on each
+#   firing alert.  The rules below use Falco's metric labels
+#   (k8s_pod_name, k8s_namespace_name) which Falco emits when
+#   falco.yaml has metrics.enabled: true and json_output: true.
+#   If your Falco version uses different label names, update the `by(...)` and
+#   label_replace() calls in the CRITICAL alert expr accordingly.
+
+---
+# ── 1. PrometheusRule ─────────────────────────────────────────────────────────
+#
+# Defines two alert groups:
+#   guardops.falco       — fires on CRITICAL/EMERGENCY/ALERT Falco events
+#   guardops.node        — fires on node resource pressure (re-exported as
+#                          GuardOps-namespaced alerts so the AlertmanagerConfig
+#                          matcher can select them without touching kube-prometheus-
+#                          stack's built-in routes)
+#
+# kube-prometheus-stack picks up PrometheusRule resources in the same namespace
+# that match the Prometheus CR's ruleSelector (default: all rules in monitoring).
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: guardops-self-healing
+  namespace: monitoring
+  labels:
+    # This label is required for kube-prometheus-stack's Prometheus CR to
+    # discover the rule.  Verify with:
+    #   kubectl get prometheus -n monitoring -o yaml | grep ruleSelector -A5
+    app: kube-prometheus-stack
+    release: kube-prometheus-stack
+    guardops.io/component: self-healing
+spec:
+  groups:
+
+    # ── Falco critical events ────────────────────────────────────────────────
+    - name: guardops.falco
+      # Evaluate every 30 s.  Falco emits events immediately; the evaluation
+      # interval controls how quickly Prometheus detects the metric change.
+      interval: 30s
+      rules:
+
+        - alert: GuardOpsFalcoCritical
+          # falco_events_total is incremented by Falco's built-in Prometheus
+          # metrics endpoint (/metrics on port 8765) for every event it fires.
+          # We use increase() over 2 m to detect new events, not cumulative total.
+          #
+          # `by (priority, rule, k8s_pod_name, k8s_namespace_name)` preserves
+          # the pod/namespace identity so Alertmanager can pass them as labels
+          # to the webhook — the handler reads alert.labels.pod and
+          # alert.labels.namespace from these.
+          #
+          # label_replace() renames the Falco metric label k8s_pod_name → pod
+          # and k8s_namespace_name → namespace so they match what the handler
+          # expects without needing custom label_replace on the AlertmanagerConfig.
+          expr: |
+            label_replace(
+              label_replace(
+                increase(
+                  falco_events_total{
+                    priority=~"Critical|Emergency|Alert"
+                  }[2m]
+                ) > 0,
+                "pod", "$1", "k8s_pod_name", "(.*)"
+              ),
+              "namespace", "$1", "k8s_namespace_name", "(.*)"
+            )
+          # for: 0m means fire immediately — no pending period.
+          # Runtime threats should quarantine as fast as possible.
+          for: 0m
+          labels:
+            severity: critical
+            guardops_action: quarantine
+          annotations:
+            summary: >-
+              Critical Falco event in pod {{ $labels.pod }}
+              (rule: {{ $labels.rule }})
+            description: >-
+              Falco detected a CRITICAL/EMERGENCY/ALERT priority event in pod
+              {{ $labels.pod }} (namespace: {{ $labels.namespace }}).
+              Rule: {{ $labels.rule }}.
+              The GuardOps webhook handler will quarantine this pod automatically.
+            runbook_url: "https://github.com/Bihan-Banerjee/GuardOps/wiki/Phase8-Quarantine"
+
+        # Informational — HIGH/MEDIUM Falco events logged but no action taken.
+        - alert: GuardOpsFalcoHigh
+          expr: |
+            increase(
+              falco_events_total{priority=~"Error|Warning"}[2m]
+            ) > 0
+          for: 0m
+          labels:
+            severity: warning
+            guardops_action: observe
+          annotations:
+            summary: "High/Medium Falco event ({{ $labels.rule }})"
+            description: >-
+              Falco fired a non-critical alert (priority={{ $labels.priority }},
+              rule={{ $labels.rule }}).  No automatic action taken.
+              Check `guardops runtime-status` for details.
+
+    # ── Node resource pressure ───────────────────────────────────────────────
+    - name: guardops.node
+      interval: 60s
+      rules:
+
+        - alert: GuardOpsNodeMemoryPressure
+          # kube_node_status_condition is provided by kube-state-metrics.
+          # condition="MemoryPressure", status="true" means the kubelet has
+          # determined the node is low on memory.
+          expr: |
+            kube_node_status_condition{
+              condition="MemoryPressure",
+              status="true"
+            } == 1
+          for: 2m
+          labels:
+            severity: warning
+            guardops_action: drain
+          annotations:
+            summary: "Node {{ $labels.node }} is under memory pressure"
+            description: >-
+              Node {{ $labels.node }} has been reporting MemoryPressure for
+              over 2 minutes.  The GuardOps webhook handler will cordon and
+              drain this node; EKS will replace it automatically.
+
+        - alert: GuardOpsNodeDiskPressure
+          expr: |
+            kube_node_status_condition{
+              condition="DiskPressure",
+              status="true"
+            } == 1
+          for: 2m
+          labels:
+            severity: warning
+            guardops_action: drain
+          annotations:
+            summary: "Node {{ $labels.node }} is under disk pressure"
+            description: >-
+              Node {{ $labels.node }} has been reporting DiskPressure for
+              over 2 minutes.  Cordoning and draining.
+
+        - alert: GuardOpsNodeNotReady
+          expr: |
+            kube_node_status_condition{
+              condition="Ready",
+              status="true"
+            } == 0
+          # 5 m pending prevents flapping on transient blips (rolling updates,
+          # brief network interruptions).
+          for: 5m
+          labels:
+            severity: critical
+            guardops_action: drain
+          annotations:
+            summary: "Node {{ $labels.node }} has been NotReady for 5 minutes"
+            description: >-
+              Node {{ $labels.node }} has not been Ready for 5 minutes.
+              Cordoning and draining to let EKS replace it.
+
+---
+# ── 2. AlertmanagerConfig ─────────────────────────────────────────────────────
+#
+# Routes GuardOps alerts to the webhook handler service.
+#
+# AlertmanagerConfig is a namespaced CRD provided by the Prometheus Operator.
+# It appends sub-routes to the Alertmanager global route — you don't need to
+# touch the main Alertmanager config secret.
+#
+# The routes here match on alert labels set by the PrometheusRule above.
+# send_resolved: true ensures _handle_resolved() is called when an alert clears,
+# which removes the quarantine NetworkPolicy and pod label.
+#
+# Alertmanager retry defaults (inherited from global config):
+#   group_wait:      30s   (wait 30 s before sending first notification)
+#   group_interval:  5m    (wait 5 m before sending a second batch)
+#   repeat_interval: 4h    (re-notify after 4 h if still firing)
+#
+# For self-healing we want fast initial delivery (group_wait: 10s) and
+# no repeat notifications (repeat_interval: 24h — the action was already taken).
+
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: guardops-self-healing
+  namespace: monitoring
+  labels:
+    guardops.io/component: self-healing
+spec:
+  route:
+    # Match all alerts that have a guardops_action label (set by our PrometheusRule).
+    # This keeps the route scoped to GuardOps alerts only — kube-prometheus-stack's
+    # built-in alerts continue flowing through their existing routes.
+    matchers:
+      - name: guardops_action
+        matchType: =~
+        value: "quarantine|drain|observe"
+
+    # Send the first notification quickly — quarantine should happen within
+    # seconds of Prometheus detecting the Falco metric change.
+    groupWait: 10s
+    groupInterval: 5m
+    # Don't re-notify after 24 h — the action was taken on first delivery.
+    repeatInterval: 24h
+
+    receiver: guardops-webhook
+
+    # Sub-routes for different action types, allowing tuning per action.
+    routes:
+      # CRITICAL Falco events → quarantine pod (fast delivery)
+      - matchers:
+          - name: guardops_action
+            value: quarantine
+        receiver: guardops-webhook
+        groupWait: 5s
+        continue: false
+
+      # Node pressure → drain node (slightly longer group_wait to avoid
+      # draining on a single transient data point)
+      - matchers:
+          - name: guardops_action
+            value: drain
+        receiver: guardops-webhook
+        groupWait: 30s
+        continue: false
+
+      # Observe-only alerts → webhook still called but handler will skip them.
+      # Useful for audit logs in the webhook handler's structured output.
+      - matchers:
+          - name: guardops_action
+            value: observe
+        receiver: guardops-webhook
+        groupWait: 60s
+        continue: false
+
+  receivers:
+    - name: guardops-webhook
+      webhookConfigs:
+        - url: >-
+            http://guardops-alertmanager-webhook.monitoring.svc.cluster.local:9095/webhook
+          # send_resolved: true triggers _handle_resolved() in the handler,
+          # which removes the quarantine NetworkPolicy and pod label.
+          sendResolved: true
+          # httpConfig can be extended with TLS / bearer token if the handler
+          # is secured in a future phase.
+          httpConfig: {}

@@ -1,16 +1,16 @@
-﻿project:
-  name: test-app
-  description: ''
+project:
+  name: guardops-app
+  description: 'GuardOps test application'
   cloud: aws
 docker:
   dockerfile: Dockerfile
   context: .
-  registry: "236796665744.dkr.ecr.ap-south-1.amazonaws.com"
-  image_name: test-app
+  registry: '236796665744.dkr.ecr.ap-south-1.amazonaws.com'
+  image_name: guardops-app
 kubernetes:
   namespace: default
-  cluster_context: k3d-guardops-local
-  deployment_name: test-app
+  cluster_context: 'arn:aws:eks:ap-south-1:236796665744:cluster/guardops-prod-cluster'
+  deployment_name: guardops-app
 security:
   fail_on_severity: HIGH
   tools:
@@ -20,7 +20,14 @@ security:
     sonarqube: false
     owasp_zap: true
 monitoring:
-  grafana_url: ''
-  prometheus_url: ''
+  grafana_url: 'http://localhost:3000'
+  prometheus_url: 'http://localhost:9090'
   loki_url: 'http://localhost:3100'
-
+runtime_security:
+  enabled: true
+  falco_alert_window: 1h
+  alert_fail_on: CRITICAL
+  namespaces_to_watch: []
+self_healing:
+  enabled: false
+  webhook_url: ''

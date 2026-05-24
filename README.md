@@ -1,13 +1,13 @@
 # GuardOps
 
-> Production-grade DevSecOps CLI. Build, scan, deploy, and monitor runtime security with gates at every stage.
+> Production-grade DevSecOps CLI. Build, scan, deploy, monitor runtime security, and self-heal with gates at every stage.
 
 [![PyPI version](https://img.shields.io/pypi/v/guardops.svg)](https://pypi.org/project/guardops/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/Bihan-Banerjee/GuardOps/actions/workflows/ci.yaml/badge.svg)](https://github.com/Bihan-Banerjee/GuardOps/actions)
 
-GuardOps wraps a complete secure delivery pipeline behind a single command. Given any application repo, it builds a Docker image, runs four security scanners in sequence, deploys to Kubernetes via Helm, runs a post-deploy DAST scan, exposes live metrics to Prometheus, and queries runtime security alerts from Loki — blocking the pipeline if HIGH or CRITICAL findings are detected at any stage.
+GuardOps wraps a complete secure delivery pipeline behind a single command. Given any application repo, it builds a Docker image, runs four security scanners in sequence, deploys to Kubernetes via Helm, runs a post-deploy DAST scan, exposes live metrics to Prometheus, queries runtime security alerts from Loki, and automatically quarantines compromised pods via Alertmanager webhooks — blocking the pipeline if HIGH or CRITICAL findings are detected at any stage.
 
 ```
 guardops deploy --env prod
@@ -21,9 +21,15 @@ guardops runtime-status
 
 Queries Loki for Falco-format runtime security alerts (shell spawns, sensitive file reads, package manager execution, /etc writes) and renders a severity-sorted table. Use `--fail-on CRITICAL` as a post-deploy CI gate.
 
+```
+guardops quarantine-status
+```
+
+Shows pods currently isolated by the Phase 8 self-healing system — active NetworkPolicies, quarantined pod names, triggering Falco rule, and age. Use `--release <pod>` to manually lift a quarantine after investigation.
+
 ---
 
-## Current Status — v0.7.0
+## Current Status — v0.8.0
 
 | Phase | Version | Status | What was built |
 |-------|---------|--------|----------------|
@@ -35,6 +41,7 @@ Queries Loki for Falco-format runtime security alerts (shell spawns, sensitive f
 | 5 — Observability | v0.5.0 | ✅ Done | Prometheus + Grafana via kube-prometheus-stack, `/metrics` endpoint, ServiceMonitor, EBS CSI driver, custom dashboards |
 | 6 — Security Hardening | v0.6.1 | ✅ Done | GitHub OIDC replaces IAM user (no more static keys), DAST via OWASP ZAP with post-deploy scan and auto-rollback on CRITICAL |
 | 7 — Runtime Security | v0.7.0 | ✅ Done | Loki + Promtail log pipeline, Falco-format alert ingestion, `guardops runtime-status`, CI runtime gate |
+| 8 — Self-Healing | v0.8.0 | ✅ Done | Alertmanager webhook handler, automatic NetworkPolicy quarantine on CRITICAL Falco alert, `guardops quarantine-status`, Terraform alertmanager-webhook module |
 
 ---
 
@@ -42,7 +49,6 @@ Queries Loki for Falco-format runtime security alerts (shell spawns, sensitive f
 
 | Phase | Target | What it adds |
 |-------|--------|-------------|
-| 8 — Self-Healing | v0.8.0 | Alertmanager webhook receiver, automatic NetworkPolicy quarantine on Falco alert, node drain on resource exhaustion |
 | 9 — Multi-Environment | v0.9.0 | Staging + prod namespaces, blue-green deploy strategy, `guardops switch --slot green` |
 | 10 — Full Production | v1.0.0 | Real domain + TLS via cert-manager, ArgoCD GitOps, runbook documentation |
 
@@ -94,6 +100,44 @@ guardops runtime-status (Phase 7)
     +-- Normalises Falco priority -> CRITICAL/HIGH/MEDIUM/LOW
     +-- Renders severity-sorted Rich table in terminal
     +-- --fail-on CRITICAL exits 1 for CI gate use
+
+guardops quarantine-status (Phase 8)
+    |
+    +-- kubectl get networkpolicy -l guardops.io/managed-by=guardops
+    +-- kubectl get pods -l guardops.io/quarantine=true
+    +-- Renders locked-pod table + active NetworkPolicy table
+    +-- --release <pod> lifts quarantine manually
+```
+
+### Self-Healing Pipeline (Phase 8)
+
+```
+CRITICAL Falco alert fires (shell spawn, etc.)
+    |
+    v
+Alertmanager receives alert from Prometheus
+    |
+    v
+POST /webhook -> guardops-alertmanager-webhook pod
+    |
+    v
+alertmanager_handler.py
+    +-- kubectl label pod <pod> guardops.io/quarantine=true
+    +-- kubectl apply NetworkPolicy (deny-all ingress, DNS-only egress)
+    |
+    v
+Pod isolated — no inbound traffic, no outbound except port 53
+    |
+    v
+Alert resolves (Falco stops firing)
+    |
+    v
+POST /webhook status=resolved
+    +-- kubectl delete networkpolicy guardops-quarantine-<fp8>
+    +-- kubectl label pod <pod> guardops.io/quarantine-
+    |
+    v
+Pod released — network restored
 ```
 
 ### Infrastructure (AWS, Terraform-managed)
@@ -121,8 +165,12 @@ ap-south-1 (Mumbai)
 |         +-- Loki        (log aggregation, 10Gi EBS)  [Phase 7]  |
 |         +-- Promtail    (log shipping DaemonSet)      [Phase 7]  |
 |         +-- falco-simulator CronJob (every 3 min)    [Phase 7]  |
+|         +-- guardops-alertmanager-webhook pod         [Phase 8]  |
+|              +-- /healthz, /readyz, /webhook endpoints           |
+|              +-- ServiceAccount + ClusterRole (RBAC)             |
 |                                                                  |
 |  ECR: guardops-app (scan-on-push, 10-image lifecycle)            |
+|       guardops-app:webhook-latest (handler image)    [Phase 8]  |
 |  S3:  guardops-reports-* (scan reports, versioned)               |
 |  S3:  guardops-tfstate-* (Terraform remote state)               |
 |  DynamoDB: guardops-tf-lock (state locking)                      |
@@ -137,7 +185,7 @@ Push to main
     |
     v
 Job 1: build-test
-    pytest (167+ tests) + ruff + mypy
+    pytest (220+ tests) + ruff + mypy
     |
     v
 Job 2: sast
@@ -226,6 +274,15 @@ guardops runtime-status --since 24h --severity HIGH
 
 # Use as a CI gate (exits 1 if CRITICAL alerts found)
 guardops runtime-status --fail-on CRITICAL
+
+# Check quarantine status — Phase 8
+guardops quarantine-status -n default
+
+# Check all namespaces
+guardops quarantine-status -A
+
+# Release a quarantined pod after investigation
+guardops quarantine-status --release <pod-name> --namespace default
 ```
 
 ---
@@ -258,6 +315,15 @@ kubectl port-forward svc/kube-prometheus-stack-prometheus 9090:9090 -n monitorin
 # Port-forward Loki (Phase 7)
 kubectl port-forward svc/loki 3100:3100 -n monitoring
 # Then: guardops runtime-status
+
+# Port-forward Alertmanager (Phase 8)
+kubectl port-forward svc/kube-prometheus-stack-alertmanager 9093:9093 -n monitoring
+# Open http://localhost:9093 — verify guardops-webhook receiver
+
+# Port-forward webhook handler (Phase 8)
+kubectl port-forward svc/guardops-alertmanager-webhook 9095:9095 -n monitoring
+# curl http://localhost:9095/healthz  -> {"status":"ok","version":"0.8.0"}
+# curl http://localhost:9095/readyz   -> {"status":"ready","kubectl":"..."}
 ```
 
 ### Useful PromQL queries
@@ -301,6 +367,9 @@ rate(container_cpu_usage_seconds_total{namespace="default"}[5m])
 # After terraform apply and kubectl configure:
 .\scripts\setup-observability.ps1
 .\scripts\setup-runtime-security.ps1   # Phase 7: Loki + Promtail + Falco simulator
+# Phase 8 webhook handler deployed automatically by terraform apply
+# (enable_self_healing = true in terraform.tfvars)
+kubectl apply -f k8s/alertmanager/quarantine-webhook.yaml  # Phase 8: wire Alertmanager
 ```
 
 ### Shutdown (nightly — prevents orphaned EBS volumes)
@@ -355,7 +424,7 @@ kubectl apply -f k8s/falco/falco-simulator-cronjob.yaml
 kubectl create job falco-test-1 --from=cronjob/falco-simulator -n monitoring
 
 # Wait for Promtail flush (~90s), then query
-guardops runtime-status --since 5m
+guardops runtime-status --since 15m
 ```
 
 ### `guardops runtime-status` output
@@ -379,9 +448,129 @@ MEDIUM     GuardOps Write to /etc Inside Container     test-app-...     default 
 
 ---
 
+## Self-Healing (Phase 8)
+
+Phase 8 adds automated incident response: when a CRITICAL Falco alert fires, a FastAPI webhook handler automatically isolates the offending pod using a Kubernetes NetworkPolicy and labels it for visibility. When the alert resolves, the quarantine is automatically lifted.
+
+### How it works
+
+```
+CRITICAL Falco alert -> Prometheus -> Alertmanager
+    -> POST /webhook -> guardops-alertmanager-webhook pod (FastAPI)
+         -> kubectl label pod guardops.io/quarantine=true
+         -> kubectl apply NetworkPolicy (deny-all ingress, DNS-only egress)
+    Alert resolves -> POST /webhook status=resolved
+         -> kubectl delete networkpolicy
+         -> kubectl label pod guardops.io/quarantine-
+```
+
+### NetworkPolicy applied on quarantine
+
+The handler applies a policy named `guardops-quarantine-<fingerprint[:8]>` that:
+- **Ingress:** denies all inbound traffic (no service can reach the pod)
+- **Egress:** allows only DNS (UDP/TCP port 53) — keeps logging agents working while blocking all exfiltration vectors (HTTP, HTTPS, raw sockets)
+
+The pod-level quarantine label (`guardops.io/quarantine=true`) ensures only the offending pod is isolated — other replicas of the same deployment continue serving traffic normally.
+
+### Webhook handler
+
+The handler runs as a Kubernetes Deployment in the `monitoring` namespace, deployed by Terraform (`modules/alertmanager-webhook`). It exposes:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/healthz` | GET | Liveness probe — returns `{"status":"ok","version":"0.8.0"}` |
+| `/readyz` | GET | Readiness probe — verifies kubectl is reachable; returns 503 if not |
+| `/webhook` | POST | Alertmanager webhook receiver |
+
+RBAC: the handler's ServiceAccount is bound to a ClusterRole with the minimum permissions needed — `pods/patch`, `networkpolicies` CRUD, `nodes/patch`.
+
+### `guardops quarantine-status` output
+
+```
+GuardOps · Quarantine Status
+Phase 8 — Self-Healing  |  Active quarantine policies and isolated pods
+
+Checking namespace(s): default
+
+── Quarantined Pods  (1) ───────────────────────────────────────────────────
+
+╭──────────────────────────────────┬───────────┬──────────┬──────────────────────┬─────╮
+│ Pod Name                         │ Namespace │  Phase   │ Node                 │ Age │
+├──────────────────────────────────┼───────────┼──────────┼──────────────────────┼─────┤
+│ 🔒 guardops-app-d9f557c78-2hxcw  │ default   │ Running  │ ip-10-0-11-46...     │  2m │
+╰──────────────────────────────────┴───────────┴──────────┴──────────────────────┴─────╯
+
+── Active Quarantine NetworkPolicies  (1) ──────────────────────────────────
+
+╭────────────────────────────────────────┬───────────┬───────────────────────────────────┬──────────┬─────╮
+│ Policy Name                            │ Namespace │ Falco Rule                        │ FP       │ Age │
+├────────────────────────────────────────┼───────────┼───────────────────────────────────┼──────────┼─────┤
+│ guardops-quarantine-testfp12           │ default   │ Shell Spawned Inside Container    │ testfp12 │  2m │
+╰────────────────────────────────────────┴───────────┴───────────────────────────────────┴──────────┴─────╯
+
+  To manually release a pod after investigation:
+   guardops quarantine-status --release <pod-name> --namespace <ns>
+```
+
+### Terraform module
+
+```
+infra/terraform/modules/alertmanager-webhook/
+    main.tf       ServiceAccount, ClusterRole, ClusterRoleBinding, Deployment, Service
+    variables.tf  project_name, environment, webhook_image (required); webhook_port, replicas (optional)
+    outputs.tf    service_url, healthz_url, service_name, deployment_name, namespace
+```
+
+Enable in `terraform.tfvars`:
+```hcl
+enable_self_healing = true
+webhook_image       = "123456789012.dkr.ecr.ap-south-1.amazonaws.com/guardops-app:webhook-latest"
+```
+
+### Building the webhook image
+
+```powershell
+# Build Dockerfile.webhook (installs fastapi, uvicorn, pyyaml, kubectl into the app image)
+cd D:\EXTRA\GuardOps
+$ECR = "123456789012.dkr.ecr.ap-south-1.amazonaws.com/guardops-app"
+aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin "123456789012.dkr.ecr.ap-south-1.amazonaws.com"
+docker build -t "${ECR}:webhook-latest" -f Dockerfile.webhook .
+docker push "${ECR}:webhook-latest"
+```
+
+### Testing quarantine manually
+
+```powershell
+# Port-forward the handler
+kubectl port-forward svc/guardops-alertmanager-webhook 9095:9095 -n monitoring
+
+# Fire a test quarantine webhook
+$pod = kubectl get pods -n default --no-headers -o custom-columns=":metadata.name" | Select-Object -First 1
+Invoke-WebRequest -Uri "http://localhost:9095/webhook" -Method POST `
+    -ContentType "application/json" -UseBasicParsing -Body (ConvertTo-Json -Depth 10 @{
+        receiver="guardops-webhook"; status="firing"
+        alerts=@(@{status="firing"; fingerprint="testfp123"
+            labels=@{alertname="GuardOpsFalcoCritical"; severity="critical"
+                     guardops_action="quarantine"; pod=$pod; namespace="default"
+                     rule="Shell Spawned Inside Container"}
+            startsAt=(Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            endsAt="0001-01-01T00:00:00Z"})
+        version="4"; groupKey="test"; truncatedAlerts=0
+        groupLabels=@{}; commonLabels=@{}; commonAnnotations=@{}
+        externalURL="http://alertmanager:9093"
+    })
+
+# Verify
+guardops quarantine-status -n default
+kubectl get networkpolicy -n default -l guardops.io/managed-by=guardops
+kubectl get pods -n default -l guardops.io/quarantine=true
+```
+
+---
+
 ## Security Pipeline
 
-Four pre-deploy tools run in sequence, followed by one post-deploy DAST scan and one post-deploy runtime check. All findings are normalised to a unified severity scale before gating.
+Four pre-deploy tools run in sequence, followed by one post-deploy DAST scan, one post-deploy runtime check, and continuous self-healing in production. All findings are normalised to a unified severity scale before gating.
 
 | Tool | Phase | Type | What it catches | Severity mapping |
 |------|-------|------|-----------------|-----------------|
@@ -392,6 +581,7 @@ Four pre-deploy tools run in sequence, followed by one post-deploy DAST scan and
 | SonarQube | Pre-deploy | Quality gate | Security hotspots, code smells | BLOCKER=CRITICAL, CRITICAL=HIGH, MAJOR=MEDIUM |
 | OWASP ZAP | Post-deploy | DAST | Runtime HTTP vulns, missing headers, exposed endpoints | High=CRITICAL, Medium=HIGH, Low=MEDIUM, Info=LOW |
 | Falco (via Loki) | Post-deploy | Runtime | Shell spawns, file reads, package managers, root processes | Maps Falco priority to unified scale |
+| Alertmanager webhook | Continuous | Self-healing | Automatic pod quarantine on CRITICAL Falco alert | CRITICAL triggers quarantine |
 
 **Bandit confidence adjustment:**
 
@@ -486,6 +676,11 @@ runtime_security:
   falco_alert_window: 1h       # default --since for runtime-status
   alert_fail_on: CRITICAL      # default --fail-on for CI gate
   namespaces_to_watch: []      # empty = query all namespaces
+
+# Phase 8 — Self-Healing
+self_healing:
+  enabled: false               # set true after terraform apply with enable_self_healing=true
+  webhook_url: ''              # set to terraform output webhook_service_url
 ```
 
 ---
@@ -547,6 +742,22 @@ Options:
 
 **Prerequisites:** Loki must be reachable. Run `kubectl port-forward svc/loki 3100:3100 -n monitoring` first.
 
+### `guardops quarantine-status` (Phase 8)
+
+```
+Options:
+  --namespace, -n TEXT   Kubernetes namespace to check.
+                         Defaults to kubernetes.namespace in .guardops.yaml.
+                         Pass 'all' to check every namespace.
+  --all-namespaces, -A   Check all namespaces (equivalent to kubectl -A).
+  --release TEXT         Manually release a quarantined pod by name.
+                         Deletes its NetworkPolicy and removes quarantine label.
+                         Requires --namespace.
+  --json-output          Print raw JSON (useful for CI/scripts).
+```
+
+**Prerequisites:** kubectl must be configured and the cluster reachable.
+
 ---
 
 ## Local Kubernetes Setup (k3d)
@@ -595,6 +806,10 @@ infra/terraform/
                     Requires live EKS + monitoring namespace. Use
                     enable_runtime_security=true in terraform.tfvars.
                     Alternative: scripts/setup-runtime-security.ps1
+        alertmanager-webhook/   Phase 8 self-healing handler (FastAPI pod)
+                    ServiceAccount + ClusterRole + Deployment + ClusterIP Service
+                    Requires live EKS + monitoring namespace + webhook image in ECR.
+                    Use enable_self_healing=true in terraform.tfvars.
 ```
 
 **Always-on (near-zero cost):** ECR, S3, DynamoDB, remote state bucket, OIDC provider, IAM role.
@@ -660,6 +875,8 @@ USER 10001
 
 Result: pip, wheel, and all build tools are absent from the final image, significantly reducing the CVE surface area reported by Trivy.
 
+Phase 8 adds `Dockerfile.webhook`, which layers `fastapi`, `uvicorn`, `pyyaml`, `httpx`, `kubernetes`, and `kubectl` on top of the app image to produce the self-healing handler image.
+
 ---
 
 ## Development
@@ -689,6 +906,7 @@ mypy cli/ backend/ --ignore-missing-imports
 | test_security.py | 68 | All 4 runners: skip, timeout, malformed JSON, severity mapping, report output |
 | test_deployer.py | 37 | kubectl apply, k3d import, rollout wait, rollback, service URL |
 | test_deployer_phase3.py | 35 | Helm deploy, rollback, release name sanitisation, chart path resolution |
+| test_runtime_security.py | 53 | Falco priority mapping, FalcoQueryResult counts/filtering, Loki HTTP layer, --fail-on logic |
 
 ---
 
@@ -726,6 +944,22 @@ Always use `helm install` (not `helm upgrade --install`) for kube-prometheus-sta
 **Falco eBPF on EKS + t3.large:**
 The Falco eBPF sensor requires kernel-level contiguous memory for perf ring buffer allocation. On a t3.large running the full monitoring stack, this allocation fails with `unable to mmap the perf-buffer`. The Falco simulator CronJob (`k8s/falco/`) provides identical JSON output for portfolio/dev use. See `infra/terraform/modules/falco/` for production deployment documentation.
 
+**HCL multi-line strings:**
+HCL does not support Python-style implicit string concatenation across lines inside parentheses. All `description` values in Terraform files must be single-line strings. The `+` operator is also not valid for string concatenation in HCL — use interpolation (`"${var.a}.${var.b}"`) instead.
+
+**Terraform identity change error after manual kubectl deletes:**
+If resources are deleted outside Terraform (e.g. `kubectl delete deployment`) and then `terraform apply` throws `Unexpected Identity Change`, run:
+```powershell
+terraform state rm "module.alertmanager_webhook[0].kubernetes_deployment.webhook"
+terraform apply -auto-approve
+```
+
+**Webhook image uses /venv/bin/python, not system Python:**
+The app image's CMD uses `/venv/bin/python` (an isolated virtualenv). All pip installs for the webhook handler in `Dockerfile.webhook` must target the venv: `RUN /venv/bin/python -m pip install ...`. Installing via `/usr/local/bin/pip` writes to a different site-packages that the venv Python cannot see.
+
+**kubectl --short flag removed in v1.28+:**
+The `readyz` endpoint in `alertmanager_handler.py` calls `kubectl version --client`. If your handler image uses kubectl v1.27 or earlier, remove `--short` from that call — the flag was removed and causes a non-zero exit code that makes `/readyz` return 503.
+
 **Nightly shutdown order matters:**
 ```powershell
 helm uninstall kube-prometheus-stack -n monitoring  # triggers EBS volume deletion
@@ -751,22 +985,23 @@ Skipping the Helm uninstall leaves orphaned EBS volumes that persist after `terr
 | v0.5.0 | Published | Prometheus + Grafana, `/metrics` endpoint, ServiceMonitor, EBS CSI, custom metrics |
 | v0.6.0 | Published | GitHub OIDC replaces static IAM keys, no more AWS_ACCESS_KEY_ID in CI |
 | v0.6.1 | Published | OWASP ZAP DAST post-deploy scan, auto-rollback on CRITICAL, ZAP image fix (ghcr.io), Windows Docker compat |
-| v0.7.0 | **Current** | Loki + Promtail log pipeline, Falco-format alert ingestion, `guardops runtime-status` CLI, CI runtime gate job, Falco rules + simulator |
-| v0.8.0 | Planned | Self-healing: Alertmanager webhook -> NetworkPolicy quarantine, node drain |
+| v0.7.0 | Published | Loki + Promtail log pipeline, Falco-format alert ingestion, `guardops runtime-status` CLI, CI runtime gate job, Falco rules + simulator |
+| v0.8.0 | **Current** | Self-healing: Alertmanager webhook handler, automatic pod quarantine via NetworkPolicy, auto-release on alert resolved, `guardops quarantine-status` CLI, Terraform alertmanager-webhook module, Dockerfile.webhook, PrometheusRule + AlertmanagerConfig wiring |
 | v0.9.0 | Planned | Multi-environment: staging + prod namespaces, blue-green deploy |
 | v1.0.0 | Planned | Real domain, TLS, ArgoCD GitOps, full runbooks |
 
 ---
+
 ## Planned Future Updates
 
 | Version | Status | Description |
 |---------|--------|-------------|
-| v1.1.0 | Planned |  SBOM + Cosign signing  |
+| v1.1.0 | Planned | SBOM + Cosign signing |
 | v1.2.0 | Planned | Kyverno admission control |
 | v1.3.0 | Planned | Scan metadata database |
 | v1.4.0 | Planned | Web dashboard |
 | v1.5.0 | Planned | Vulnerability waivers |
-| v1.6.0 | Planned | LLM=assisted triage |
+| v1.6.0 | Planned | LLM-assisted triage |
 | v1.7.0 | Planned | Risk-based scoring (scoped) |
 
 ---
