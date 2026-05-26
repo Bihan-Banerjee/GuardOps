@@ -18,6 +18,21 @@ WHY HELM:
 
 Phase 1/2 functions are kept for reference and tests but deploy_cmd.py
 now calls deploy_helm() for both --env local and --env prod.
+
+Phase 9 changes:
+  - deploy_helm() accepts two new keyword arguments:
+      release_name:     str | None  — explicit Helm release name. When provided,
+                                      used as-is (after sanitisation) instead of
+                                      deriving it from project_name. Allows
+                                      guardops deploy to produce release names like
+                                      guardops-app-staging-blue without changing
+                                      the project_name in .guardops.yaml.
+      extra_set_values: dict | None — appended to the helm upgrade command as
+                                      --set key=value pairs. Used by deploy_cmd.py
+                                      to inject blueGreen.enabled=true and
+                                      blueGreen.slot=blue/green at deploy time.
+  - Values-file selection extended from env == "prod" to env in ("staging", "prod")
+    so that values-staging.yaml is automatically applied for staging deploys.
 """
 
 import json
@@ -69,9 +84,11 @@ def deploy_helm(
     env: str = "local",
     chart_path: Optional[str] = None,
     extra_values: Optional[dict] = None,
+    release_name: str | None = None,          # Phase 9: explicit release name
+    extra_set_values: dict | None = None,     # Phase 9: blueGreen.* and other --set values
 ) -> DeployResult:
     """
-    Deploys using Helm — works on both k3d (local) and EKS (prod).
+    Deploys using Helm — works on both k3d (local) and EKS (prod/staging).
 
     Uses `helm upgrade --install --atomic` which means:
     - If the release doesn't exist: install it
@@ -80,14 +97,28 @@ def deploy_helm(
       to the previous release. No manual cleanup needed.
 
     Args:
-        project_name: Helm release name and app name
-        image_ref:    Full image reference e.g. "my-api:abc123" or
-                      "123.dkr.ecr.us-east-1.amazonaws.com/my-api:abc123"
-        namespace:    Kubernetes namespace
-        replicas:     Number of pod replicas
-        env:          "local" or "prod" — controls which values file is used
-        chart_path:   Path to Helm chart directory (auto-detected if None)
-        extra_values: Additional --set overrides as a dict
+        project_name:     App name — used as fallback release name and deployment_name
+                          in the returned DeployResult.
+        image_ref:        Full image reference e.g. "my-api:abc123" or
+                          "123.dkr.ecr.us-east-1.amazonaws.com/my-api:abc123"
+        namespace:        Kubernetes namespace.
+        replicas:         Number of pod replicas.
+        env:              "local" | "staging" | "prod" — controls which values
+                          overlay file is applied (values-staging.yaml / values-prod.yaml).
+        chart_path:       Path to Helm chart directory (auto-detected if None).
+        extra_values:     Additional --set overrides as a dict (existing mechanism,
+                          kept for backward compatibility).
+        release_name:     Phase 9 — explicit Helm release name. When provided it
+                          replaces the project_name-derived name. This is how
+                          deploy_cmd.py produces release names like
+                          guardops-app-staging-blue without changing project_name.
+                          The value is still passed through _sanitize_release_name
+                          to enforce Helm naming constraints.
+        extra_set_values: Phase 9 — dict of additional --set key=value pairs
+                          appended after all other flags. Used to inject
+                          blueGreen.enabled and blueGreen.slot for blue-green
+                          deploys. Processed after extra_values so these can
+                          override any earlier --set if needed.
 
     Returns:
         DeployResult with success/failure, helm release name, and revision.
@@ -118,12 +149,20 @@ def deploy_helm(
     image_repo, image_tag = _split_image_ref(image_ref)
     pull_policy = "Never" if env == "local" else "Always"
 
-    release_name = _sanitize_release_name(project_name)
+    # ── Phase 9: release name resolution ─────────────────────────────────────
+    # When release_name is provided by the caller (e.g. "guardops-app-staging-blue"),
+    # use it directly after sanitisation. When it is None, fall back to the
+    # pre-Phase-9 behaviour of deriving the name from project_name.
+    # This keeps all existing tests passing unchanged — they don't pass
+    # release_name so they get the same result as before.
+    sanitised_release = _sanitize_release_name(
+        release_name if release_name is not None else project_name
+    )
 
     # Build the helm command
     cmd = [
         "helm", "upgrade", "--install",
-        release_name,           # release name
+        sanitised_release,      # release name
         chart_path,             # chart directory
         "--namespace", namespace,
         "--create-namespace",   # create namespace if it doesn't exist
@@ -136,18 +175,36 @@ def deploy_helm(
         "--set", f"replicaCount={replicas}",
     ]
 
-    # Apply prod values on top of base values
-    if env == "prod":
-        prod_values = Path(chart_path) / "values-prod.yaml"
-        if prod_values.exists():
-            cmd += ["-f", str(prod_values)]
+    # ── Phase 9: values-file selection ────────────────────────────────────────
+    # Extended from env == "prod" to env in ("staging", "prod") so that
+    # values-staging.yaml is automatically applied for staging deploys.
+    # The naming convention is values-{env}.yaml — both files live in the
+    # chart directory alongside the base values.yaml.
+    if env in ("staging", "prod"):
+        env_values = Path(chart_path) / f"values-{env}.yaml"
+        if env_values.exists():
+            cmd += ["-f", str(env_values)]
+        else:
+            warn(
+                f"values-{env}.yaml not found at {env_values} — "
+                f"deploying with base values.yaml only."
+            )
 
-    # Apply any extra --set overrides
+    # Apply any extra --set overrides from the pre-Phase-9 extra_values dict
     if extra_values:
         for key, value in extra_values.items():
             cmd += ["--set", f"{key}={value}"]
 
-    info(f"Running helm upgrade --install for release [cyan]{release_name}[/cyan]...")
+    # ── Phase 9: extra_set_values ─────────────────────────────────────────────
+    # Appended last so they can override anything above if needed.
+    # In practice used for blueGreen.enabled=true and blueGreen.slot=blue/green.
+    # Example resulting flags:
+    #   --set blueGreen.enabled=true --set blueGreen.slot=blue
+    if extra_set_values:
+        for key, value in extra_set_values.items():
+            cmd += ["--set", f"{key}={value}"]
+
+    info(f"Running helm upgrade --install for release [cyan]{sanitised_release}[/cyan]...")
 
     result = run_command(cmd, capture_output=False, show_command=True)
 
@@ -156,7 +213,7 @@ def deploy_helm(
             success=False,
             namespace=namespace,
             deployment_name=project_name,
-            helm_release=release_name,
+            helm_release=sanitised_release,
             error_message=(
                 f"helm upgrade --install failed (exit {result.returncode}). "
                 "Helm automatically rolled back to the previous release if one existed."
@@ -164,8 +221,8 @@ def deploy_helm(
         )
 
     # Get the revision number from helm history
-    revision = _get_helm_revision(release_name, namespace)
-    service_url = _get_ingress_url(release_name, namespace)
+    revision = _get_helm_revision(sanitised_release, namespace)
+    service_url = _get_ingress_url(sanitised_release, namespace)
 
     return DeployResult(
         success=True,
@@ -173,7 +230,7 @@ def deploy_helm(
         deployment_name=project_name,
         replicas=replicas,
         service_url=service_url,
-        helm_release=release_name,
+        helm_release=sanitised_release,
         helm_revision=revision,
     )
 
@@ -189,10 +246,14 @@ def rollback_helm(
     `helm rollback <release> 0` rolls back to the previous release
     (revision - 1). Pass a specific revision number to roll back further.
 
+    In Phase 9, deploy_cmd.py passes the full slot-aware release name
+    (e.g. guardops-app-staging-blue) so that DAST-triggered rollbacks
+    target the correct slot release, not a generic project_name.
+
     Args:
-        release_name: Helm release name (usually the project name)
-        namespace:    Kubernetes namespace
-        revision:     Target revision (0 = previous release)
+        release_name: Helm release name — may include env/slot suffixes in Phase 9.
+        namespace:    Kubernetes namespace.
+        revision:     Target revision (0 = previous release).
 
     Returns:
         RollbackResult with success/failure and the revision rolled back to.
@@ -209,12 +270,14 @@ def rollback_helm(
         release_name,
         str(revision),
         "--namespace", namespace,
-        "--wait",       # wait for rollback to complete
+        "--wait",
         "--timeout", "2m",
     ]
 
-    info(f"Rolling back release [cyan]{release_name}[/cyan]"
-         f" to revision [cyan]{revision or 'previous'}[/cyan]...")
+    info(
+        f"Rolling back release [cyan]{release_name}[/cyan]"
+        f" to revision [cyan]{revision or 'previous'}[/cyan]..."
+    )
 
     result = run_command(cmd, capture_output=True, show_command=True)
 

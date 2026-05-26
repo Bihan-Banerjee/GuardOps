@@ -1,6 +1,6 @@
 [project]
 name = "guardops"
-version = "0.8.0"
+version = "0.9.0"
 description = "Autonomous DevSecOps CLI — build, scan, deploy, and monitor runtime security"
 readme = "README.md"
 license = "MIT"

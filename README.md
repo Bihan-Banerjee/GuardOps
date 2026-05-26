@@ -16,20 +16,27 @@ guardops deploy --env prod
 That one command: builds a multi-stage Docker image, runs Semgrep + Bandit + Trivy + SonarQube, pushes to ECR, deploys to EKS via Helm with automatic rollback on failure, runs OWASP ZAP DAST against the live application with auto-rollback on CRITICAL findings, and exposes `/metrics` to a live Grafana dashboard.
 
 ```
+guardops deploy --env staging --slot blue
+guardops switch --slot green --env staging
+```
+
+Phase 9 adds multi-environment support and blue-green deploys. Two Helm releases coexist in the `staging` namespace (`guardops-app-staging-blue`, `guardops-app-staging-green`). `guardops switch` patches a shared traffic Service selector to cut traffic between slots in under a second — no image rebuild, no Helm upgrade.
+
+```
 guardops runtime-status
 ```
 
 Queries Loki for Falco-format runtime security alerts (shell spawns, sensitive file reads, package manager execution, /etc writes) and renders a severity-sorted table. Use `--fail-on CRITICAL` as a post-deploy CI gate.
 
 ```
-guardops quarantine-status
+guardops quarantine-status --env staging
 ```
 
-Shows pods currently isolated by the Phase 8 self-healing system — active NetworkPolicies, quarantined pod names, triggering Falco rule, and age. Use `--release <pod>` to manually lift a quarantine after investigation.
+Shows pods currently isolated by the Phase 8 self-healing system — active NetworkPolicies, quarantined pod names, triggering Falco rule, and age. The `--env` flag scopes output to the correct namespace automatically. Use `--release <pod>` to manually lift a quarantine after investigation.
 
 ---
 
-## Current Status — v0.8.0
+## Current Status — v0.9.0
 
 | Phase | Version | Status | What was built |
 |-------|---------|--------|----------------|
@@ -42,6 +49,7 @@ Shows pods currently isolated by the Phase 8 self-healing system — active Netw
 | 6 — Security Hardening | v0.6.1 | ✅ Done | GitHub OIDC replaces IAM user (no more static keys), DAST via OWASP ZAP with post-deploy scan and auto-rollback on CRITICAL |
 | 7 — Runtime Security | v0.7.0 | ✅ Done | Loki + Promtail log pipeline, Falco-format alert ingestion, `guardops runtime-status`, CI runtime gate |
 | 8 — Self-Healing | v0.8.0 | ✅ Done | Alertmanager webhook handler, automatic NetworkPolicy quarantine on CRITICAL Falco alert, `guardops quarantine-status`, Terraform alertmanager-webhook module |
+| 9 — Multi-Environment | v0.9.0 | ✅ Done | Staging + prod namespace separation, blue-green deploy strategy, `guardops switch --slot`, environment-scoped config helpers, `staging-<sha>` ECR tags, `--env` on quarantine-status |
 
 ---
 
@@ -49,7 +57,6 @@ Shows pods currently isolated by the Phase 8 self-healing system — active Netw
 
 | Phase | Target | What it adds |
 |-------|--------|-------------|
-| 9 — Multi-Environment | v0.9.0 | Staging + prod namespaces, blue-green deploy strategy, `guardops switch --slot green` |
 | 10 — Full Production | v1.0.0 | Real domain + TLS via cert-manager, ArgoCD GitOps, runbook documentation |
 
 ---
@@ -60,7 +67,7 @@ Shows pods currently isolated by the Phase 8 self-healing system — active Netw
 Developer
     |
     v
-guardops deploy
+guardops deploy [--env local|staging|prod] [--slot blue|green]
     |
     +-- Step 1: Docker Build ──────────────────────────+
     |       Multi-stage build (builder + runtime)       |
@@ -78,13 +85,17 @@ guardops deploy
     |       Report written to security/reports/         |
     |                                                   |
     +-- Step 3: Registry Push ─────────────────────────+
-    |       local: k3d image import                     |
-    |       prod:  docker push -> AWS ECR               |
+    |       local:   k3d image import                   |
+    |       staging: docker push -> ECR (staging-<sha>) |
+    |       prod:    docker push -> ECR (<sha>)         |
     |                                                   |
     +-- Step 4: Helm Deploy ───────────────────────────+
     |       helm upgrade --install --atomic             |
-    |       local: k3d + values.yaml                   |
-    |       prod:  EKS + values-prod.yaml              |
+    |       local:   k3d + values.yaml                  |
+    |       staging: EKS staging ns + values-staging.yaml|
+    |       prod:    EKS default ns + values-prod.yaml  |
+    |       --slot blue/green: adds guardops.io/slot    |
+    |         label to pods + slot-specific release name|
     |       Automatic rollback on timeout or error      |
     |                                                   |
     +-- Step 5: DAST (Phase 6) ────────────────────────+
@@ -92,7 +103,14 @@ guardops deploy
             Target: live deployed application
             BLOCKED + auto-rollback if CRITICAL found
             Report written to security/reports/
-            Skipped for local env (no stable URL)
+            Skipped for local + staging (no stable URL)
+
+guardops switch --slot green --env staging (Phase 9)
+    |
+    +-- Checks readiness of both blue and green pods
+    +-- Patches shared traffic Service selector to slot=green
+    +-- Verifies endpoint IPs match target slot pods
+    +-- Instant cutover — no deploy, no rollout wait
 
 guardops runtime-status (Phase 7)
     |
@@ -101,12 +119,49 @@ guardops runtime-status (Phase 7)
     +-- Renders severity-sorted Rich table in terminal
     +-- --fail-on CRITICAL exits 1 for CI gate use
 
-guardops quarantine-status (Phase 8)
+guardops quarantine-status [--env staging|prod] (Phase 8/9)
     |
     +-- kubectl get networkpolicy -l guardops.io/managed-by=guardops
     +-- kubectl get pods -l guardops.io/quarantine=true
+    +-- --env resolves correct namespace automatically
     +-- Renders locked-pod table + active NetworkPolicy table
     +-- --release <pod> lifts quarantine manually
+```
+
+### Blue-Green Deploy (Phase 9)
+
+```
+guardops deploy --env staging --slot blue
+    |
+    v
+Helm release: guardops-app-staging-blue (namespace: staging)
+Pods labelled: guardops.io/slot=blue, app.kubernetes.io/name=guardops-app
+    |
+guardops deploy --env staging --slot green
+    |
+    v
+Helm release: guardops-app-staging-green (namespace: staging)
+Pods labelled: guardops.io/slot=green, app.kubernetes.io/name=guardops-app
+    |
+Both slots Running simultaneously — no traffic yet
+    |
+guardops switch --slot blue --env staging
+    |
+    v
+Shared traffic Service "guardops-app" (namespace: staging)
+    selector: app.kubernetes.io/name=guardops-app + guardops.io/slot=blue
+    annotation: guardops.io/active-slot=blue
+    |
+All traffic -> blue pods
+    |
+guardops switch --slot green --env staging
+    |
+    v
+Service selector patched: guardops.io/slot=green
+Instant cutover — endpoints change in < 2s (iptables propagation)
+    |
+Roll back at any time:
+guardops switch --slot blue --env staging
 ```
 
 ### Self-Healing Pipeline (Phase 8)
@@ -152,10 +207,17 @@ ap-south-1 (Mumbai)
 |                                                                  |
 |  Private Subnets (ap-south-1a, ap-south-1b)                     |
 |    EKS Managed Node Group (t3.large)                             |
-|    +-- guardops-app Pods (x2)                                    |
+|    +-- default namespace                                         |
+|    |    +-- guardops-app Pods (prod, x2)                        |
 |    |    +-- /healthz, /ready, /metrics endpoints                 |
 |    |    +-- port 8080, non-root UID 10001                        |
 |    |    +-- capabilities.drop ALL                                |
+|    |                                                             |
+|    +-- staging namespace                          [Phase 9]      |
+|    |    +-- guardops-app-staging Pods (x1)                      |
+|    |    +-- guardops-app-staging-blue Pods        [Phase 9]      |
+|    |    +-- guardops-app-staging-green Pods       [Phase 9]      |
+|    |    +-- guardops-app Service (traffic switch) [Phase 9]      |
 |    |                                                             |
 |    +-- monitoring namespace                                      |
 |         +-- Prometheus  (kube-prometheus-stack)                  |
@@ -170,7 +232,9 @@ ap-south-1 (Mumbai)
 |              +-- ServiceAccount + ClusterRole (RBAC)             |
 |                                                                  |
 |  ECR: guardops-app (scan-on-push, 10-image lifecycle)            |
-|       guardops-app:webhook-latest (handler image)    [Phase 8]  |
+|       :staging-<sha>  (staging builds)               [Phase 9]  |
+|       :<sha>          (prod builds)                              |
+|       :webhook-latest (handler image)                [Phase 8]  |
 |  S3:  guardops-reports-* (scan reports, versioned)               |
 |  S3:  guardops-tfstate-* (Terraform remote state)               |
 |  DynamoDB: guardops-tf-lock (state locking)                      |
@@ -185,7 +249,7 @@ Push to main
     |
     v
 Job 1: build-test
-    pytest (220+ tests) + ruff + mypy
+    pytest (240+ tests) + ruff + mypy
     |
     v
 Job 2: sast
@@ -242,14 +306,30 @@ guardops init
 # Build, scan, and deploy to local k3d
 guardops deploy
 
-# Build, scan, push to ECR, deploy to EKS
+# Build, scan, push to ECR, deploy to EKS (prod)
 guardops deploy --env prod
+
+# Deploy to staging namespace (tag: staging-, ZAP skipped)
+guardops deploy --env staging
 
 # Skip SonarQube if not configured
 guardops deploy --env prod --skip-sonarqube
 
 # Skip DAST scan (dev only)
 guardops deploy --env prod --skip-dast
+
+# Blue-green: deploy both slots into staging
+guardops deploy --env staging --slot blue
+guardops deploy --env staging --slot green
+
+# Cut traffic to green (instant Service selector patch)
+guardops switch --slot green --env staging
+
+# Roll back to blue (no rebuild needed)
+guardops switch --slot blue --env staging
+
+# Preview what switch would do without applying
+guardops switch --slot green --env staging --dry-run
 
 # View running pod health
 guardops status
@@ -275,14 +355,13 @@ guardops runtime-status --since 24h --severity HIGH
 # Use as a CI gate (exits 1 if CRITICAL alerts found)
 guardops runtime-status --fail-on CRITICAL
 
-# Check quarantine status — Phase 8
-guardops quarantine-status -n default
-
-# Check all namespaces
-guardops quarantine-status -A
+# Check quarantine status — Phase 8/9
+guardops quarantine-status                      # default namespace
+guardops quarantine-status --env staging        # staging namespace
+guardops quarantine-status -A                   # all namespaces
 
 # Release a quarantined pod after investigation
-guardops quarantine-status --release <pod-name> --namespace default
+guardops quarantine-status --release  --namespace staging
 ```
 
 ---
@@ -322,7 +401,7 @@ kubectl port-forward svc/kube-prometheus-stack-alertmanager 9093:9093 -n monitor
 
 # Port-forward webhook handler (Phase 8)
 kubectl port-forward svc/guardops-alertmanager-webhook 9095:9095 -n monitoring
-# curl http://localhost:9095/healthz  -> {"status":"ok","version":"0.8.0"}
+# curl http://localhost:9095/healthz  -> {"status":"ok","version":"0.9.0"}
 # curl http://localhost:9095/readyz   -> {"status":"ready","kubectl":"..."}
 ```
 
@@ -365,8 +444,8 @@ rate(container_cpu_usage_seconds_total{namespace="default"}[5m])
 
 ```powershell
 # After terraform apply and kubectl configure:
-.\scripts\setup-observability.ps1
-.\scripts\setup-runtime-security.ps1   # Phase 7: Loki + Promtail + Falco simulator
+.\scripts\setup-observability.ps1           # run from repo root
+.\scripts\setup-runtime-security.ps1        # Phase 7: Loki + Promtail + Falco simulator
 # Phase 8 webhook handler deployed automatically by terraform apply
 # (enable_self_healing = true in terraform.tfvars)
 kubectl apply -f k8s/alertmanager/quarantine-webhook.yaml  # Phase 8: wire Alertmanager
@@ -478,7 +557,7 @@ The handler runs as a Kubernetes Deployment in the `monitoring` namespace, deplo
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/healthz` | GET | Liveness probe — returns `{"status":"ok","version":"0.8.0"}` |
+| `/healthz` | GET | Liveness probe — returns `{"status":"ok","version":"0.9.0"}` |
 | `/readyz` | GET | Readiness probe — verifies kubectl is reachable; returns 503 if not |
 | `/webhook` | POST | Alertmanager webhook receiver |
 
@@ -565,6 +644,88 @@ guardops quarantine-status -n default
 kubectl get networkpolicy -n default -l guardops.io/managed-by=guardops
 kubectl get pods -n default -l guardops.io/quarantine=true
 ```
+
+---
+
+## Multi-Environment + Blue-Green (Phase 9)
+
+Phase 9 adds staging/prod namespace separation and blue-green deploy support via a new `--slot` flag on `guardops deploy` and the `guardops switch` command.
+
+### Environment config
+
+Add an `environments` block to `.guardops.yaml`. Only keys that differ from the base config need to be specified:
+
+```yaml
+environments:
+  staging:
+    kubernetes:
+      namespace: staging
+    docker:
+      image_tag_prefix: staging   # images tagged staging-
+    security:
+      tools:
+        owasp_zap: false          # ZAP skipped in staging (no stable URL)
+    helm:
+      release_suffix: "-staging"  # release: guardops-app-staging
+  prod:
+    kubernetes:
+      namespace: default
+    docker:
+      image_tag_prefix: ""        # images tagged  only
+    security:
+      tools:
+        owasp_zap: true
+    helm:
+      release_suffix: ""          # release: guardops-app (backward compat)
+```
+
+### Blue-green workflow
+
+```powershell
+# Deploy both slots (can deploy in any order, both coexist)
+guardops deploy --env staging --slot blue
+guardops deploy --env staging --slot green
+
+# Verify both are running
+kubectl get pods -n staging --show-labels
+helm list -n staging
+# Expected: guardops-app-staging, guardops-app-staging-blue, guardops-app-staging-green
+
+# Cut traffic to blue (creates shared traffic Service on first run)
+guardops switch --slot blue --env staging
+
+# Verify Service selector
+kubectl get svc guardops-app -n staging -o jsonpath='{.spec.selector}'
+# {"app.kubernetes.io/name":"guardops-app","guardops.io/slot":"blue"}
+
+# Verify endpoints match blue pod IPs
+kubectl get endpoints guardops-app -n staging
+kubectl get pods -n staging -l "guardops.io/slot=blue" -o jsonpath='{.items[*].status.podIP}'
+
+# Switch to green
+guardops switch --slot green --env staging
+
+# Roll back to blue (instant — no rebuild)
+guardops switch --slot blue --env staging
+
+# Preview changes without applying
+guardops switch --slot green --env staging --dry-run
+```
+
+### How the traffic Service works
+
+`guardops switch` creates (or patches) a single shared ClusterIP Service named after the project (`guardops-app`) in the target namespace. This Service is **not** owned by any Helm release — it is managed entirely by the switch command and can be identified by its labels:
+
+```
+guardops.io/managed-by: guardops
+guardops.io/service-type: traffic
+```
+
+The selector uses two labels that are present on all slot pods:
+- `app.kubernetes.io/name: guardops-app` — set by the Helm chart on all releases
+- `guardops.io/slot: blue|green` — set when `blueGreen.enabled=true` in the Helm values
+
+Switching is atomic: a single `kubectl apply` updates both the selector and the `guardops.io/active-slot` annotation. iptables propagation takes ~1-2 seconds.
 
 ---
 
@@ -681,6 +842,29 @@ runtime_security:
 self_healing:
   enabled: false               # set true after terraform apply with enable_self_healing=true
   webhook_url: ''              # set to terraform output webhook_service_url
+
+# Phase 9 — Multi-Environment
+environments:
+  staging:
+    kubernetes:
+      namespace: staging
+    docker:
+      image_tag_prefix: staging
+    security:
+      tools:
+        owasp_zap: false
+    helm:
+      release_suffix: "-staging"
+  prod:
+    kubernetes:
+      namespace: default
+    docker:
+      image_tag_prefix: ""
+    security:
+      tools:
+        owasp_zap: true
+    helm:
+      release_suffix: ""
 ```
 
 ---
@@ -691,7 +875,14 @@ self_healing:
 
 ```
 Options:
-  --env [local|prod]     Target environment. Default: local
+  --env [local|staging|prod]
+                         Target environment. Default: local
+                         staging: deploys to staging namespace, tags image staging-<sha>,
+                                  skips DAST, uses values-staging.yaml
+                         prod:    deploys to default namespace, full DAST, values-prod.yaml
+  --slot [blue|green]    Blue-green slot. Creates a slot-specific Helm release
+                         (guardops-app-staging-blue) and labels pods with
+                         guardops.io/slot=<slot>. Use guardops switch to cut traffic.
   --skip-scan            Skip security scans. Never use in prod.
   --skip-build           Reuse existing image.
   --skip-sonarqube       Skip SonarQube scan.
@@ -700,6 +891,21 @@ Options:
   --fail-on [LOW|MEDIUM|HIGH|CRITICAL]
                          Severity threshold that blocks deploy. Default: HIGH
   --replicas INTEGER     Override replica count.
+```
+
+### `guardops switch` (Phase 9)
+
+```
+Options:
+  --slot [blue|green]    Required. Slot to activate. All traffic will be routed
+                         to pods labelled guardops.io/slot=<slot>.
+  --env [local|staging|prod]
+                         Environment to switch traffic in. Determines the default
+                         namespace when --namespace is omitted. Default: staging
+  --namespace, -n TEXT   Kubernetes namespace. Defaults to the namespace for --env.
+  --service-name TEXT    Name of the shared traffic Service to patch.
+                         Defaults to the project name from .guardops.yaml.
+  --dry-run              Preview what would change without applying anything.
 ```
 
 ### `guardops scan`
@@ -742,17 +948,20 @@ Options:
 
 **Prerequisites:** Loki must be reachable. Run `kubectl port-forward svc/loki 3100:3100 -n monitoring` first.
 
-### `guardops quarantine-status` (Phase 8)
+### `guardops quarantine-status` (Phase 8/9)
 
 ```
 Options:
   --namespace, -n TEXT   Kubernetes namespace to check.
-                         Defaults to kubernetes.namespace in .guardops.yaml.
-                         Pass 'all' to check every namespace.
+                         Defaults to the namespace for --env (if set), then
+                         kubernetes.namespace in .guardops.yaml.
   --all-namespaces, -A   Check all namespaces (equivalent to kubectl -A).
+  --env [local|staging|prod]
+                         Environment to inspect. Determines default namespace
+                         when --namespace is omitted. Has no effect with -A.
   --release TEXT         Manually release a quarantined pod by name.
                          Deletes its NetworkPolicy and removes quarantine label.
-                         Requires --namespace.
+                         Requires a resolvable namespace.
   --json-output          Print raw JSON (useful for CI/scripts).
 ```
 
@@ -834,7 +1043,7 @@ terraform destroy -auto-approve  # evening (~8 min)
 
 ## Helm Chart
 
-The Helm chart at `k8s/helm/guardops-app/` deploys with security defaults applied at the pod level:
+The Helm chart at `k8s/helm/guardops-app/` (v0.4.0) deploys with security defaults applied at the pod level:
 
 ```yaml
 securityContext:
@@ -845,12 +1054,22 @@ securityContext:
     drop: ["ALL"]
 ```
 
+Staging values (`values-staging.yaml`) add:
+- `replicaCount: 1`
+- `imagePullPolicy: Always`
+- `config.ENVIRONMENT: staging`
+- `monitoring.enabled: false` (set true once kube-prometheus-stack is confirmed running)
+
 Production values (`values-prod.yaml`) add:
 - `replicaCount: 2`
 - `imagePullPolicy: Always`
 - HPA enabled (CPU-based autoscaling, 2-10 replicas)
 - Ingress with TLS configuration
 - `monitoring.enabled: true` — creates ServiceMonitor for Prometheus scraping
+
+Blue-green values (injected via `--set` by `guardops deploy --slot`):
+- `blueGreen.enabled: true`
+- `blueGreen.slot: blue|green` — adds `guardops.io/slot` label to pods and Deployment selector
 
 ---
 
@@ -903,6 +1122,7 @@ mypy cli/ backend/ --ignore-missing-imports
 |------|-------|--------|
 | test_builder.py | 15 | Image naming, build success and failure paths, ECR tag format |
 | test_config.py | 12 | YAML read/write, defaults, config existence checks |
+| test_config_phase9.py | 20 | get_env_config, resolve_namespace, resolve_image_tag, resolve_helm_release_name |
 | test_security.py | 68 | All 4 runners: skip, timeout, malformed JSON, severity mapping, report output |
 | test_deployer.py | 37 | kubectl apply, k3d import, rollout wait, rollback, service URL |
 | test_deployer_phase3.py | 35 | Helm deploy, rollback, release name sanitisation, chart path resolution |
@@ -915,7 +1135,7 @@ mypy cli/ backend/ --ignore-missing-imports
 **State lock after interrupted apply:**
 ```powershell
 # If terraform hangs on "Acquiring state lock":
-terraform force-unlock -force <LOCK_ID>
+terraform force-unlock -force 
 ```
 
 **Subnet CIDR conflict after incomplete destroy:**
@@ -923,7 +1143,7 @@ terraform force-unlock -force <LOCK_ID>
 # If terraform apply fails with InvalidSubnet.Conflict:
 aws ec2 describe-subnets --filters "Name=cidrBlock,Values=10.0.1.0/24" `
     --query "Subnets[0].SubnetId" --output text
-terraform import module.vpc.aws_subnet.public[1] <subnet-id>
+terraform import module.vpc.aws_subnet.public[1] 
 terraform apply -auto-approve
 ```
 
@@ -960,13 +1180,22 @@ The app image's CMD uses `/venv/bin/python` (an isolated virtualenv). All pip in
 **kubectl --short flag removed in v1.28+:**
 The `readyz` endpoint in `alertmanager_handler.py` calls `kubectl version --client`. If your handler image uses kubectl v1.27 or earlier, remove `--short` from that call — the flag was removed and causes a non-zero exit code that makes `/readyz` return 503.
 
+**setup-observability.ps1 must run from repo root:**
+The script uses relative paths to `k8s/observability/`. Running it from inside `scripts\` resolves to `scripts\k8s\observability\...` which does not exist. Always run from `D:\EXTRA\GuardOps`: `.\scripts\setup-observability.ps1`. The `ServiceMonitor` CRD that kube-prometheus-stack installs is also required by the Helm chart's `servicemonitor.yaml` template — if the chart deploy fails with `no matches for kind "ServiceMonitor"`, it means the observability stack was not installed first.
+
+**monitoring.enabled in values-staging.yaml:**
+Set to `false` on a fresh cluster before kube-prometheus-stack is installed, to avoid the duplicate port warning and ServiceMonitor CRD dependency. Flip to `true` once the stack is confirmed running.
+
+**Blue-green traffic Service not owned by Helm:**
+The shared `guardops-app` Service in the staging namespace is created by `guardops switch`, not by any Helm release. It will not appear in `helm list` and will not be deleted by `helm uninstall`. To clean it up manually: `kubectl delete svc guardops-app -n staging`.
+
 **Nightly shutdown order matters:**
 ```powershell
-helm uninstall kube-prometheus-stack -n monitoring  # triggers EBS volume deletion
+helm uninstall kube-prometheus-stack -n monitoring  
 helm uninstall loki -n monitoring
 helm uninstall promtail -n monitoring
-kubectl delete pvc --all -n monitoring              # ensures PVCs are removed
-Start-Sleep -Seconds 30                             # wait for ec2:DeleteVolume
+kubectl delete pvc --all -n monitoring             
+Start-Sleep -Seconds 30                             
 cd infra/terraform && terraform destroy -auto-approve
 ```
 Skipping the Helm uninstall leaves orphaned EBS volumes that persist after `terraform destroy` and continue billing silently.
@@ -986,9 +1215,8 @@ Skipping the Helm uninstall leaves orphaned EBS volumes that persist after `terr
 | v0.6.0 | Published | GitHub OIDC replaces static IAM keys, no more AWS_ACCESS_KEY_ID in CI |
 | v0.6.1 | Published | OWASP ZAP DAST post-deploy scan, auto-rollback on CRITICAL, ZAP image fix (ghcr.io), Windows Docker compat |
 | v0.7.0 | Published | Loki + Promtail log pipeline, Falco-format alert ingestion, `guardops runtime-status` CLI, CI runtime gate job, Falco rules + simulator |
-| v0.8.0 | **Current** | Self-healing: Alertmanager webhook handler, automatic pod quarantine via NetworkPolicy, auto-release on alert resolved, `guardops quarantine-status` CLI, Terraform alertmanager-webhook module, Dockerfile.webhook, PrometheusRule + AlertmanagerConfig wiring |
-| v0.9.0 | Planned | Multi-environment: staging + prod namespaces, blue-green deploy |
-| v1.0.0 | Planned | Real domain, TLS, ArgoCD GitOps, full runbooks |
+| v0.8.0 | Published | Self-healing: Alertmanager webhook handler, automatic pod quarantine via NetworkPolicy, auto-release on alert resolved, `guardops quarantine-status` CLI, Terraform alertmanager-webhook module, Dockerfile.webhook, PrometheusRule + AlertmanagerConfig wiring |
+| v0.9.0 | **Current** | Multi-environment: staging + prod namespace separation, `guardops deploy --env staging`, blue-green deploy with `--slot blue/green`, `guardops switch` traffic cutover, environment-scoped config helpers, `staging-<sha>` ECR image tags, `--env` flag on quarantine-status, Helm chart v0.4.0 with blueGreen values |
 
 ---
 
@@ -996,6 +1224,7 @@ Skipping the Helm uninstall leaves orphaned EBS volumes that persist after `terr
 
 | Version | Status | Description |
 |---------|--------|-------------|
+| v1.0.0 | Planned | Real domain, TLS via cert-manager, ArgoCD GitOps, full runbooks |
 | v1.1.0 | Planned | SBOM + Cosign signing |
 | v1.2.0 | Planned | Kyverno admission control |
 | v1.3.0 | Planned | Scan metadata database |
