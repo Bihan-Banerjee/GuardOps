@@ -1191,11 +1191,11 @@ The shared `guardops-app` Service in the staging namespace is created by `guardo
 
 **Nightly shutdown order matters:**
 ```powershell
-helm uninstall kube-prometheus-stack -n monitoring  # triggers EBS volume deletion
+helm uninstall kube-prometheus-stack -n monitoring  
 helm uninstall loki -n monitoring
 helm uninstall promtail -n monitoring
-kubectl delete pvc --all -n monitoring              # ensures PVCs are removed
-Start-Sleep -Seconds 30                             # wait for ec2:DeleteVolume
+kubectl delete pvc --all -n monitoring             
+Start-Sleep -Seconds 30                             
 cd infra/terraform && terraform destroy -auto-approve
 ```
 Skipping the Helm uninstall leaves orphaned EBS volumes that persist after `terraform destroy` and continue billing silently.
