@@ -1,0 +1,94 @@
+# values-staging.yaml — Staging environment overrides
+# Applied on top of values.yaml when `guardops deploy --env staging` runs.
+# Only keys that differ from local defaults need to appear here.
+#
+# How it gets used:
+#   helm upgrade --install guardops-app-staging ./k8s/helm/guardops-app \
+#     -n staging \
+#     -f values.yaml \
+#     -f values-staging.yaml \
+#     --set image.repository=<ecr-uri> \
+#     --set image.tag=staging-<sha> \
+#     ...
+#
+# Design principle: staging should be as prod-like as possible so that
+# regressions are caught before they reach prod. The main relaxations are:
+#   1. Single replica (cost saving — staging doesn't need HA)
+#   2. DAST disabled (no stable public URL; ZAP runs in prod only)
+#   3. Lower resource limits (staging nodes are smaller)
+#   4. imagePullPolicy: Always (images come from ECR, not local k3d)
+
+# ---------------------------------------------------------------------------
+# Container image
+# ---------------------------------------------------------------------------
+image:
+  # Staging images are pulled from ECR, never from a local daemon.
+  pullPolicy: Always
+
+# ---------------------------------------------------------------------------
+# Deployment
+# ---------------------------------------------------------------------------
+# Single replica in staging to reduce cost.
+# guardops deploy --replicas N overrides this at deploy time if needed.
+replicaCount: 1
+
+resources:
+  requests:
+    memory: "128Mi"
+    cpu: "100m"
+  limits:
+    memory: "512Mi"
+    cpu: "500m"
+
+# ---------------------------------------------------------------------------
+# Application config
+# ---------------------------------------------------------------------------
+config:
+  LOG_LEVEL: "DEBUG"        # verbose logs for staging debugging
+  ENVIRONMENT: "staging"
+  PORT: "8080"
+
+# ---------------------------------------------------------------------------
+# Ingress
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    # nginx.ingress.kubernetes.io/rewrite-target: /
+  host: staging.guardops.internal   # update to your actual staging domain
+  tls: false
+  tlsSecret: ""
+
+# ---------------------------------------------------------------------------
+# HPA
+# ---------------------------------------------------------------------------
+# Disabled in staging — not enough load to warrant autoscaling.
+hpa:
+  enabled: false
+
+# ---------------------------------------------------------------------------
+# Monitoring
+# ---------------------------------------------------------------------------
+# Enable monitoring in staging — same kube-prometheus-stack as prod.
+# This means staging Falco alerts and metrics appear in the same Grafana,
+# distinguished by the namespace label on each metric.
+monitoring:
+  enabled: true
+  port: 8080
+  path: /metrics
+  scrapeInterval: 30s
+
+# ---------------------------------------------------------------------------
+# Blue-Green (staging is the primary blue-green environment)
+# ---------------------------------------------------------------------------
+# blueGreen.enabled and blueGreen.slot are NOT set here — they are injected
+# by `guardops deploy --slot <slot>` via --set flags so that a non-slot
+# deploy (`guardops deploy --env staging`) produces a normal single Deployment
+# without any slot machinery.
+#
+# When a slot deploy runs, Helm receives:
+#   --set blueGreen.enabled=true --set blueGreen.slot=blue
+# and deployment.yaml adds the guardops.io/slot label to pods.
+#
+# No action needed in this file for blue-green to work.

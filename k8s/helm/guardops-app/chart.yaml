@@ -4,7 +4,7 @@ description: >
   GuardOps managed application chart.
   Deployed by `guardops deploy` — do not apply manually.
 type: application
-version: 0.3.0
+version: 0.4.0
 appVersion: "1.0.0"
 keywords:
   - guardops
@@ -12,3 +12,9 @@ keywords:
 maintainers:
   - name: guardops
     email: guardops@example.com
+
+# Phase 9 changes (0.4.0):
+#   - deployment.yaml: blueGreen.enabled/slot labels on pod template + selector
+#   - values.yaml: blueGreen section (enabled: false, slot: "")
+#   - values-staging.yaml: new file — staging environment overrides
+#   - Chart version bumped: 0.3.0 → 0.4.0

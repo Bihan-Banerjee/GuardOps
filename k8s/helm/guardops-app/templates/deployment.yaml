@@ -5,11 +5,20 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "guardops-app.labels" . | nindent 4 }}
+    {{- if .Values.blueGreen.enabled }}
+    guardops.io/slot: {{ .Values.blueGreen.slot | quote }}
+    {{- end }}
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
       {{- include "guardops-app.selectorLabels" . | nindent 6 }}
+      {{- if .Values.blueGreen.enabled }}
+      # The slot label is included in the selector so each slot's Deployment
+      # only controls its own pods. Without this, two slot Deployments in the
+      # same namespace would fight over each other's pods.
+      guardops.io/slot: {{ .Values.blueGreen.slot | quote }}
+      {{- end }}
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -19,17 +28,27 @@ spec:
     metadata:
       labels:
         {{- include "guardops-app.selectorLabels" . | nindent 8 }}
+        {{- if .Values.blueGreen.enabled }}
+        # Pod-level slot label — this is what the shared traffic Service
+        # (managed by `guardops switch`) uses as its selector.
+        # The traffic Service selects:
+        #   app.kubernetes.io/name: <chart-name>   ← from selectorLabels above
+        #   guardops.io/slot: blue|green            ← this label
+        # Together they route traffic to the active slot's pods only.
+        guardops.io/slot: {{ .Values.blueGreen.slot | quote }}
+        {{- end }}
       annotations:
         # Force pod restart when ConfigMap changes (Helm doesn't do this automatically)
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
         # ── PHASE 5: Prometheus scrape annotations ──────────────────────────────
-        # kube-prometheus-stack's PodMonitor / annotation-based scraping picks these up.
-        # If you add a ServiceMonitor (recommended), these annotations become redundant
-        # but are kept as a fallback for any Prometheus instance using annotation scraping.
         {{- if .Values.monitoring.enabled }}
         prometheus.io/scrape: "true"
         prometheus.io/port: {{ .Values.monitoring.port | quote }}
         prometheus.io/path: {{ .Values.monitoring.path | quote }}
+        {{- end }}
+        {{- if .Values.blueGreen.enabled }}
+        # Record which slot this Deployment belongs to for debugging.
+        guardops.io/blue-green-slot: {{ .Values.blueGreen.slot | quote }}
         {{- end }}
     spec:
       securityContext:
@@ -45,7 +64,6 @@ spec:
               containerPort: {{ .Values.containerPort }}
               protocol: TCP
             {{- if .Values.monitoring.enabled }}
-            # Named port so ServiceMonitor can reference it by name, not number
             - name: metrics
               containerPort: {{ .Values.monitoring.port }}
               protocol: TCP

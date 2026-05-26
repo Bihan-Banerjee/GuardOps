@@ -3,6 +3,16 @@ cli/commands/quarantine_cmd.py
 
 `guardops quarantine-status` — Phase 8 Self-Healing.
 
+Phase 9 changes:
+  - Added --env flag so operators working in a specific environment (staging/prod)
+    get the correct default namespace without having to pass --namespace explicitly.
+    Namespace resolution order:
+      1. --namespace flag (explicit always wins)
+      2. --env flag       (derives namespace from environments.<env>.kubernetes.namespace)
+      3. kubernetes.namespace from .guardops.yaml
+      4. "default"
+  - Imported get_env_config, resolve_namespace from config.py
+
 WHY THIS COMMAND EXISTS:
   Phase 8 adds automated pod quarantine: when a CRITICAL Falco alert fires,
   alertmanager_handler.py labels the offending pod and applies a restrictive
@@ -14,21 +24,9 @@ WHY THIS COMMAND EXISTS:
     - How long has a pod been quarantined?
     - Quick kubectl commands to release a pod manually.
 
-  Design mirrors runtime_cmd.py (Phase 7):
-    - Reads .guardops.yaml for config (namespace to check).
-    - Uses subprocess kubectl calls via cli/utils/system.py conventions.
-    - Rich-formatted output via cli/utils/output.py.
-    - --release flag for quick manual dequarantine from the CLI.
-
 WHAT IT QUERIES:
   1. NetworkPolicies with label  guardops.io/managed-by=guardops
-     (all active quarantine policies across watched namespaces)
   2. Pods with label             guardops.io/quarantine=true
-     (all currently quarantined pods)
-
-  Both queries use kubectl get with -o json for structured parsing.
-  Cross-references the two lists so the table shows which NetworkPolicy
-  maps to which pod.
 
 RELATED FILES:
   backend/security/alertmanager_handler.py  — creates the quarantine artefacts
@@ -48,7 +46,7 @@ import click
 from rich.table import Table
 from rich import box
 
-from cli.utils.config import load_config, merge_with_defaults
+from cli.utils.config import load_config, merge_with_defaults, resolve_namespace
 from cli.utils.output import (
     console,
     header,
@@ -63,16 +61,13 @@ from cli.utils.output import (
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-# Label selector used by alertmanager_handler.py for all managed policies.
 MANAGED_BY_SELECTOR   = "guardops.io/managed-by=guardops"
 QUARANTINE_LABEL      = "guardops.io/quarantine=true"
 
-# Annotation keys written by the handler — used to pull context for the table.
 ANN_FINGERPRINT       = "guardops.io/alert-fingerprint"
 ANN_FALCO_RULE        = "guardops.io/falco-rule"
 ANN_REASON            = "guardops.io/quarantine-reason"
 
-# Severity colour map (mirrors runtime_cmd.py)
 SEVERITY_STYLES: dict[str, str] = {
     "CRITICAL": "bold red",
     "HIGH":     "bold yellow",
@@ -80,7 +75,6 @@ SEVERITY_STYLES: dict[str, str] = {
     "LOW":      "dim",
 }
 
-# kubectl timeout in seconds — matches KUBECTL_TIMEOUT in alertmanager_handler.py
 KUBECTL_TIMEOUT = 30
 
 
@@ -92,8 +86,8 @@ KUBECTL_TIMEOUT = 30
     default=None,
     help=(
         "Kubernetes namespace to check. "
-        "Defaults to kubernetes.namespace in .guardops.yaml. "
-        "Pass 'all' or '--all-namespaces' to check every namespace."
+        "Defaults to the namespace for --env (or kubernetes.namespace in config). "
+        "Pass 'all' or use --all-namespaces to check every namespace."
     ),
 )
 @click.option(
@@ -103,13 +97,23 @@ KUBECTL_TIMEOUT = 30
     help="Check all namespaces (equivalent to kubectl -A).",
 )
 @click.option(
+    "--env",
+    default=None,
+    type=click.Choice(["local", "staging", "prod"], case_sensitive=False),
+    help=(
+        "Environment to inspect. When set and --namespace is omitted, "
+        "the namespace for this environment is used as the default. "
+        "Has no effect when --all-namespaces is set."
+    ),
+)
+@click.option(
     "--release",
     metavar="POD_NAME",
     default=None,
     help=(
         "Manually release a quarantined pod by name. "
         "Deletes its NetworkPolicy and removes the quarantine label. "
-        "Requires --namespace (or the config default) to locate the pod."
+        "Requires a resolvable namespace (via --namespace, --env, or config)."
     ),
 )
 @click.option(
@@ -121,6 +125,7 @@ KUBECTL_TIMEOUT = 30
 def quarantine_status_cmd(
     namespace:      Optional[str],
     all_namespaces: bool,
+    env:            Optional[str],
     release:        Optional[str],
     json_output:    bool,
 ) -> None:
@@ -135,12 +140,13 @@ def quarantine_status_cmd(
     Examples:
       guardops quarantine-status
       guardops quarantine-status -A
+      guardops quarantine-status --env staging
       guardops quarantine-status --namespace default
       guardops quarantine-status --release my-app-7d9f6b-xk2pq --namespace default
       guardops quarantine-status --json-output
     """
-    config  = load_config()
-    config  = merge_with_defaults(config)
+    config = load_config()
+    config = merge_with_defaults(config)
 
     if not json_output:
         header(
@@ -149,25 +155,39 @@ def quarantine_status_cmd(
         )
 
     # ── Resolve target namespace ──────────────────────────────────────────────
+    # Priority: --all-namespaces > --namespace (explicit) > --env > config default
     if all_namespaces or namespace == "all":
         ns_flag    = ["--all-namespaces"]
         ns_display = "all namespaces"
     else:
-        resolved_ns = namespace or config.get("kubernetes", {}).get("namespace", "default")
+        if namespace:
+            # Explicit --namespace wins over everything.
+            resolved_ns = namespace
+        elif env:
+            # --env without --namespace: derive namespace from environment config.
+            resolved_ns = resolve_namespace(config, env)
+        else:
+            # Neither flag: fall back to base config kubernetes.namespace.
+            resolved_ns = config.get("kubernetes", {}).get("namespace", "default")
+
         ns_flag     = ["-n", resolved_ns]
         ns_display  = resolved_ns
 
     if not json_output:
-        info(f"Checking namespace(s): [bold]{ns_display}[/bold]")
+        if env and not all_namespaces:
+            info(f"Checking namespace(s): [bold]{ns_display}[/bold] (env=[cyan]{env}[/cyan])")
+        else:
+            info(f"Checking namespace(s): [bold]{ns_display}[/bold]")
         blank()
 
     # ── Manual release path ───────────────────────────────────────────────────
     if release:
         if all_namespaces or namespace == "all":
-            error("--release requires a specific namespace. Use --namespace.")
+            error("--release requires a specific namespace. Use --namespace or --env.")
             sys.exit(1)
-        resolved_ns = namespace or config.get("kubernetes", {}).get("namespace", "default")
-        _release_pod(pod_name=release, namespace=resolved_ns)
+        # resolved_ns is set in all non-all-namespaces branches above.
+        release_ns = namespace or resolve_namespace(config, env) if env else config.get("kubernetes", {}).get("namespace", "default")
+        _release_pod(pod_name=release, namespace=release_ns)
         return
 
     # ── Query quarantined pods ────────────────────────────────────────────────
@@ -252,17 +272,17 @@ def _get_quarantined_pods(ns_flag: list[str]) -> list[dict]:
         spec   = item.get("spec", {})
         status = item.get("status", {})
 
-        creation_ts  = meta.get("creationTimestamp", "")
+        creation_ts      = meta.get("creationTimestamp", "")
         quarantine_since = meta.get("labels", {}).get("guardops.io/quarantine-since", "")
 
         results.append({
-            "name":      meta.get("name", "unknown"),
-            "namespace": meta.get("namespace", "unknown"),
-            "node":      spec.get("nodeName", "unknown"),
-            "phase":     status.get("phase", "Unknown"),
-            "created":   creation_ts,
+            "name":             meta.get("name", "unknown"),
+            "namespace":        meta.get("namespace", "unknown"),
+            "node":             spec.get("nodeName", "unknown"),
+            "phase":            status.get("phase", "Unknown"),
+            "created":          creation_ts,
             "quarantine_since": quarantine_since,
-            "annotations": meta.get("annotations", {}),
+            "annotations":      meta.get("annotations", {}),
         })
 
     return results
@@ -301,9 +321,9 @@ def _get_quarantine_policies(ns_flag: list[str]) -> list[dict]:
         results.append({
             "name":        meta.get("name", "unknown"),
             "namespace":   meta.get("namespace", "unknown"),
-            "fingerprint": annotations.get(ANN_FINGERPRINT, "—"),
-            "falco_rule":  annotations.get(ANN_FALCO_RULE, "—"),
-            "reason":      annotations.get(ANN_REASON, "—"),
+            "fingerprint": annotations.get(ANN_FINGERPRINT, "-"),
+            "falco_rule":  annotations.get(ANN_FALCO_RULE, "-"),
+            "reason":      annotations.get(ANN_REASON, "-"),
             "created":     meta.get("creationTimestamp", ""),
         })
 
@@ -329,7 +349,7 @@ def _print_pods_table(pods: list[dict]) -> None:
     table.add_column("Age",       justify="right",      min_width=8)
 
     for pod in pods:
-        phase      = pod.get("phase", "Unknown")
+        phase       = pod.get("phase", "Unknown")
         phase_style = "green" if phase == "Running" else "yellow"
 
         table.add_row(
@@ -361,11 +381,12 @@ def _print_policies_table(policies: list[dict]) -> None:
     table.add_column("Age",          justify="right",     min_width=8)
 
     for policy in policies:
+        fp = policy["fingerprint"]
         table.add_row(
             policy["name"],
             policy["namespace"],
             policy["falco_rule"],
-            policy["fingerprint"][:16] if len(policy["fingerprint"]) > 16 else policy["fingerprint"],
+            fp[:16] if len(fp) > 16 else fp,
             _age_str(policy.get("created", "")),
         )
 
@@ -380,19 +401,12 @@ def _release_pod(pod_name: str, namespace: str) -> None:
     Manually releases a quarantined pod.
 
     Mirrors the _handle_resolved() logic in alertmanager_handler.py:
-      1. Find and delete the associated NetworkPolicy (named by fingerprint).
+      1. Find and delete the associated NetworkPolicy.
       2. Remove the guardops.io/quarantine label from the pod.
-
-    Because we don't have the fingerprint here, we:
-      - List all guardops quarantine policies in the namespace.
-      - Delete every one (the handler produces one per alert/pod).
-      - Remove the quarantine label from the specific pod.
     """
     section(f"Releasing pod: {pod_name}")
     blank()
 
-    # Step 1: Find and delete all quarantine policies in the namespace
-    # (safest approach when the exact fingerprint isn't known)
     ok, stdout, _ = _run_kubectl([
         "get", "networkpolicy",
         "-l", MANAGED_BY_SELECTOR,
@@ -416,10 +430,9 @@ def _release_pod(pod_name: str, namespace: str) -> None:
     else:
         info("No quarantine NetworkPolicies found in this namespace.")
 
-    # Step 2: Remove quarantine label from the pod
     label_ok, _, label_err = _run_kubectl([
         "label", "pod", pod_name,
-        "guardops.io/quarantine-",   # trailing `-` removes the label
+        "guardops.io/quarantine-",
         "-n", namespace,
     ])
 
@@ -449,16 +462,7 @@ def _release_pod(pod_name: str, namespace: str) -> None:
 def _run_kubectl(args: list[str]) -> tuple[bool, str, str]:
     """
     Runs a kubectl command and returns (success, stdout, stderr).
-
-    Mirrors the pattern in cli/utils/system.py and alertmanager_handler.py:
-    never raise, always return a structured (ok, stdout, stderr) tuple so
-    the caller can decide how to handle failures.
-
-    Args:
-        args: kubectl subcommand + arguments (without the "kubectl" prefix).
-
-    Returns:
-        (success, stdout, stderr) where success = returncode == 0.
+    Never raises — always returns a structured tuple.
     """
     cmd = ["kubectl"] + args
 
@@ -488,11 +492,9 @@ def _age_str(timestamp: str) -> str:
     """
     Converts a Kubernetes creationTimestamp (ISO-8601) to a human-readable
     age string: "5m", "2h", "3d".
-
-    Returns "—" for empty or unparseable timestamps.
     """
     if not timestamp:
-        return "—"
+        return "-"
     try:
         created_at = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
         delta      = datetime.now(timezone.utc) - created_at
@@ -506,4 +508,4 @@ def _age_str(timestamp: str) -> str:
             return f"{seconds // 3600}h"
         return f"{seconds // 86400}d"
     except (ValueError, TypeError):
-        return "—"
+        return "-"

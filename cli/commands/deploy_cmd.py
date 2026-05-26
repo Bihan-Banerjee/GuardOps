@@ -1,30 +1,61 @@
 """
 cli/commands/deploy_cmd.py
 
-`guardops deploy` command — Phase 6 version.
+`guardops deploy` command — Phase 9 version.
 
 Flow:
   Step 1: Docker build
   Step 2: Security scans (semgrep, bandit, trivy-fs, trivy image, sonarqube)
           -> blocks if HIGH+ findings unless --skip-scan
-  Step 3: ECR push (only when --env prod)
-  Step 4: Helm deploy (both local and prod)
-  Step 5: DAST — OWASP ZAP baseline scan against the live deployed app
-          -> auto-rollback if CRITICAL findings detected (Phase 6)
+  Step 3: ECR push (only when --env prod or --env staging)
+  Step 4: Helm deploy (all envs)
+  Step 5: DAST — OWASP ZAP baseline scan (prod only)
+          -> auto-rollback if CRITICAL findings detected
 
-Phase 6 changes vs Phase 4/5:
-  - Step counters updated to N / 5
-  - Step 5 added: ZAP DAST post-deploy, with auto-rollback on CRITICAL
-  - New CLI flag: --skip-dast
-  - ZAP reads target URL from deploy_result.service_url (auto) or
-    security.zap_target_url in .guardops.yaml (manual override)
-  - ZAP only runs when security.tools.owasp_zap: true in .guardops.yaml
-    AND --env prod (DAST against local k3d is skipped — no stable URL)
+Phase 9 changes vs Phase 8:
+  - --env now accepts "local" | "staging" | "prod" (was "local" | "prod")
+  - New flag: --slot [blue|green] — activates blue-green deploy mode
+      guardops deploy --env staging --slot blue   # deploy blue slot
+      guardops deploy --env staging --slot green  # deploy green slot
+  - Environment-specific config resolution via get_env_config() / resolve_*()
+      - staging namespace auto-resolved to "staging"
+      - image tags prefixed: staging-<sha> vs <sha>
+      - DAST auto-skipped for staging (no stable URL)
+  - Helm release name includes env suffix + slot suffix when applicable:
+      local:           guardops-app
+      staging:         guardops-app-staging
+      staging + blue:  guardops-app-staging-blue
+      prod:            guardops-app-prod (kept separate from legacy "guardops-app" releases)
+  - Two new kwargs passed to deploy_helm():
+      release_name     — explicit release name (previously derived inside deployer)
+      extra_set_values — dict of --set values for Helm (used for blueGreen.*)
+
+  DEPLOYER CHANGE REQUIRED (backend/pipeline/deployer.py):
+    deploy_helm() must accept two new keyword arguments:
+
+      def deploy_helm(
+          project_name: str,
+          image_ref: str,
+          namespace: str,
+          replicas: int,
+          env: str,
+          release_name: str | None = None,       # NEW — override release name
+          extra_set_values: dict | None = None,  # NEW — appended as --set k=v
+      ) -> DeployResult:
+
+    Inside deploy_helm, if release_name is provided use it instead of
+    _sanitize_release_name(project_name). For extra_set_values, append
+    a "--set", "key=value" pair for each entry before running helm upgrade.
+
+    Also update the values-file selection logic:
+      if env in ("staging", "prod"):
+          extra_flags += ["-f", f"values-{env}.yaml"]
+    (previously only checked env == "prod")
 
 Environments:
-  --env local  Uses k3d cluster, imagePullPolicy=Never, values.yaml
-  --env prod   Pushes to ECR, uses EKS cluster, imagePullPolicy=Always,
-               values.yaml + values-prod.yaml
+  --env local    k3d cluster, imagePullPolicy=Never, values.yaml, no ECR push
+  --env staging  ECR push, staging namespace, values-staging.yaml, no DAST
+  --env prod     ECR push, default namespace, values-prod.yaml, full DAST
 """
 
 import sys
@@ -34,7 +65,13 @@ import click
 from cli.utils.output import (
     info, success, error, warn, result_panel, console
 )
-from cli.utils.config import load_config
+from cli.utils.config import (
+    load_config,
+    get_env_config,
+    resolve_namespace,
+    resolve_image_tag,
+    resolve_helm_release_name,
+)
 from backend.pipeline.builder import build_image
 from backend.pipeline.deployer import (
     deploy_helm,
@@ -53,8 +90,15 @@ from backend.security.zap_runner import run_zap_baseline, ZapScanResult
 
 @click.command("deploy")
 @click.option("--env", default="local",
-              type=click.Choice(["local", "prod"], case_sensitive=False),
-              help="Target environment: local (k3d) or prod (EKS)")
+              type=click.Choice(["local", "staging", "prod"], case_sensitive=False),
+              help="Target environment: local (k3d), staging, or prod (EKS)")
+@click.option("--slot", default=None,
+              type=click.Choice(["blue", "green"], case_sensitive=False),
+              help=(
+                  "Blue-green slot to deploy into. When set, creates a slot-specific "
+                  "Helm release (e.g. guardops-app-staging-blue). Use "
+                  "'guardops switch --slot <slot>' to cut traffic over."
+              ))
 @click.option("--skip-scan", is_flag=True,
               help="Skip security scans (development only — never use in prod)")
 @click.option("--skip-build", is_flag=True,
@@ -64,42 +108,77 @@ from backend.security.zap_runner import run_zap_baseline, ZapScanResult
 @click.option("--skip-trivy", is_flag=True,
               help="Skip Trivy scans")
 @click.option("--skip-dast", is_flag=True,
-              help="Skip OWASP ZAP DAST scan (Phase 6). Never use in prod.")
+              help="Skip OWASP ZAP DAST scan. Never use in prod.")
 @click.option("--fail-on", default="HIGH",
               type=click.Choice(["LOW", "MEDIUM", "HIGH", "CRITICAL"],
                                 case_sensitive=False),
               help="Minimum severity that blocks deployment (pre-deploy scans)")
 @click.option("--replicas", default=None, type=int,
               help="Number of pod replicas (overrides values.yaml)")
-def deploy_command(env, skip_scan, skip_build, skip_sonarqube,
+def deploy_command(env, slot, skip_scan, skip_build, skip_sonarqube,
                    skip_trivy, skip_dast, fail_on, replicas):
     """
     Build, scan, and deploy the application.
 
-    Local (default):  guardops deploy
-    Production:       guardops deploy --env prod
-    Skip scans:       guardops deploy --skip-scan   (dev only)
-    Skip DAST:        guardops deploy --skip-dast   (dev only)
+    \b
+    Examples:
+      guardops deploy                          # local k3d
+      guardops deploy --env staging            # staging namespace on EKS
+      guardops deploy --env prod               # production on EKS
+      guardops deploy --env staging --slot blue    # blue slot (blue-green)
+      guardops deploy --env staging --slot green   # green slot (blue-green)
+      guardops deploy --skip-scan              # dev only, skips all scans
+      guardops deploy --skip-dast              # dev only, skips ZAP
     """
     start_time = time.time()
     config = load_config()
 
-    project_name = config.get("project", {}).get("name", "guardops-app")
-    namespace = config.get("kubernetes", {}).get("namespace", "default")
+    # ── Resolve env-aware config ─────────────────────────────────────────────
+    # get_env_config deep-merges the environment block on top of the base config
+    # so that staging/prod overrides (namespace, ZAP flag, etc.) take effect
+    # transparently without changing any downstream code.
+    env_config = get_env_config(config, env)
 
-    # Determine replica count: CLI flag > values-prod.yaml default > 1
+    project_name = env_config.get("project", {}).get("name", "guardops-app")
+    namespace    = resolve_namespace(config, env)
+
+    # Replica count: CLI flag > prod default (2) > 1
     replica_count = replicas or (2 if env == "prod" else 1)
 
-    # Git SHA as image tag
+    # ── Git SHA as image tag ─────────────────────────────────────────────────
     from cli.utils.system import get_command_output
     tag_result = get_command_output(["git", "rev-parse", "--short", "HEAD"])
-    image_tag = tag_result.strip() if tag_result.strip() else "latest"
+    sha_tag    = tag_result.strip() if tag_result.strip() else "latest"
 
+    # Environment-prefixed tag: "staging-abc1234" for staging, "abc1234" for prod/local.
+    image_tag = resolve_image_tag(sha_tag, env, config)
+
+    # ── Helm release name ────────────────────────────────────────────────────
+    # Includes env suffix for staging and slot suffix for blue-green.
+    # Examples:  guardops-app  /  guardops-app-staging  /  guardops-app-staging-blue
+    helm_release_name = resolve_helm_release_name(project_name, env, config, slot)
+
+    # ── Extra Helm --set values for blue-green ────────────────────────────────
+    # Passed through to deploy_helm() so the Helm chart can add the slot label
+    # to pods and enable the blueGreen selector in the Deployment template.
+    # deploy_helm() appends these as --set blueGreen.enabled=true --set blueGreen.slot=blue
+    helm_extra_values: dict[str, str] = {}
+    if slot:
+        helm_extra_values["blueGreen.enabled"] = "true"
+        helm_extra_values["blueGreen.slot"]    = slot
+
+    # ── Header ───────────────────────────────────────────────────────────────
     console.print()
-    console.rule(
-        f"[bold]GuardOps [cyan]Deploy[/cyan][/bold] — "
-        f"[dim]{project_name}[/dim] | env=[cyan]{env}[/cyan] | tag=[cyan]{image_tag}[/cyan]"
-    )
+    header_parts = [
+        f"[bold]GuardOps [cyan]Deploy[/cyan][/bold]",
+        f"[dim]{project_name}[/dim]",
+        f"env=[cyan]{env}[/cyan]",
+        f"ns=[cyan]{namespace}[/cyan]",
+        f"tag=[cyan]{image_tag}[/cyan]",
+    ]
+    if slot:
+        header_parts.append(f"slot=[cyan]{slot}[/cyan]")
+    console.rule(" | ".join(header_parts))
 
     # ── Step 1: Docker Build ─────────────────────────────────────────────────
     console.rule("[bold]Step 1 / 5 — Docker Build[/bold]")
@@ -108,8 +187,8 @@ def deploy_command(env, skip_scan, skip_build, skip_sonarqube,
         warn("Skipping Docker build (--skip-build)")
         full_image_ref = f"{project_name}:{image_tag}"
     else:
-        dockerfile = config.get("docker", {}).get("dockerfile", "Dockerfile")
-        context = config.get("docker", {}).get("context", ".")
+        dockerfile = env_config.get("docker", {}).get("dockerfile", "Dockerfile")
+        context    = env_config.get("docker", {}).get("context", ".")
 
         build_result = build_image(
             project_name=project_name,
@@ -132,40 +211,44 @@ def deploy_command(env, skip_scan, skip_build, skip_sonarqube,
         scan_results = []
     else:
         scan_results = []
-        source_path = config.get("docker", {}).get("context", ".")
+        source_path = env_config.get("docker", {}).get("context", ".")
+
+        # Use the env-resolved fail_on_severity (staging and prod both default to HIGH).
+        effective_fail_on = fail_on  # CLI flag always wins
+        if not fail_on or fail_on == "HIGH":
+            # No explicit CLI override — read from env config.
+            effective_fail_on = env_config.get("security", {}).get("fail_on_severity", "HIGH")
 
         info("Running Semgrep...")
-        scan_results.append(run_semgrep(source_path, config))
+        scan_results.append(run_semgrep(source_path, env_config))
 
         info("Running Bandit...")
-        scan_results.append(run_bandit(source_path, config))
+        scan_results.append(run_bandit(source_path, env_config))
 
         if not skip_trivy:
             info("Running Trivy filesystem scan...")
-            scan_results.append(run_trivy_filesystem(source_path, config))
+            scan_results.append(run_trivy_filesystem(source_path, env_config))
 
             info(f"Running Trivy container scan on {full_image_ref}...")
-            scan_results.append(run_trivy_image(full_image_ref, config))
+            scan_results.append(run_trivy_image(full_image_ref, env_config))
 
         if not skip_sonarqube:
             info("Running SonarQube...")
-            scan_results.append(run_sonarqube(source_path, config))
+            scan_results.append(run_sonarqube(source_path, env_config))
 
-        report_dir = config.get("security", {}).get(
-            "report_dir", "security/reports"
-        )
+        report_dir = env_config.get("security", {}).get("report_dir", "security/reports")
         report = generate_report(
             scan_results=scan_results,
             project_name=project_name,
             image_ref=full_image_ref,
             output_dir=report_dir,
-            fail_on_severity=fail_on,
+            fail_on_severity=effective_fail_on,
         )
 
         _print_scan_summary(scan_results, report)
 
         if report.blocked:
-            error(f"Deployment blocked — {fail_on}+ severity findings detected.")
+            error(f"Deployment blocked — {effective_fail_on}+ severity findings detected.")
             console.print(f"  [dim]View full report: {report_dir}/latest.html[/dim]")
             console.print("  [dim]Run guardops scan for detailed findings.[/dim]")
             sys.exit(1)
@@ -175,9 +258,9 @@ def deploy_command(env, skip_scan, skip_build, skip_sonarqube,
     # ── Step 3: Registry Push ────────────────────────────────────────────────
     console.rule("[bold]Step 3 / 5 — Registry Push[/bold]")
 
-    if env == "prod":
-        info("Pushing image to ECR...")
-        push_result = push_to_ecr(full_image_ref, config)
+    if env in ("staging", "prod"):
+        info(f"Pushing image to ECR ({env})...")
+        push_result = push_to_ecr(full_image_ref, env_config)
 
         if not push_result.success:
             error(f"ECR push failed: {push_result.error_message}")
@@ -188,7 +271,7 @@ def deploy_command(env, skip_scan, skip_build, skip_sonarqube,
 
     else:
         info("Importing image into k3d cluster...")
-        cluster = config.get("kubernetes", {}).get("cluster_name", "guardops-local")
+        cluster = env_config.get("kubernetes", {}).get("cluster_name", "guardops-local")
         if not import_image_to_k3d(full_image_ref, cluster_name=cluster):
             error("Failed to import image into k3d cluster.")
             sys.exit(1)
@@ -197,12 +280,28 @@ def deploy_command(env, skip_scan, skip_build, skip_sonarqube,
     # ── Step 4: Helm Deploy ──────────────────────────────────────────────────
     console.rule("[bold]Step 4 / 5 — Helm Deploy[/bold]")
 
+    if slot:
+        info(
+            f"Blue-green mode — deploying [cyan]{slot}[/cyan] slot "
+            f"as release [cyan]{helm_release_name}[/cyan]"
+        )
+        info(
+            f"Run [bold]guardops switch --slot {slot} --env {env}[/bold] "
+            f"to cut traffic to this slot."
+        )
+
+    # NOTE: deploy_helm() in backend/pipeline/deployer.py must accept:
+    #   release_name: str | None = None       — uses this instead of sanitizing project_name
+    #   extra_set_values: dict | None = None  — appended as --set key=val to helm upgrade
+    # See module docstring at the top of this file for the full signature change.
     deploy_result = deploy_helm(
         project_name=project_name,
         image_ref=full_image_ref,
         namespace=namespace,
         replicas=replica_count,
         env=env,
+        release_name=helm_release_name,
+        extra_set_values=helm_extra_values if helm_extra_values else None,
     )
 
     if not deploy_result.success:
@@ -210,16 +309,22 @@ def deploy_command(env, skip_scan, skip_build, skip_sonarqube,
         console.print("[dim]Helm automatically rolled back to the previous release.[/dim]")
         sys.exit(1)
 
+    success(
+        f"Deployed [cyan]{deploy_result.helm_release}[/cyan] "
+        f"revision [cyan]{deploy_result.helm_revision}[/cyan]"
+    )
+
     # ── Step 5: DAST — OWASP ZAP ─────────────────────────────────────────────
     console.rule("[bold]Step 5 / 5 — DAST (OWASP ZAP)[/bold]")
 
     zap_result = _run_dast_step(
-        config=config,
+        config=env_config,
         env=env,
         skip_dast=skip_dast,
         service_url=deploy_result.service_url,
         project_name=project_name,
         namespace=namespace,
+        helm_release_name=helm_release_name,
     )
 
     # ── Final result panel ───────────────────────────────────────────────────
@@ -233,22 +338,30 @@ def deploy_command(env, skip_scan, skip_build, skip_sonarqube,
             f"MEDIUM:{counts['MEDIUM']} LOW:{counts['LOW']}"
         )
 
-    result_panel(
-        title="Deployment complete",
-        lines=[
-            f"Project:       {project_name}",
-            f"Image:         {full_image_ref}",
-            f"Environment:   {env}",
-            f"Namespace:     {namespace}",
-            f"Replicas:      {replica_count}",
-            f"Helm release:  {deploy_result.helm_release}",
-            f"Helm revision: {deploy_result.helm_revision}",
-            f"DAST:          {dast_status}",
-            f"Duration:      {duration:.1f}s",
-            f"Service URL:   {deploy_result.service_url}",
-        ],
-    )
+    panel_lines = [
+        f"Project:       {project_name}",
+        f"Image:         {full_image_ref}",
+        f"Environment:   {env}",
+        f"Namespace:     {namespace}",
+        f"Replicas:      {replica_count}",
+        f"Helm release:  {deploy_result.helm_release}",
+        f"Helm revision: {deploy_result.helm_revision}",
+        f"DAST:          {dast_status}",
+        f"Duration:      {duration:.1f}s",
+        f"Service URL:   {deploy_result.service_url}",
+    ]
+    if slot:
+        panel_lines.insert(3, f"Slot:          {slot}")
+
+    result_panel(title="Deployment complete", lines=panel_lines)
+
     info("Run [bold]guardops status[/bold] to verify pod health")
+
+    if slot:
+        info(
+            f"To activate this slot: "
+            f"[bold green]guardops switch --slot {slot} --env {env}[/bold green]"
+        )
     if env == "local":
         info(
             "Local access: add [cyan]127.0.0.1  test-app.local[/cyan] "
@@ -265,6 +378,7 @@ def _run_dast_step(
     service_url: str,
     project_name: str,
     namespace: str,
+    helm_release_name: str = "",
 ) -> ZapScanResult:
     """
     Run the ZAP DAST step and handle the result, including auto-rollback.
@@ -273,39 +387,40 @@ def _run_dast_step(
     Calls sys.exit(1) if CRITICAL findings are found and rollback is triggered.
     """
     security_cfg = config.get("security", {})
-    zap_enabled = security_cfg.get("tools", {}).get("owasp_zap", False)
+    zap_enabled  = security_cfg.get("tools", {}).get("owasp_zap", False)
 
     # ── Skip paths ───────────────────────────────────────────────────────────
 
     if skip_dast:
         warn("Skipping DAST (--skip-dast). NEVER use this in production.")
-        result = ZapScanResult(skipped=True, skip_reason="--skip-dast flag")
-        return result
+        return ZapScanResult(skipped=True, skip_reason="--skip-dast flag")
 
     if not zap_enabled:
-        warn(
-            "DAST skipped — set [cyan]security.tools.owasp_zap: true[/cyan] "
-            "in .guardops.yaml to enable."
-        )
-        result = ZapScanResult(
+        # For staging this is the normal path — owasp_zap is False in values-staging.yaml.
+        # The message is different to avoid confusion for staging operators.
+        if env == "staging":
+            info("DAST skipped for staging environment (expected — ZAP runs in prod only).")
+        else:
+            warn(
+                "DAST skipped — set [cyan]security.tools.owasp_zap: true[/cyan] "
+                "in .guardops.yaml to enable."
+            )
+        return ZapScanResult(
             skipped=True,
-            skip_reason="security.tools.owasp_zap is false in config",
+            skip_reason=f"security.tools.owasp_zap is false for env={env}",
         )
-        return result
 
-    if env != "prod":
+    if env not in ("prod",):
         warn(
-            "DAST skipped for local environment — ZAP needs a stable HTTP URL. "
+            "DAST skipped for non-prod environment — ZAP needs a stable HTTP URL. "
             "DAST runs automatically on [cyan]--env prod[/cyan]."
         )
-        result = ZapScanResult(
+        return ZapScanResult(
             skipped=True,
-            skip_reason="DAST only runs in prod environment",
+            skip_reason=f"DAST only runs in prod environment (got env={env})",
         )
-        return result
 
     # ── Determine target URL ─────────────────────────────────────────────────
-    # Priority: explicit config override > service URL from deploy result
     target_url = (
         security_cfg.get("zap_target_url", "").strip()
         or service_url
@@ -316,11 +431,10 @@ def _run_dast_step(
             "DAST skipped — could not determine target URL. "
             "Set [cyan]security.zap_target_url[/cyan] in .guardops.yaml."
         )
-        result = ZapScanResult(
+        return ZapScanResult(
             skipped=True,
             skip_reason="No target URL available for DAST scan",
         )
-        return result
 
     info(f"Running OWASP ZAP baseline scan against [cyan]{target_url}[/cyan]")
     info("This runs passively — no attack payloads sent. Timeout: 5 min.")
@@ -339,8 +453,6 @@ def _run_dast_step(
             "The application is deployed but DAST could not complete. "
             "Investigate manually before marking this release production-safe."
         )
-        # Don't exit — deploy succeeded, scan infrastructure failed.
-        # Operator must investigate. This mirrors how Trivy behaves on DB fetch failure.
         return zap_result
 
     # ── Print DAST summary ───────────────────────────────────────────────────
@@ -354,16 +466,15 @@ def _run_dast_step(
             f"DAST found [bold red]{counts['CRITICAL']} CRITICAL[/bold red] findings "
             f"on the live application — triggering automatic rollback."
         )
-        console.print(
-            f"  [dim]ZAP report: {zap_result.html_report_path}[/dim]"
-        )
+        console.print(f"  [dim]ZAP report: {zap_result.html_report_path}[/dim]")
 
         info("Rolling back Helm release...")
-        release_name = _sanitize_release_name(project_name)
+        # Use the explicit release name so rollback targets the correct slot release.
+        release_name = helm_release_name or _sanitize_release_name(project_name)
         rollback_result = rollback_helm(
             release_name=release_name,
             namespace=namespace,
-            revision=0,   # 0 = previous revision
+            revision=0,
         )
 
         if rollback_result.success:
@@ -377,8 +488,10 @@ def _run_dast_step(
                 "Manual intervention required — check `helm history` and `kubectl get pods`."
             )
 
-        console.print("\n  [bold red]DAST gate FAILED[/bold red] — "
-                      "review the ZAP report and fix findings before re-deploying.")
+        console.print(
+            "\n  [bold red]DAST gate FAILED[/bold red] — "
+            "review the ZAP report and fix findings before re-deploying."
+        )
         sys.exit(1)
 
     if not zap_result.skipped and zap_result.success:
@@ -412,8 +525,6 @@ def _print_dast_summary(zap_result: ZapScanResult) -> None:
         f"Low: {counts['LOW']}"
     )
 
-    # Show top findings (CRITICAL + HIGH only) inline so the operator doesn't
-    # have to open the report for the most important items
     blocking = [
         f for f in zap_result.findings
         if f.severity in ("CRITICAL", "HIGH")
@@ -421,7 +532,7 @@ def _print_dast_summary(zap_result: ZapScanResult) -> None:
     if blocking:
         console.print()
         console.print("  [bold]Top DAST findings:[/bold]")
-        for finding in blocking[:5]:   # cap at 5 to avoid wall of text
+        for finding in blocking[:5]:
             sev_color = "red" if finding.severity == "CRITICAL" else "yellow"
             console.print(
                 f"  [{sev_color}]{finding.severity:<8}[/{sev_color}] "

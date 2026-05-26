@@ -1,5 +1,6 @@
 # values.yaml — Local development defaults (k3d)
 # These are the base values used when running `guardops deploy --env local`
+# Staging overrides live in values-staging.yaml
 # Production overrides live in values-prod.yaml
 
 # ---------------------------------------------------------------------------
@@ -16,7 +17,7 @@ image:
   repository: guardops-app   # overridden at deploy time
   tag: latest                 # overridden with git SHA at deploy time
   # Never = use locally imported image (k3d requirement)
-  # Always = pull from registry (ECR in prod)
+  # Always = pull from registry (ECR in staging/prod)
   pullPolicy: Never
 
 # ---------------------------------------------------------------------------
@@ -24,8 +25,8 @@ image:
 # ---------------------------------------------------------------------------
 replicaCount: 1
 
-# Resource requests/limits — these are minimums for local dev
-# Production overrides to higher values in values-prod.yaml
+# Resource requests/limits — minimums for local dev
+# Staging and prod override to higher values in their respective values files
 resources:
   requests:
     memory: "64Mi"
@@ -93,16 +94,29 @@ containerPort: 8080
 # ---------------------------------------------------------------------------
 # PHASE 5: Monitoring (Prometheus scraping)
 # ---------------------------------------------------------------------------
-# The app exposes /metrics via prometheus_client (Python).
-# When monitoring.enabled = true:
-#   - Prometheus scrape annotations are added to the pod
-#   - A 'metrics' named port is added to the container
-#   - A ServiceMonitor CRD is created (requires kube-prometheus-stack installed first)
-#
-# Local (k3d): set enabled: false unless you've installed kube-prometheus-stack locally.
-# Prod (EKS):  set enabled: true in values-prod.yaml — kube-prometheus-stack runs there.
 monitoring:
   enabled: false            # true in values-prod.yaml
-  port: 8080                # same port — app serves /metrics on the app port
+  port: 8080
   path: /metrics
-  scrapeInterval: 30s       # how often Prometheus polls — 30s is standard
+  scrapeInterval: 30s
+
+# ---------------------------------------------------------------------------
+# PHASE 9: Blue-Green deployment
+# ---------------------------------------------------------------------------
+# Controls slot-based traffic switching via `guardops switch`.
+#
+# When blueGreen.enabled = true (set automatically by `guardops deploy --slot`):
+#   - The pod template gains label  guardops.io/slot: <slot>
+#   - The Deployment selector also matches on that label so each slot's
+#     Deployment only controls its own pods
+#
+# guardops switch --slot green patches a SHARED traffic Service (not owned
+# by this Helm release) to select pods with guardops.io/slot=green.
+# The shared Service is created by `guardops switch` on first use.
+#
+# This section is intentionally disabled by default (enabled: false, slot: "").
+# guardops deploy --slot blue/green sets these via --set on the helm upgrade
+# command so the values file itself never needs to be edited for blue-green.
+blueGreen:
+  enabled: false   # set to true by guardops deploy --slot <slot>
+  slot: ""         # "blue" | "green" — set by guardops deploy --slot <slot>
