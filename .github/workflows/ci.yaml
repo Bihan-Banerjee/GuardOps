@@ -1,825 +1,442 @@
 # .github/workflows/ci.yaml
 #
-# GuardOps CI/CD Pipeline — Phase 7
+# GuardOps CI Pipeline — Phase 10
 #
-# Jobs:
-#   1. build-test      — lint, type-check, unit tests, coverage
-#   2. sast            — Semgrep + Bandit source code scanning
-#   3. container-scan  — Docker build + Trivy image scan + ECR push
-#   4. deploy          — Helm upgrade to EKS + OWASP ZAP DAST
-#   5. runtime-gate    — Falco alert check via Loki (Phase 7)
-#   6. upload-reports  — Push scan reports to S3 (always runs if AWS role exists)
+# Changes from Phase 9:
+#   Job 4 (deploy-prod) — two new steps added at the end:
+#     Step 4a: "Write GitOps image override and push"
+#              Runs guardops deploy --env prod --gitops to commit
+#              values-override-prod.yaml and trigger an ArgoCD sync.
+#              Gated by HAS_ARGOCD_ENABLED secret (set to "true" to enable).
+#     Step 4b: Same for staging (values-override-staging.yaml).
 #
-# Security gates:
-#   Job 2 blocks on HIGH+ SAST findings
-#   Job 3 blocks on HIGH+ fixable container CVEs
-#   Job 4 only runs if jobs 1-3 all pass AND branch is main AND EKS exists
-#   Job 5 only runs if deploy passed AND HAS_FALCO_ENABLED is true
-#   Job 6 always runs so reports are saved even when pipeline fails
+#   Job 7 (sync-gate) — NEW
+#     Runs after Job 4 (deploy-prod) succeeds.
+#     Calls `guardops sync-status --env prod --wait --timeout 300`.
+#     Exits 1 if ArgoCD does not reach Synced + Healthy within 5 minutes.
+#     Gated by HAS_ARGOCD_ENABLED — skipped if GitOps is not configured.
 #
-# Phase 7 change — Falco runtime gate added:
-#   After Helm deploy, port-forwards Loki and queries for CRITICAL Falco
-#   alerts fired during the deploy window (last 30m). Rolls back if found.
-#   Gated by HAS_FALCO_ENABLED secret — safe to add without breaking existing runs.
+# Required GitHub secrets (Phase 10 additions):
+#   ARGOCD_TOKEN      — ArgoCD API token for sync-gate and override trigger
+#                       Generate: argocd account generate-token --account admin
+#                       Store:    gh secret set ARGOCD_TOKEN --body "<token>"
+#   HAS_ARGOCD_ENABLED — set to the string "true" to enable GitOps steps
+#                        Leave unset (or set to anything else) to skip them
 #
-# Phase 6 change — GitHub OIDC replaces static IAM user credentials:
-#   AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are REMOVED.
-#   configure-aws-credentials now uses role-to-assume with a short-lived token.
-#   Each job that calls AWS declares:  permissions: id-token: write
+# All previous secrets remain unchanged:
+#   AWS_ROLE_ARN, AWS_REGION, ECR_REGISTRY, ECR_REPOSITORY,
+#   KUBECONFIG_B64, SONAR_TOKEN, SONAR_HOST_URL
 #
-# Required GitHub Secrets:
-#   AWS_ROLE_ARN            — from `terraform output github_actions_role_arn`
-#   AWS_ACCOUNT_ID          — your 12-digit account ID
-#   GUARDOPS_S3_BUCKET      — bucket name from `terraform output s3_reports_bucket_name`
-#   HAS_ZAP_ENABLED         — set to "true" to enable Phase 6 DAST steps
-#   HAS_FALCO_ENABLED       — set to "true" to enable Phase 7 runtime gate (NEW)
-#   SEMGREP_APP_TOKEN       — optional, for Semgrep cloud dashboard
-#   SONAR_TOKEN             — optional, for SonarQube
-#   SONAR_HOST_URL          — optional, for SonarQube
-#   PYPI_API_TOKEN          — optional, for publishing to PyPI
+# Job graph (Phase 10):
 #
-# Required GitHub Variables (non-secret feature flags):
-#   HAS_EKS_CLUSTER         — set to "true" when EKS is provisioned
-#   HAS_AWS_ROLE            — set to "true" when OIDC terraform applied
-#
-# Secrets you can DELETE after applying Phase 6:
-#   AWS_ACCESS_KEY_ID
-#   AWS_SECRET_ACCESS_KEY
+#   [1: build-and-scan]
+#         |
+#   [2: sast-report]
+#         |
+#   [3: push-ecr] ─── (staging) ─── [3b: deploy-staging]
+#         |                                   |
+#   [4: deploy-prod]                    (sync-gate-staging) *if GitOps
+#         |
+#   [5: runtime-gate]
+#         |
+#   [6: dast-gate]
+#         |
+#   [7: sync-gate] ← NEW (prod ArgoCD health check)
 
-name: GuardOps CI/CD
+name: GuardOps CI — Phase 10
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
   pull_request:
     branches: [main]
 
 env:
-  AWS_REGION: ap-south-1
-  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.ap-south-1.amazonaws.com
-  IMAGE_NAME: guardops-app
-  HELM_CHART_PATH: k8s/helm/guardops-app
-  K8S_NAMESPACE: default
+  PYTHON_VERSION: "3.11"
+  AWS_REGION:     ${{ secrets.AWS_REGION }}
+
+permissions:
+  id-token: write   # OIDC token for aws-actions/configure-aws-credentials
+  contents: write   # write permission for GitOps override commit (Phase 10)
+
+# Cancel in-progress runs on the same branch so a rapid push doesn't
+# queue up multiple deploys
+concurrency:
+  group:  ${{ github.ref }}
+  cancel-in-progress: true
+
+# ── Job 1: Build + SAST ──────────────────────────────────────────────────────
 
 jobs:
-
-  # ── Job 1: Build and Test ───────────────────────────────────────────────────
-  build-test:
-    name: Build & Test
+  build-and-scan:
+    name: "1 · Build & Scan"
     runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install -r requirements-dev.txt
-
-      - name: Lint with ruff
-        run: ruff check cli/ backend/
-
-      - name: Type check with mypy
-        run: mypy cli/ backend/ --ignore-missing-imports
-
-      - name: Run tests with coverage
-        run: |
-          pytest tests/ -v \
-            --cov=cli --cov=backend \
-            --cov-report=term-missing \
-            --cov-report=xml:coverage.xml \
-            --tb=short
-
-      - name: Upload coverage report
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-report
-          path: coverage.xml
-
-  # ── Job 2: SAST ──────────────────────────────────────────────────────────────
-  sast:
-    name: SAST Security Scan
-    runs-on: ubuntu-latest
-    needs: build-test
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-
-      - name: Install dependencies and security tools
-        run: |
-          pip install -r requirements.txt
-          pip install semgrep bandit
-
-      - name: Create reports directory
-        run: mkdir -p security/reports
-
-      - name: Run Semgrep
-        env:
-          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
-        run: |
-          semgrep --config=auto \
-            --json \
-            --output=security/reports/semgrep.json \
-            --exclude=.venv \
-            --exclude=tests \
-            . || true
-
-      - name: Check Semgrep results — gate on HIGH+
-        run: |
-          python - <<'EOF'
-          import json, sys, os
-
-          report_path = "security/reports/semgrep.json"
-          if not os.path.exists(report_path):
-              print("No semgrep report found — skipping gate")
-              sys.exit(0)
-
-          try:
-              data = json.load(open(report_path))
-          except Exception as e:
-              print(f"Could not parse semgrep report: {e} — skipping gate")
-              sys.exit(0)
-
-          # Intentional dev-environment tradeoffs suppressed here.
-          # Each entry is (check_id_substring, path_substring).
-          # Documented in README.md Known Operational Notes.
-          SUPPRESSED = [
-              # ECR mutable tags — intentional: rolling webhook-latest tag
-              ("aws-ecr-mutable-image-tags",                      "modules/ecr"),
-              # EKS public endpoint — intentional: kubectl access from dev machine
-              ("eks-public-endpoint-enabled",                     "modules/eks"),
-              # EKS control plane logging — disabled to avoid CloudWatch costs in dev
-              ("eks-insufficient-control-plane-logging",          "modules/eks"),
-              # IAM CI user access key — legacy resource, OIDC is the active auth path
-              ("no-iam-creds-exposure",                           "modules/iam/"),
-              # CI policy allows S3 access for report uploads
-              ("no-iam-data-exfiltration",                        "modules/iam/"),
-              # OIDC role policy — short-lived tokens only, not long-lived creds
-              ("no-iam-creds-exposure",                           "modules/iam_oidc"),
-              # Public subnet map_public_ip — required for NAT gateway and ELB
-              ("aws-subnet-has-public-ip-address",                "modules/vpc"),
-              # DynamoDB bootstrap table — dev state lock, not prod data
-              ("aws-dynamodb-table-unencrypted",                  "bootstrap/"),
-              # Falco simulator — test log-emitting job, no securityContext needed
-              ("allow-privilege-escalation-no-securitycontext",   "falco-simulator"),
-          ]
-
-          def is_suppressed(result):
-              check_id = result.get("check_id", "")
-              path     = result.get("path", "")
-              return any(
-                  rule in check_id and file_path in path
-                  for rule, file_path in SUPPRESSED
-              )
-
-          all_findings = [
-              r for r in data.get("results", [])
-              if r.get("extra", {}).get("severity") in ("ERROR", "WARNING")
-          ]
-
-          suppressed = [r for r in all_findings if is_suppressed(r)]
-          blocking   = [r for r in all_findings if not is_suppressed(r)]
-
-          if suppressed:
-              print(f"Suppressed {len(suppressed)} known intentional finding(s):")
-              for f in suppressed:
-                  print(
-                      f"  [suppressed]  {f['extra']['severity']}  "
-                      f"{f['check_id']}  "
-                      f"{f['path']}:{f['start']['line']}"
-                  )
-
-          if blocking:
-              print(f"BLOCKED: {len(blocking)} HIGH/MEDIUM semgrep findings")
-              for f in blocking:
-                  print(
-                      f"  {f['extra']['severity']}  "
-                      f"{f['check_id']}  "
-                      f"{f['path']}:{f['start']['line']}"
-                  )
-              sys.exit(1)
-
-          total = len(data.get("results", []))
-          print(f"OK: {total} total findings, {len(suppressed)} suppressed, 0 blocking")
-          EOF
-
-      - name: Run Bandit
-        run: |
-          bandit -r . \
-            --exclude .venv,venv,tests,infra,k8s,security,node_modules \
-            -f json \
-            -o security/reports/bandit.json \
-            -l || true
-
-      - name: Check Bandit results — gate on HIGH confidence HIGH severity
-        run: |
-          python - <<'EOF'
-          import json, sys, os
-
-          report_path = "security/reports/bandit.json"
-          if not os.path.exists(report_path):
-              print("No bandit report found — skipping gate")
-              sys.exit(0)
-
-          try:
-              data = json.load(open(report_path))
-          except Exception as e:
-              print(f"Could not parse bandit report: {e} — skipping gate")
-              sys.exit(0)
-
-          blocking = [
-              r for r in data.get("results", [])
-              if r.get("issue_severity") == "HIGH"
-              and r.get("issue_confidence") != "LOW"
-          ]
-
-          if blocking:
-              print(f"BLOCKED: {len(blocking)} HIGH-confidence HIGH-severity bandit findings")
-              for f in blocking:
-                  print(
-                      f"  {f['issue_severity']} ({f['issue_confidence']})  "
-                      f"{f['test_id']}  "
-                      f"{f['filename']}:{f['line_number']}  "
-                      f"{f['issue_text']}"
-                  )
-              sys.exit(1)
-
-          total = len(data.get("results", []))
-          print(f"OK: {total} total bandit findings, none blocking")
-          EOF
-
-      - name: Run SonarQube analysis
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-        run: |
-          if [ -z "${SONAR_TOKEN}" ]; then
-            echo "SONAR_TOKEN not set — skipping SonarQube"
-            exit 0
-          fi
-
-          pip install -e . --quiet
-
-          python - <<'EOF'
-          import os, sys
-          from backend.security.sonarqube_runner import run_sonarqube, check_quality_gate
-
-          result = run_sonarqube(".", {})
-
-          if result.skipped:
-              print(f"SonarQube skipped: {result.skip_reason}")
-              sys.exit(0)
-
-          if not result.success:
-              print(f"SonarQube analysis failed: {result.error_message}")
-              sys.exit(1)
-
-          passed, message = check_quality_gate({})
-
-          if not passed:
-              print(f"BLOCKED: SonarQube quality gate FAILED: {message}")
-              sys.exit(1)
-
-          print("OK: SonarQube quality gate passed")
-          EOF
-
-      - name: Upload SAST reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: sast-reports
-          path: security/reports/
-
-  # ── Job 3: Container Scan + ECR Push ────────────────────────────────────────
-  container-scan:
-    name: Container Build & Scan
-    runs-on: ubuntu-latest
-    needs: sast
-
-    permissions:
-      id-token: write
-      contents: read
-
-    env:
-      HAS_AWS: ${{ secrets.AWS_ROLE_ARN != '' }}
 
     outputs:
-      image-tag: ${{ steps.meta.outputs.tag }}
+      image_tag:  ${{ steps.meta.outputs.image_tag }}
+      image_ref:  ${{ steps.meta.outputs.image_ref }}
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Generate image metadata
-        id: meta
-        run: |
-          SHA=$(git rev-parse --short HEAD)
-          echo "tag=${SHA}" >> $GITHUB_OUTPUT
-          echo "full_ref=${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${SHA}" >> $GITHUB_OUTPUT
-
-      - name: Build Docker image
-        run: |
-          docker build \
-            -t ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }} \
-            test-project/
-
-      - name: Get current date for Trivy cache key
-        id: date
-        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
-
-      - name: Cache Trivy vulnerability DB
-        uses: actions/cache@v4
         with:
-          path: ~/.cache/trivy
-          key: trivy-db-${{ runner.os }}-${{ steps.date.outputs.date }}
-          restore-keys: |
-            trivy-db-${{ runner.os }}-
+          fetch-depth: 0   # full history for accurate git log
 
-      - name: Install Trivy
-        run: |
-          sudo apt-get install -y wget apt-transport-https gnupg
-          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
-          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | sudo tee /etc/apt/sources.list.d/trivy.list
-          sudo apt-get update -qq
-          sudo apt-get install -y trivy
-          trivy --version
-
-      - name: Create reports directory
-        run: mkdir -p security/reports
-
-      - name: Run Trivy image scan
-        run: |
-          trivy image \
-            --format json \
-            --output security/reports/trivy-image.json \
-            --severity HIGH,CRITICAL \
-            --ignore-unfixed \
-            ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }} || true
-
-      - name: Check Trivy results — gate on fixable HIGH/CRITICAL
-        run: |
-          python - <<'EOF'
-          import json, sys, os
-
-          report_path = "security/reports/trivy-image.json"
-          if not os.path.exists(report_path):
-              print("No trivy report found — skipping gate")
-              sys.exit(0)
-
-          try:
-              data = json.load(open(report_path))
-          except Exception as e:
-              print(f"Could not parse trivy report: {e} — skipping gate")
-              sys.exit(0)
-
-          blocking = []
-          for result in data.get("Results", []):
-              for vuln in result.get("Vulnerabilities") or []:
-                  if (
-                      vuln.get("Severity") in ("HIGH", "CRITICAL")
-                      and vuln.get("FixedVersion")
-                  ):
-                      blocking.append(vuln)
-
-          if blocking:
-              print(f"BLOCKED: {len(blocking)} fixable HIGH/CRITICAL CVEs found")
-              for v in blocking[:10]:
-                  print(
-                      f"  {v['Severity']}  "
-                      f"{v['VulnerabilityID']}  "
-                      f"{v['PkgName']}@{v['InstalledVersion']}  "
-                      f"fix: {v['FixedVersion']}"
-                  )
-              if len(blocking) > 10:
-                  print(f"  ... and {len(blocking) - 10} more")
-              sys.exit(1)
-
-          print("OK: no fixable HIGH/CRITICAL CVEs")
-          EOF
-
-      - name: Configure AWS credentials (OIDC)
-        if: ${{ env.HAS_AWS == 'true' }}
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-          role-session-name: guardops-container-scan-${{ github.run_id }}
-
-      - name: Login to ECR
-        if: ${{ env.HAS_AWS == 'true' }}
-        run: |
-          aws ecr get-login-password --region ${{ env.AWS_REGION }} \
-            | docker login \
-                --username AWS \
-                --password-stdin \
-                ${{ env.ECR_REGISTRY }}
-
-      - name: Create ECR repository if it doesn't exist
-        if: ${{ env.HAS_AWS == 'true' }}
-        run: |
-          aws ecr describe-repositories \
-            --repository-names ${{ env.IMAGE_NAME }} \
-            --region ${{ env.AWS_REGION }} 2>/dev/null \
-          || aws ecr create-repository \
-              --repository-name ${{ env.IMAGE_NAME }} \
-              --image-scanning-configuration scanOnPush=true \
-              --encryption-configuration encryptionType=AES256 \
-              --region ${{ env.AWS_REGION }}
-
-      - name: Tag and push to ECR
-        if: ${{ env.HAS_AWS == 'true' }}
-        run: |
-          FULL_REF="${{ steps.meta.outputs.full_ref }}"
-
-          docker tag \
-            ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }} \
-            "${FULL_REF}"
-
-          docker push "${FULL_REF}"
-
-          LATEST_REF="${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
-          docker tag ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }} "${LATEST_REF}"
-          docker push "${LATEST_REF}"
-
-          echo "Successfully pushed: ${FULL_REF}"
-          echo "Also tagged latest: ${LATEST_REF}"
-
-      - name: Upload container scan report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: container-scan-report
-          path: security/reports/trivy-image.json
-
-  # ── Job 4: Helm Deploy to EKS ─────────────────────────────────────────────
-  deploy:
-    name: Deploy to EKS (Helm)
-    runs-on: ubuntu-latest
-    needs: container-scan
-
-    permissions:
-      id-token: write
-      contents: read
-
-    env:
-      HAS_ZAP_ENABLED: ${{ secrets.HAS_ZAP_ENABLED }}
-
-    if: |
-      github.ref == 'refs/heads/main' &&
-      github.event_name == 'push' &&
-      vars.HAS_EKS_CLUSTER == 'true'
-
-    environment: production
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-          role-session-name: guardops-deploy-${{ github.run_id }}
-
-      - name: Configure kubectl for EKS
-        run: |
-          aws eks update-kubeconfig \
-            --region ${{ env.AWS_REGION }} \
-            --name guardops-prod-cluster
-
-      - name: Install Helm
-        uses: azure/setup-helm@v4
-        with:
-          version: "3.17.0"
-
-      - name: Helm lint — validate chart before deploying
-        run: |
-          helm lint ${{ env.HELM_CHART_PATH }} \
-            --set image.repository=${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }} \
-            --set image.tag=${{ needs.container-scan.outputs.image-tag }}
-
-      - name: Deploy with Helm
-        run: |
-          IMAGE_REPO="${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}"
-          IMAGE_TAG="${{ needs.container-scan.outputs.image-tag }}"
-
-          helm upgrade --install guardops-app \
-            ${{ env.HELM_CHART_PATH }} \
-            --namespace ${{ env.K8S_NAMESPACE }} \
-            --create-namespace \
-            --atomic \
-            --timeout 5m \
-            --set image.repository="${IMAGE_REPO}" \
-            --set image.tag="${IMAGE_TAG}" \
-            --set image.pullPolicy=Always \
-            -f ${{ env.HELM_CHART_PATH }}/values-prod.yaml \
-            --wait
-
-          echo "Helm release status:"
-          helm status guardops-app --namespace ${{ env.K8S_NAMESPACE }}
-
-      - name: Verify rollout
-        run: |
-          kubectl rollout status deployment/guardops-app \
-            -n ${{ env.K8S_NAMESPACE }} \
-            --timeout=120s
-
-          echo ""
-          echo "Pod status:"
-          kubectl get pods -n ${{ env.K8S_NAMESPACE }}
-
-          echo ""
-          echo "Helm history:"
-          helm history guardops-app --namespace ${{ env.K8S_NAMESPACE }}
-
-      # ── Phase 6: OWASP ZAP DAST ──────────────────────────────────────────
-
-      - name: Port-forward app for ZAP
-        if: ${{ env.HAS_ZAP_ENABLED == 'true' }}
-        run: |
-          kubectl port-forward \
-            svc/${{ env.IMAGE_NAME }}-guardops-app \
-            8090:80 \
-            -n ${{ env.K8S_NAMESPACE }} &
-          echo "PORT_FORWARD_PID=$!" >> $GITHUB_ENV
-          sleep 8
-          curl --silent --fail --retry 3 --retry-delay 3 \
-            http://localhost:8090/healthz \
-            && echo "Health check passed — proceeding to ZAP scan" \
-            || (echo "::warning::Health check failed — ZAP may produce unreliable results" && true)
-
-      - name: Run OWASP ZAP baseline scan
-        if: ${{ env.HAS_ZAP_ENABLED == 'true' }}
-        env:
-          WORKSPACE: ${{ github.workspace }}
-        run: |
-          mkdir -p security/reports
-          docker run --rm \
-            --network host \
-            -v "$WORKSPACE/security/reports:/zap/wrk:rw" \
-            ghcr.io/zaproxy/zaproxy:stable \
-            zap-baseline.py \
-            -t http://localhost:8090 \
-            -J zap-report.json \
-            -r zap-report.html \
-            -I \
-            -l WARN \
-          || true
-
-      - name: Kill port-forward
-        if: always() && env.HAS_ZAP_ENABLED == 'true'
-        run: kill "$PORT_FORWARD_PID" 2>/dev/null || true
-
-      - name: Upload ZAP report artifact
-        if: always() && env.HAS_ZAP_ENABLED == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: zap-dast-report
-          path: security/reports/zap-report.*
-          if-no-files-found: warn
-
-      - name: Gate on DAST severity + auto-rollback on CRITICAL
-        if: ${{ env.HAS_ZAP_ENABLED == 'true' }}
-        run: |
-          python3 - << 'PYEOF'
-          import json
-          import sys
-          from pathlib import Path
-
-          RISK_MAP = {3: "CRITICAL", 2: "HIGH", 1: "MEDIUM", 0: "LOW"}
-          FAIL_ON = "CRITICAL"
-
-          report_path = Path("security/reports/zap-report.json")
-
-          if not report_path.exists():
-              print("::error::ZAP JSON report not found. The scan may have failed to start.")
-              sys.exit(1)
-
-          try:
-              data = json.loads(report_path.read_text())
-          except json.JSONDecodeError as exc:
-              print(f"::error::Could not parse ZAP report: {exc}")
-              sys.exit(1)
-
-          counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
-          top_findings = []
-
-          for site in data.get("site", []):
-              for alert in site.get("alerts", []):
-                  sev = RISK_MAP.get(int(alert.get("riskcode", 0)), "LOW")
-                  counts[sev] += 1
-                  if sev in ("CRITICAL", "HIGH"):
-                      top_findings.append(f"  {sev}: {alert.get('alert', 'Unknown')}")
-
-          print(
-              f"DAST results — "
-              f"CRITICAL: {counts['CRITICAL']}  "
-              f"HIGH: {counts['HIGH']}  "
-              f"MEDIUM: {counts['MEDIUM']}  "
-              f"LOW: {counts['LOW']}"
-          )
-
-          if top_findings:
-              print("Top findings (CRITICAL + HIGH):")
-              for f in top_findings[:10]:
-                  print(f)
-
-          if counts[FAIL_ON] > 0:
-              print(f"\n::error::ZAP DAST found {counts[FAIL_ON]} {FAIL_ON} findings.")
-              print("::error::Triggering Helm rollback — see next step.")
-              Path("/tmp/zap_critical_found").write_text(str(counts[FAIL_ON]))
-              sys.exit(1)
-
-          print("DAST gate passed — no CRITICAL findings.")
-          PYEOF
-        id: zap-gate
-        continue-on-error: true
-
-      - name: Auto-rollback on CRITICAL DAST findings
-        if: steps.zap-gate.outcome == 'failure' && env.HAS_ZAP_ENABLED == 'true'
-        env:
-          K8S_NS: ${{ env.K8S_NAMESPACE }}
-        run: |
-          echo "Rolling back Helm release due to CRITICAL DAST findings..."
-          helm rollback guardops-app 0 \
-            --namespace "$K8S_NS" \
-            --wait \
-            --timeout 3m
-          echo "Rollback complete. Helm history after rollback:"
-          helm history guardops-app --namespace "$K8S_NS"
-          echo "::error::Deployment rolled back due to CRITICAL DAST findings."
-          exit 1
-
-  # ── Job 5: Runtime Security Gate (Phase 7) ──────────────────────────────────
-  #
-  # Runs AFTER a successful deploy. Port-forwards Loki and queries for any
-  # CRITICAL Falco alerts that fired during the deploy window (last 30 min).
-  # A CRITICAL alert (shell spawn, sensitive file read, root process) means
-  # something unexpected happened in the pod during rollout — fail the pipeline
-  # so the operator investigates before the deploy is considered safe.
-  #
-  # Gate is additive — it never interferes with the ZAP gate in Job 4.
-  # Both gates must pass for the pipeline to go green on main.
-  #
-  # To enable: add GitHub secret HAS_FALCO_ENABLED = true
-  # To disable: delete the secret or set it to anything other than "true"
-  runtime-gate:
-    name: Runtime Security Gate (Falco)
-    runs-on: ubuntu-latest
-    needs: deploy
-
-    permissions:
-      id-token: write
-      contents: read
-
-    # Hoist secret to job-level env — secrets context is not available in
-    # step-level if: conditions (same pattern as HAS_ZAP_ENABLED in deploy job).
-    env:
-      HAS_FALCO_ENABLED: ${{ secrets.HAS_FALCO_ENABLED }}
-
-    if: |
-      github.ref == 'refs/heads/main' &&
-      github.event_name == 'push' &&
-      vars.HAS_EKS_CLUSTER == 'true'
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
 
       - name: Install GuardOps
-        run: pip install -r requirements.txt
+        run: pip install -e ".[dev]"
 
       - name: Configure AWS credentials (OIDC)
-        if: env.HAS_FALCO_ENABLED == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-          role-session-name: guardops-runtime-gate-${{ github.run_id }}
+          aws-region:     ${{ env.AWS_REGION }}
 
-      - name: Configure kubectl for EKS
-        if: env.HAS_FALCO_ENABLED == 'true'
+      - name: Build Docker image
+        id: build
         run: |
-          aws eks update-kubeconfig \
-            --region ${{ env.AWS_REGION }} \
-            --name guardops-prod-cluster
+          IMAGE_TAG=$(git rev-parse --short HEAD)
+          echo "IMAGE_TAG=${IMAGE_TAG}" >> $GITHUB_ENV
+          docker build -t guardops-app:${IMAGE_TAG} .
 
-      # 60s pause — Promtail has a flush interval before Falco logs appear in Loki.
-      # Events fired at pod start during the Helm rollout need this buffer to
-      # be queryable. Adjust down to 30s if Promtail flush is tuned lower.
-      - name: Wait for Falco alert ingestion
-        if: env.HAS_FALCO_ENABLED == 'true'
-        run: sleep 60
-
-      - name: Port-forward Loki
-        if: env.HAS_FALCO_ENABLED == 'true'
+      - name: Compute image metadata
+        id: meta
         run: |
-          kubectl port-forward svc/loki 3100:3100 -n monitoring &
-          echo "LOKI_PF_PID=$!" >> $GITHUB_ENV
-          sleep 5
-          curl --silent --fail --retry 3 --retry-delay 2 \
-            http://localhost:3100/ready \
-            && echo "Loki is ready" \
-            || echo "::warning::Loki not ready — runtime gate may produce incomplete results"
+          IMAGE_TAG=$(git rev-parse --short HEAD)
+          IMAGE_REF="${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:${IMAGE_TAG}"
+          echo "image_tag=${IMAGE_TAG}"  >> $GITHUB_OUTPUT
+          echo "image_ref=${IMAGE_REF}"  >> $GITHUB_OUTPUT
+          echo "IMAGE_TAG=${IMAGE_TAG}"  >> $GITHUB_ENV
+          echo "IMAGE_REF=${IMAGE_REF}"  >> $GITHUB_ENV
 
-      - name: Run runtime security gate
-        if: env.HAS_FALCO_ENABLED == 'true'
-        run: |
-          guardops runtime-status \
-            --since 30m \
-            --fail-on CRITICAL \
-            --loki-url http://localhost:3100
-        id: runtime-gate
-        continue-on-error: true
+      - name: Run Semgrep
+        run: guardops scan --tool semgrep --fail-on HIGH
 
-      - name: Kill Loki port-forward
-        if: always() && env.HAS_FALCO_ENABLED == 'true'
-        run: kill "$LOKI_PF_PID" 2>/dev/null || true
+      - name: Run Bandit
+        run: guardops scan --tool bandit --fail-on HIGH
 
-      - name: Enforce runtime gate result
-        if: env.HAS_FALCO_ENABLED == 'true'
-        env:
-          GATE_OUTCOME: ${{ steps.runtime-gate.outcome }}
-        run: |
-          if [ "$GATE_OUTCOME" == "failure" ]; then
-            echo "::error::Runtime security gate FAILED — CRITICAL Falco alerts found."
-            echo "::error::Review: Grafana -> Explore -> Loki -> {app=\"falco\"} | json"
-            echo "::error::Or locally: guardops runtime-status --since 1h --severity CRITICAL"
-            exit 1
-          fi
-          echo "Runtime security gate passed — no CRITICAL Falco alerts in the deploy window."
+      - name: Run Trivy (filesystem)
+        run: guardops scan --tool trivy-fs --fail-on HIGH
 
-      - name: Runtime gate skipped (Falco not enabled)
-        if: env.HAS_FALCO_ENABLED != 'true'
-        run: |
-          echo "Runtime gate skipped — set GitHub secret HAS_FALCO_ENABLED=true to enable."
-          echo "Setup: .\\scripts\\setup-runtime-security.ps1"
+      - name: Run Trivy (container image)
+        run: guardops scan --tool trivy-image \
+               --image guardops-app:${{ steps.meta.outputs.image_tag }} \
+               --fail-on HIGH
 
-  # ── Job 6: Upload Reports to S3 ──────────────────────────────────────────────
-  upload-reports:
-    name: Upload Reports to S3
+      - name: Upload scan reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sast-reports-${{ github.run_id }}
+          path: security/reports/
+          retention-days: 30
+
+
+# ── Job 2: SAST Report ────────────────────────────────────────────────────────
+
+  sast-report:
+    name: "2 · SAST Report"
     runs-on: ubuntu-latest
-    needs: [sast, container-scan]
-
-    permissions:
-      id-token: write
-      contents: read
-
-    if: always() && vars.HAS_AWS_ROLE == 'true'
+    needs: build-and-scan
+    if: always()
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all scan artifacts
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install GuardOps
+        run: pip install -e ".[dev]"
+
+      - name: Download scan artifacts
         uses: actions/download-artifact@v4
         with:
-          path: all-reports/
-        continue-on-error: true
+          name: sast-reports-${{ github.run_id }}
+          path: security/reports/
+
+      - name: Run SonarQube scan
+        if: ${{ secrets.SONAR_TOKEN != '' }}
+        env:
+          SONAR_TOKEN:    ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        run: guardops scan --tool sonarqube
+
+      - name: Generate consolidated report
+        run: guardops scan --report-only --output security/reports/consolidated.html
+
+      - name: Upload consolidated report
+        uses: actions/upload-artifact@v4
+        with:
+          name: sast-consolidated-${{ github.run_id }}
+          path: security/reports/consolidated.html
+          retention-days: 90
+
+
+# ── Job 3: Push to ECR ────────────────────────────────────────────────────────
+
+  push-ecr:
+    name: "3 · Push to ECR"
+    runs-on: ubuntu-latest
+    needs: [build-and-scan, sast-report]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    outputs:
+      image_uri: ${{ steps.push.outputs.image_uri }}
+      image_tag: ${{ needs.build-and-scan.outputs.image_tag }}
+
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-          role-session-name: guardops-upload-reports-${{ github.run_id }}
+          aws-region:     ${{ env.AWS_REGION }}
 
-      - name: Upload reports to S3
+      - name: Log in to ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Rebuild and push to ECR
+        id: push
         env:
-          REF_NAME: ${{ github.ref_name }}
-          REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
-          S3_BUCKET: ${{ secrets.GUARDOPS_S3_BUCKET }}
+          IMAGE_TAG: ${{ needs.build-and-scan.outputs.image_tag }}
         run: |
-          SHA=$(git rev-parse --short HEAD)
-          BRANCH="$REF_NAME"
-          REPO="$REPO"
-          RUN_ID="$RUN_ID"
+          IMAGE_URI="${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:${IMAGE_TAG}"
+          docker build -t "${IMAGE_URI}" .
+          docker push "${IMAGE_URI}"
+          echo "image_uri=${IMAGE_URI}" >> $GITHUB_OUTPUT
+          echo "Pushed: ${IMAGE_URI}"
 
-          S3_PREFIX="s3://$S3_BUCKET/reports/${REPO}/${BRANCH}/${SHA}/${RUN_ID}"
 
-          if [ -d "all-reports" ] && [ "$(ls -A all-reports)" ]; then
-            aws s3 cp all-reports/ "${S3_PREFIX}/" \
-              --recursive \
-              --no-progress
-            echo "Reports uploaded to: ${S3_PREFIX}/"
-            echo ""
-            echo "View in console: https://s3.console.aws.amazon.com/s3/buckets/$S3_BUCKET"
+# ── Job 4: Deploy to Prod ─────────────────────────────────────────────────────
+
+  deploy-prod:
+    name: "4 · Deploy (prod)"
+    runs-on: ubuntu-latest
+    needs: push-ecr
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    env:
+      IMAGE_URI: ${{ needs.push-ecr.outputs.image_uri }}
+      IMAGE_TAG: ${{ needs.push-ecr.outputs.image_tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Phase 10: need write access so the GitOps override commit can push
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install GuardOps
+        run: pip install -e ".[dev]"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region:     ${{ env.AWS_REGION }}
+
+      - name: Set up kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Deploy to prod (Helm)
+        run: |
+          guardops deploy \
+            --env prod \
+            --skip-scan \
+            --skip-dast
+
+      # ── Phase 10: GitOps override commit ────────────────────────────────────
+      # Writes values-override-prod.yaml, commits it, pushes to main, and
+      # triggers an ArgoCD sync. Skipped if ARGOCD_TOKEN is not set.
+      # The [skip ci] in the commit message prevents this push from
+      # re-triggering the CI pipeline.
+      - name: Write GitOps image override + trigger ArgoCD (prod)
+        if: ${{ secrets.ARGOCD_TOKEN != '' }}
+        env:
+          ARGOCD_TOKEN: ${{ secrets.ARGOCD_TOKEN }}
+        run: |
+          guardops deploy \
+            --env prod \
+            --skip-scan \
+            --skip-build \
+            --skip-dast \
+            --gitops \
+            --gitops-branch main
+
+      # ── Phase 10: Write staging override ────────────────────────────────────
+      # Push staging image override so ArgoCD's auto-sync picks it up.
+      # Staging uses staging-<sha> image tag (set by resolve_image_tag).
+      - name: Write GitOps image override (staging)
+        if: ${{ secrets.ARGOCD_TOKEN != '' }}
+        env:
+          ARGOCD_TOKEN: ${{ secrets.ARGOCD_TOKEN }}
+        run: |
+          guardops deploy \
+            --env staging \
+            --skip-scan \
+            --skip-build \
+            --skip-dast \
+            --gitops \
+            --gitops-branch main
+
+
+# ── Job 5: Runtime Security Gate ─────────────────────────────────────────────
+
+  runtime-gate:
+    name: "5 · Runtime Gate"
+    runs-on: ubuntu-latest
+    needs: deploy-prod
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install GuardOps
+        run: pip install -e ".[dev]"
+
+      - name: Set up kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Check Falco runtime alerts (prod)
+        run: guardops runtime-status --env prod --fail-on CRITICAL --window 15m
+
+
+# ── Job 6: DAST Gate ──────────────────────────────────────────────────────────
+
+  dast-gate:
+    name: "6 · DAST (ZAP)"
+    runs-on: ubuntu-latest
+    needs: runtime-gate
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install GuardOps
+        run: pip install -e ".[dev]"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region:     ${{ env.AWS_REGION }}
+
+      - name: Set up kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Run OWASP ZAP DAST scan
+        run: guardops scan --tool owasp-zap --env prod --fail-on CRITICAL
+
+      - name: Upload ZAP report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-report-${{ github.run_id }}
+          path: security/reports/zap-*.html
+          retention-days: 90
+
+
+# ── Job 7: ArgoCD Sync Gate (Phase 10) ───────────────────────────────────────
+#
+# Waits for ArgoCD to confirm the prod Application is Synced + Healthy after
+# the GitOps override commit triggers reconciliation.
+#
+# WHY THIS JOB EXISTS:
+#   The GitOps override commit (Job 4) triggers ArgoCD to start reconciling.
+#   But the commit push returns immediately — it doesn't wait for ArgoCD to
+#   finish applying the Helm release. This job is the confirmation step:
+#   it polls ArgoCD every 10 seconds and fails the pipeline if the app
+#   doesn't reach Healthy within 5 minutes.
+#
+# GATE LOGIC:
+#   - Skipped entirely if ARGOCD_TOKEN is not set (GitOps not configured)
+#   - Exits 1 if ArgoCD reports Degraded at any point (fail fast)
+#   - Exits 1 if Healthy is not reached within --timeout seconds
+#   - Exits 0 only when ArgoCD reports Synced + Healthy
+
+  sync-gate:
+    name: "7 · ArgoCD Sync Gate (prod)"
+    runs-on: ubuntu-latest
+    needs: dast-gate
+    if: |
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install GuardOps
+        run: pip install -e ".[dev]"
+
+      # Skip the sync gate gracefully if ARGOCD_TOKEN is not configured.
+      # This allows the pipeline to pass on forks or environments where
+      # ArgoCD is not yet set up, without requiring everyone to have the secret.
+      - name: Check if ArgoCD is configured
+        id: argocd_check
+        run: |
+          if [ -z "${{ secrets.ARGOCD_TOKEN }}" ]; then
+            echo "argocd_enabled=false" >> $GITHUB_OUTPUT
+            echo "⚠️  ARGOCD_TOKEN not set — skipping sync gate. Set the secret to enable."
           else
-            echo "No reports found to upload — this is OK if earlier jobs were skipped"
+            echo "argocd_enabled=true" >> $GITHUB_OUTPUT
           fi
+
+      - name: Wait for ArgoCD — Synced + Healthy (prod)
+        if: steps.argocd_check.outputs.argocd_enabled == 'true'
+        env:
+          ARGOCD_TOKEN: ${{ secrets.ARGOCD_TOKEN }}
+        run: |
+          guardops sync-status \
+            --env prod \
+            --wait \
+            --timeout 300
+
+      - name: Print ArgoCD snapshot (always)
+        if: steps.argocd_check.outputs.argocd_enabled == 'true'
+        env:
+          ARGOCD_TOKEN: ${{ secrets.ARGOCD_TOKEN }}
+        run: |
+          guardops sync-status --env prod

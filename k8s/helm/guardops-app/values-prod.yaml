@@ -1,59 +1,96 @@
-# values-prod.yaml — Production overrides for AWS EKS
-# Applied ON TOP of values.yaml when running `guardops deploy --env prod`
-# Only specify values that DIFFER from local defaults.
+# k8s/helm/guardops-app/values-prod.yaml
+#
+# Phase 10: Production overrides
+#
+# Applied ON TOP of values.yaml by:
+#   - guardops deploy --env prod (direct Helm via --values values-prod.yaml)
+#   - ArgoCD Application guardops-app-prod (helm.valueFiles stack)
+#
+# After values-prod.yaml, ArgoCD also applies values-override-prod.yaml which
+# contains only image.repository and image.tag (written by guardops deploy --gitops).
+# That override file is the source of truth for what image is deployed.
+#
+# Changes from values.yaml defaults:
+#   - image.pullPolicy: Always   (pull from ECR on every pod restart)
+#   - replicaCount: 2            (HA — two pods behind the service)
+#   - resources: higher limits   (production workload)
+#   - ingress.host: guardops.dev (real domain)
+#   - ingress.tls: true          (HTTPS via cert-manager + Let's Encrypt)
+#   - ingress.certManagerClusterIssuer: letsencrypt-prod
+#   - hpa.enabled: true          (autoscale 2-6 replicas at 70% CPU)
+#   - monitoring.enabled: true   (Prometheus scraping)
+#   - config.ENVIRONMENT: prod
 
+# ---------------------------------------------------------------------------
+# Container image
+# ---------------------------------------------------------------------------
 image:
-  repository: ""
-  tag: ""
-  pullPolicy: Always          # always pull from ECR in production
+  # repository and tag are overridden by values-override-prod.yaml
+  # which is written by guardops deploy --gitops on each pipeline run.
+  # Defaults here are only used if the override file has never been committed.
+  repository: ""      # set by guardops deploy: <account>.dkr.ecr.<region>.amazonaws.com/guardops-app
+  tag: "latest"       # set by values-override-prod.yaml: <git-sha>
+  pullPolicy: Always  # always pull from ECR on pod restart
 
-replicaCount: 2               # minimum 2 for high availability
+# ---------------------------------------------------------------------------
+# Deployment
+# ---------------------------------------------------------------------------
+replicaCount: 2   # HA: two pods so rolling updates have no downtime
 
 resources:
   requests:
-    memory: "128Mi"
+    memory: "256Mi"
     cpu: "100m"
   limits:
     memory: "512Mi"
     cpu: "500m"
 
-service:
-  type: ClusterIP
-  port: 80
-  targetPort: 8080
-
+# ---------------------------------------------------------------------------
+# Ingress — prod domain with Let's Encrypt TLS
+# ---------------------------------------------------------------------------
 ingress:
   enabled: true
   className: nginx
-  annotations:
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
-  host: app.yourdomain.com
-  tls: true
-  tlsSecret: guardops-app-tls
 
+  # Phase 10: cert-manager picks up this field via the ingress.yaml template.
+  # cert-manager creates a Certificate resource and stores the TLS cert+key in
+  # the Secret named by tlsSecret below.
+  certManagerClusterIssuer: letsencrypt-prod
+
+  annotations:
+    # nginx: return HTTP → HTTPS redirect for all plain HTTP requests
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+
+  host: guardops.dev
+
+  tls: true
+  # cert-manager writes the TLS cert into this Secret.
+  # If the Secret doesn't exist yet, cert-manager creates it after the
+  # ACME HTTP-01 challenge completes (usually < 60 seconds).
+  tlsSecret: guardops-prod-tls
+
+# ---------------------------------------------------------------------------
+# Horizontal Pod Autoscaler
+# ---------------------------------------------------------------------------
 hpa:
   enabled: true
   minReplicas: 2
-  maxReplicas: 10
+  maxReplicas: 6
   targetCPUUtilizationPercentage: 70
 
-config:
-  LOG_LEVEL: "WARNING"
-  ENVIRONMENT: "production"
-  PORT: "8080"
-
 # ---------------------------------------------------------------------------
-# PHASE 5: Monitoring enabled in production
+# Monitoring
 # ---------------------------------------------------------------------------
-# kube-prometheus-stack is installed on EKS (see scripts/setup-observability.ps1).
-# This enables:
-#   - Prometheus scrape annotations on the pod
-#   - ServiceMonitor CRD pointing Prometheus at /metrics
-# Grafana dashboard: import k8s/observability/grafana-dashboard.json
 monitoring:
   enabled: true
   port: 8080
   path: /metrics
   scrapeInterval: 30s
+
+# ---------------------------------------------------------------------------
+# Application config
+# ---------------------------------------------------------------------------
+config:
+  LOG_LEVEL: "INFO"
+  ENVIRONMENT: "prod"
+  PORT: "8080"
