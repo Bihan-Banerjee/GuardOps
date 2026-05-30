@@ -42,7 +42,7 @@ resources:
 # ---------------------------------------------------------------------------
 ingress:
   enabled: true
-  className: nginx
+  className: alb
 
   certManagerClusterIssuer: letsencrypt-prod
 

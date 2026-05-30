@@ -6,12 +6,8 @@ output "route53_zone_id" {
 }
 
 output "name_servers" {
-  description = (
-    "The four Route53 NS records for the hosted zone. "
-    "Copy these to your domain registrar's DNS settings to delegate the zone. "
-    "DNS propagation typically completes within 30 min but can take up to 48h."
-  )
-  value = aws_route53_zone.guardops.name_servers
+  description = "The four Route53 NS records for the hosted zone. Copy these to your domain registrar's DNS settings to delegate the zone. DNS propagation typically completes within 30 min but can take up to 48h."
+  value       = aws_route53_zone.guardops.name_servers
 }
 
 output "domain_name" {

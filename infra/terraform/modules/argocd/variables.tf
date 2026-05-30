@@ -6,29 +6,17 @@ variable "project_name" {
 }
 
 variable "domain_name" {
-  description = (
-    "Root domain for the ArgoCD Ingress. "
-    "ArgoCD UI is served at argocd.<domain_name>. "
-    "Must match the domain managed by the dns-tls module."
-  )
-  type = string
+  description = "Root domain for the ArgoCD Ingress. ArgoCD UI is served at argocd.<domain_name>. Must match the domain managed by the dns-tls module."
+  type        = string
 }
 
 variable "git_repo_url" {
-  description = (
-    "Full HTTPS GitHub repo URL. Used as the ArgoCD source repo and in the "
-    "AppProject sourceRepos allowlist. "
-    "Example: https://github.com/Bihan-Banerjee/GuardOps"
-  )
-  type = string
+  description = "Full HTTPS GitHub repo URL. Used as the ArgoCD source repo and in the AppProject sourceRepos allowlist. Example: https://github.com/Bihan-Banerjee/GuardOps"
+  type        = string
 }
 
 variable "eks_dependency" {
-  description = (
-    "Dependency token from the EKS module to enforce apply ordering. "
-    "Pass module.eks (or any output from it) to ensure EKS exists before "
-    "ArgoCD's Helm provider tries to connect."
-  )
-  type    = any
-  default = null
+  description = "Dependency token from the EKS module to enforce apply ordering. Pass module.eks (or any output from it) to ensure EKS exists before ArgoCD's Helm provider tries to connect."
+  type        = any
+  default     = null
 }

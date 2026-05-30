@@ -1,12 +1,8 @@
 # infra/terraform/modules/argocd/outputs.tf
 
 output "argocd_server_url" {
-  description = (
-    "ArgoCD UI URL. Set this as argocd.url in .guardops.yaml after DNS propagates: "
-    "  argocd:"
-    "    url: \"https://argocd.<domain>\""
-  )
-  value = "https://argocd.${var.domain_name}"
+  description = "ArgoCD UI URL. Set this as argocd.url in .guardops.yaml after DNS propagates."
+  value       = "https://argocd.${var.domain_name}"
 }
 
 output "argocd_namespace" {
@@ -30,6 +26,6 @@ output "initial_admin_password_command" {
 }
 
 output "generate_api_token_command" {
-  description = "Command to generate an ArgoCD API token for CI (run after logging in with the admin password)."
+  description = "Command to generate an ArgoCD API token for CI. Run after logging in with the admin password. Add result as GitHub secret ARGOCD_TOKEN."
   value       = "argocd account generate-token --account admin"
 }

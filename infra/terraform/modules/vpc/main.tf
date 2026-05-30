@@ -49,7 +49,7 @@ resource "aws_subnet" "public" {
     Name                                        = "${local.name_prefix}-public-${count.index + 1}"
     # These tags tell the AWS Load Balancer Controller which subnets to use
     "kubernetes.io/role/elb"                    = "1"
-    "kubernetes.io/cluster/${local.name_prefix}" = "shared"
+    "kubernetes.io/cluster/${local.name_prefix}-cluster" = "shared"
   }
 }
 
@@ -66,7 +66,7 @@ resource "aws_subnet" "private" {
   tags = {
     Name                                        = "${local.name_prefix}-private-${count.index + 1}"
     "kubernetes.io/role/internal-elb"           = "1"
-    "kubernetes.io/cluster/${local.name_prefix}" = "shared"
+    "kubernetes.io/cluster/${local.name_prefix}-cluster" = "shared"
   }
 }
 

@@ -50,7 +50,7 @@ resources:
 # ---------------------------------------------------------------------------
 ingress:
   enabled: true
-  className: nginx
+  className: alb
 
   # Phase 10: cert-manager picks up this field via the ingress.yaml template.
   # cert-manager creates a Certificate resource and stores the TLS cert+key in
@@ -58,8 +58,11 @@ ingress:
   certManagerClusterIssuer: letsencrypt-prod
 
   annotations:
-    # nginx: return HTTP → HTTPS redirect for all plain HTTP requests
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
 
   host: guardops.dev
 

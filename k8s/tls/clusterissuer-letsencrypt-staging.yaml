@@ -59,4 +59,4 @@ spec:
             # Must match the ingressClassName in your Helm values.yaml.
             # For EKS + nginx ingress controller: nginx
             # For EKS + AWS ALB controller: alb
-            ingressClassName: nginx
+            ingressClassName: alb

@@ -1,4 +1,4 @@
-project:
+﻿project:
   name: guardops-app
   description: 'GuardOps test application'
   cloud: aws
@@ -29,5 +29,6 @@ runtime_security:
   alert_fail_on: CRITICAL
   namespaces_to_watch: []
 self_healing:
-  enabled: false
+  enabled: true
   webhook_url: ''
+
