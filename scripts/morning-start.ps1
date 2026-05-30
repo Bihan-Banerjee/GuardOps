@@ -9,12 +9,15 @@
 #   Phase 7    : Falco runtime security + simulator
 #   Phase 8    : Alertmanager self-healing webhook
 #   Phase 9    : App deploy to prod + staging namespaces
-#   Phase 10   : cert-manager ClusterIssuers, ALB DNS wiring, ArgoCD setup
+#   Phase 10   : OIDC provider, ALB IAM role, subnet tag repair,
+#                cert-manager ClusterIssuers, ALB DNS wiring, ArgoCD setup
 #
 # Key behaviours:
 #   - Fully idempotent -- safe to re-run on an already-running cluster
 #   - Solves the EKS bootstrap provider problem automatically
 #   - Imports existing AWS resources to avoid 409 conflicts
+#   - After destroy+recreate: re-associates OIDC provider, updates ALB role
+#     trust policy to match the new OIDC URL, repairs subnet cluster tags
 #   - Phase 10 steps gated by terraform.tfvars flags
 #   - Opens all port-forwards in separate PowerShell windows
 #
@@ -206,16 +209,13 @@ function Ensure-WebhookImage {
     $fullImage = "$ecrBase/${repo}:${tag}"
 
     Write-Info "Checking ECR for ${repo}:${tag}..."
-    # $ErrorActionPreference = "Stop" turns any native-command stderr into a
-    # terminating NativeCommandError, even with 2>$null.  Use try/catch so a
-    # "not found" response from ECR doesn't kill the script.
     $imageFound = $false
     try {
         aws ecr describe-images --repository-name $repo `
             --image-ids imageTag=$tag --region $Region 2>$null | Out-Null
         $imageFound = ($LASTEXITCODE -eq 0)
     } catch {
-        $imageFound = $false   # NativeCommandError = image absent or API error
+        $imageFound = $false
     }
 
     if ($imageFound) {
@@ -226,11 +226,6 @@ function Ensure-WebhookImage {
 
     Write-Info "Image not found in ECR -- need to build and push $fullImage"
 
-    # ------------------------------------------------------------------
-    # Guard: verify the Docker daemon is reachable before doing anything
-    # that would block silently (docker login piped to Out-Null hangs
-    # indefinitely when Docker Desktop is not running).
-    # ------------------------------------------------------------------
     Write-Info "Checking Docker daemon..."
     $dockerOk = $false
     try {
@@ -259,9 +254,6 @@ function Ensure-WebhookImage {
     # Use cmd.exe to pipe the ECR token directly to docker login.
     # PowerShell's pipe operator appends a newline when converting a string to
     # native-command stdin; that extra byte makes ECR return 400 Bad Request.
-    # .Trim() on the PowerShell side is not enough because PS re-adds the
-    # newline at pipe time.  cmd.exe pipes raw bytes without the PowerShell
-    # string layer, so the token arrives intact.
     cmd /c "aws ecr get-login-password --region $Region 2>nul | docker login --username AWS --password-stdin $ecrBase"
     if ($LASTEXITCODE -ne 0) {
         Write-Warn "docker login failed -- skipping image build"
@@ -272,7 +264,6 @@ function Ensure-WebhookImage {
     $prevLocation = Get-Location
     Set-Location $RepoRoot
 
-    # Stream build output live so the user can see progress (no Out-Null)
     docker build -f Dockerfile.webhook -t $fullImage .
     if ($LASTEXITCODE -ne 0) {
         Write-Warn "Docker build failed -- check Dockerfile.webhook"
@@ -293,11 +284,7 @@ function Ensure-WebhookImage {
 }
 
 function Ensure-Namespaces {
-    # The alertmanager-webhook Terraform module places resources inside the
-    # 'monitoring' namespace.  Helm (kube-prometheus-stack) normally creates
-    # that namespace, but it runs in Step 4 -- AFTER Terraform.  Pre-creating
-    # both namespaces here means Terraform never hits "namespaces not found",
-    # regardless of whether this is a cold-start or a re-run of an existing cluster.
+    # Pre-create namespaces so Terraform never hits "namespaces not found".
     Write-Info "Configuring kubeconfig for namespace pre-creation..."
     aws eks update-kubeconfig --region $Region --name $ClusterName 2>&1 | Out-Null
     foreach ($ns in @("monitoring", "staging")) {
@@ -310,7 +297,6 @@ function Ensure-Namespaces {
         }
     }
 
-    # Ensure the webhook image exists in ECR before Terraform tries to roll it out
     Ensure-WebhookImage
 }
 
@@ -319,25 +305,8 @@ function Repair-TerraformState {
     # kubernetes_deployment resources.  State entries written before the upgrade
     # carry null identity fields; the next apply then throws "Unexpected Identity
     # Change" and blocks all further runs.
-    #
-    # Root cause of the previous silent failure: the old approach captured
-    # `terraform plan` output via a PowerShell pipe.  On PS 7 with
-    # $ErrorActionPreference = "Stop", a non-zero native-command exit code can
-    # interrupt the pipeline before the output is fully buffered, leaving
-    # $planOut as the exception message rather than Terraform's actual output.
-    # The "Unexpected Identity Change" string was never found, so the function
-    # returned "state OK" and let the apply fail.
-    #
-    # Fix: skip plan output parsing entirely.  Use `terraform state show` to
-    # detect whether each known kubernetes_deployment is in state, then do a
-    # proactive state rm + import to refresh the identity.  This is fully
-    # idempotent: state rm is a no-op when the resource is absent, and import
-    # just rewrites the entry with live values when it is present.
-    # The deployment itself is NOT deleted from the cluster -- it keeps running.
     Write-Info "Checking Terraform state for identity issues..."
 
-    # Add further entries here if additional kubernetes_deployment resources
-    # are added to the Terraform config in future phases.
     $repairs = @(
         @{ Addr     = 'module.alertmanager_webhook[0].kubernetes_deployment.webhook'
            ImportId = 'monitoring/guardops-alertmanager-webhook' }
@@ -345,8 +314,6 @@ function Repair-TerraformState {
 
     $anyRepaired = $false
     foreach ($r in $repairs) {
-        # Check whether the resource is in state at all.
-        # terraform state show exits 1 when the address is not found.
         try { terraform state show $r.Addr 2>&1 | Out-Null } catch { }
         if ($LASTEXITCODE -ne 0) {
             Write-Info "  $($r.Addr) not in state -- skipping"
@@ -370,19 +337,279 @@ function Repair-TerraformState {
     }
 }
 
+function Ensure-AlbControllerRole {
+    # Ensures the guardops-alb-controller IRSA role exists and its trust policy
+    # matches the current cluster's OIDC URL.
+    #
+    # WHY THIS IS NEEDED:
+    #   - This role is not managed by Terraform (it's created externally because
+    #     of a chicken-and-egg: dns_tls module needs the ARN, but the ARN depends
+    #     on the OIDC URL which only exists after EKS is created).
+    #   - After terraform destroy + recreate, EKS gets a NEW OIDC issuer URL with
+    #     a different hash, so the old trust policy must be updated or the ALB
+    #     controller will get AccessDenied from STS.
+    #   - This function is idempotent and safe to call on every startup.
+    param([string]$AccountId)
+
+    $RoleName   = "guardops-alb-controller"
+    $PolicyName = "AWSLoadBalancerControllerIAMPolicy"
+    $PolicyArn  = "arn:aws:iam::${AccountId}:policy/${PolicyName}"
+    $TmpDir     = $TerraformDir
+
+    Write-Info "Phase 10 pre-req: OIDC provider + ALB controller IAM role..."
+
+    # ── 1. Discover the cluster's OIDC issuer URL ─────────────────────────────
+    $oidcIssuer = $null
+    try {
+        $oidcIssuer = (aws eks describe-cluster --name $ClusterName --region $Region `
+            --query "cluster.identity.oidc.issuer" --output text 2>$null).Trim()
+    } catch { }
+
+    if (-not $oidcIssuer -or $oidcIssuer -eq "None") {
+        Write-Warn "Could not get OIDC issuer from EKS cluster -- skipping ALB role setup"
+        return
+    }
+
+    $oidcUrl = $oidcIssuer -replace "https://", ""
+    $oidcArn = "arn:aws:iam::${AccountId}:oidc-provider/${oidcUrl}"
+    Write-Info "  Cluster OIDC URL: $oidcUrl"
+
+    # ── 2. Ensure the OIDC provider is registered in IAM ─────────────────────
+    $providerExists = $false
+    try {
+        aws iam get-open-id-connect-provider --open-id-connect-provider-arn $oidcArn 2>$null | Out-Null
+        $providerExists = ($LASTEXITCODE -eq 0)
+    } catch { }
+
+    if (-not $providerExists) {
+        Write-Info "  OIDC provider not found -- associating..."
+        if (Get-Command "eksctl" -ErrorAction SilentlyContinue) {
+            eksctl utils associate-iam-oidc-provider `
+                --region $Region --cluster $ClusterName --approve 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) { Write-Ok "  OIDC provider associated via eksctl" }
+            else                     { Write-Warn "  eksctl OIDC association failed -- trying AWS CLI" }
+        }
+
+        # AWS CLI fallback (or if eksctl failed)
+        try {
+            aws iam get-open-id-connect-provider --open-id-connect-provider-arn $oidcArn 2>$null | Out-Null
+        } catch { }
+        if ($LASTEXITCODE -ne 0) {
+            # The EKS OIDC root CA thumbprint is static for *.amazonaws.com
+            $thumbprint = "9e99a48a9960b14926bb7f3b02e22da2b0ab7280"
+            aws iam create-open-id-connect-provider `
+                --url "https://$oidcUrl" `
+                --client-id-list "sts.amazonaws.com" `
+                --thumbprint-list $thumbprint 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) { Write-Ok "  OIDC provider registered via AWS CLI" }
+            else                     { Write-Warn "  OIDC provider registration failed -- check IAM console" }
+        }
+    } else {
+        Write-Ok "  OIDC provider already registered"
+    }
+
+    # ── 3. Build the trust policy JSON (no BOM -- AWS CLI rejects BOM) ────────
+    $trustPolicyContent = @"
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "$oidcArn"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "${oidcUrl}:sub": "system:serviceaccount:kube-system:aws-load-balancer-controller",
+          "${oidcUrl}:aud": "sts.amazonaws.com"
+        }
+      }
+    }
+  ]
+}
+"@
+
+    # ── 4. Check if the IAM role already exists ───────────────────────────────
+    $roleExists = $false
+    try {
+        aws iam get-role --role-name $RoleName 2>$null | Out-Null
+        $roleExists = ($LASTEXITCODE -eq 0)
+    } catch { }
+
+    if ($roleExists) {
+        # Role exists -- verify the trust policy references the CURRENT OIDC URL.
+        # After destroy+recreate the hash changes and the old policy is stale.
+        $currentTrust = ""
+        try {
+            $currentTrust = (aws iam get-role --role-name $RoleName `
+                --query "Role.AssumeRolePolicyDocument" --output json 2>$null).Trim()
+        } catch { }
+
+        if ($currentTrust -match [regex]::Escape($oidcUrl)) {
+            Write-Ok "  ALB controller role exists with correct OIDC trust -- no update needed"
+        } else {
+            Write-Warn "  Trust policy has stale OIDC URL (cluster was recreated) -- updating..."
+            $trustFile = "$TmpDir\alb-trust-policy.json"
+            [System.IO.File]::WriteAllText($trustFile, $trustPolicyContent)
+            aws iam update-assume-role-policy `
+                --role-name $RoleName `
+                --policy-document file://$trustFile 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Ok "  Trust policy updated to new OIDC URL"
+                # ALB controller must restart to pick up the refreshed STS token
+                $script:AlbRoleUpdated = $true
+            } else {
+                Write-Warn "  Trust policy update failed -- ALB controller may not work"
+            }
+            Remove-Item $trustFile -ErrorAction SilentlyContinue
+        }
+        return
+    }
+
+    # ── 5. Role does not exist -- create it from scratch ─────────────────────
+    Write-Info "  Creating ALB controller IAM role '$RoleName'..."
+
+    # 5a. Download the official policy JSON if not already cached
+    $policyFile = "$TmpDir\alb-iam-policy.json"
+    if (-not (Test-Path $policyFile)) {
+        Write-Info "  Downloading ALB controller IAM policy..."
+        try {
+            Invoke-WebRequest `
+                -Uri "https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.7.2/docs/install/iam_policy.json" `
+                -OutFile $policyFile `
+                -UseBasicParsing
+        } catch {
+            Write-Warn "  Could not download policy JSON -- check internet connectivity"
+            return
+        }
+    }
+
+    # 5b. Create the IAM policy (skip if it already exists)
+    $policyExistCheck = $false
+    try {
+        aws iam get-policy --policy-arn $PolicyArn 2>$null | Out-Null
+        $policyExistCheck = ($LASTEXITCODE -eq 0)
+    } catch { }
+
+    if (-not $policyExistCheck) {
+        Write-Info "  Creating IAM policy $PolicyName..."
+        aws iam create-policy `
+            --policy-name $PolicyName `
+            --policy-document file://$policyFile `
+            --description "IAM policy for AWS Load Balancer Controller" 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warn "  Failed to create IAM policy -- ALB controller will not work"
+            return
+        }
+        Write-Ok "  IAM policy $PolicyName created"
+    } else {
+        Write-Ok "  IAM policy $PolicyName already exists"
+    }
+
+    # 5c. Write trust policy without BOM and create the role
+    $trustFile = "$TmpDir\alb-trust-policy.json"
+    [System.IO.File]::WriteAllText($trustFile, $trustPolicyContent)
+
+    aws iam create-role `
+        --role-name $RoleName `
+        --assume-role-policy-document file://$trustFile `
+        --description "IRSA role for AWS Load Balancer Controller on $ClusterName" 2>&1 | Out-Null
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Fail "  Failed to create IAM role $RoleName"
+        Remove-Item $trustFile -ErrorAction SilentlyContinue
+        return
+    }
+
+    # 5d. Attach policy
+    aws iam attach-role-policy `
+        --role-name $RoleName `
+        --policy-arn $PolicyArn 2>&1 | Out-Null
+
+    if ($LASTEXITCODE -eq 0) {
+        Write-Ok "  ALB controller role '$RoleName' created and policy attached"
+        $script:AlbRoleUpdated = $true
+    } else {
+        Write-Warn "  Role created but policy attachment failed -- attach manually"
+    }
+
+    Remove-Item $trustFile -ErrorAction SilentlyContinue
+}
+
+function Repair-SubnetClusterTags {
+    # Tags all VPC subnets with the correct cluster name so the ALB controller
+    # can auto-discover them for load balancer provisioning.
+    #
+    # WHY THIS IS NEEDED:
+    #   The VPC Terraform module builds the tag key as
+    #   "kubernetes.io/cluster/${project_name}-${environment}" = "guardops-prod"
+    #   but the cluster is named "guardops-prod-cluster". The ALB controller looks
+    #   for "kubernetes.io/cluster/guardops-prod-cluster" and rejects subnets
+    #   tagged for a different cluster name.
+    #
+    #   Until the Terraform VPC module is fixed (change the tag to include -cluster),
+    #   this function runs on every startup as a safety net. It is idempotent.
+    Write-Info "Repairing subnet cluster tags for ALB auto-discovery..."
+
+    $vpcId = $null
+    try {
+        $vpcId = (aws eks describe-cluster --name $ClusterName --region $Region `
+            --query "cluster.resourcesVpcConfig.vpcId" --output text 2>$null).Trim()
+    } catch { }
+
+    if (-not $vpcId -or $vpcId -eq "None") {
+        Write-Warn "  Could not determine VPC ID -- skipping subnet tag repair"
+        return
+    }
+
+    $subnetIdsRaw = $null
+    try {
+        $subnetIdsRaw = (aws ec2 describe-subnets `
+            --filters "Name=vpc-id,Values=$vpcId" `
+            --query "Subnets[*].SubnetId" `
+            --output text --region $Region 2>$null).Trim()
+    } catch { }
+
+    if (-not $subnetIdsRaw) {
+        Write-Warn "  No subnets found in VPC $vpcId"
+        return
+    }
+
+    $subnetIds = ($subnetIdsRaw -split '\s+') | Where-Object { $_ }
+
+    # Correct tag (must match the exact EKS cluster name)
+    $correctTagKey = "kubernetes.io/cluster/$ClusterName"
+    # Stale tag written by the current Terraform VPC module (missing -cluster suffix)
+    $staleTagKey   = "kubernetes.io/cluster/$($ClusterName -replace '-cluster$', '')"
+
+    # Apply the correct tag (idempotent)
+    aws ec2 create-tags `
+        --resources @subnetIds `
+        --tags "Key=$correctTagKey,Value=shared" `
+        --region $Region 2>&1 | Out-Null
+
+    if ($LASTEXITCODE -eq 0) {
+        Write-Ok "  Subnet tag set: ${correctTagKey}=shared ($($subnetIds.Count) subnets)"
+    } else {
+        Write-Warn "  Failed to update subnet cluster tags -- ALB subnet discovery may fail"
+        return
+    }
+
+    # Remove the stale tag if it differs from the correct tag
+    if ($staleTagKey -ne $correctTagKey) {
+        aws ec2 delete-tags `
+            --resources @subnetIds `
+            --tags "Key=$staleTagKey" `
+            --region $Region 2>&1 | Out-Null
+        Write-Info "  Removed stale tag '$staleTagKey' from subnets (if present)"
+    }
+}
+
 function Invoke-TerraformApply {
     # Wrapper around terraform apply -auto-approve.
-    #
-    # Problem: when the webhook image is absent from ECR the pod stays in
-    # ImagePullBackOff.  If the alertmanager-webhook TF module has
-    # wait_for_rollout = true, Terraform blocks waiting for the rollout,
-    # times out, and fails with "Deployment exceeded its progress deadline"
-    # -- even though every other resource applied cleanly.
-    #
-    # Fix: when $script:WebhookImageReady is false, temporarily patch
-    # wait_for_rollout to false in the module file before apply, then
-    # restore the original content unconditionally (try/finally) so the
-    # repo is never left in a modified state regardless of outcome.
+    # Temporarily patches wait_for_rollout=false when the webhook image is absent
+    # so Terraform doesn't time out waiting for an ImagePullBackOff pod.
     param([string[]]$ExtraArgs = @())
 
     $webhookTf = "$TerraformDir\modules\alertmanager-webhook\main.tf"
@@ -414,7 +641,7 @@ function Invoke-TerraformApply {
 Write-Host ""
 Write-Host "  +--------------------------------------------------+" -ForegroundColor Cyan
 Write-Host "  |   GuardOps Phase 10 -- Morning Startup           |" -ForegroundColor Cyan
-Write-Host "  |   Est. time  : ~25-35 min (cold start)           |" -ForegroundColor White
+Write-Host "  |   Est. time  : ~30-40 min (cold start)           |" -ForegroundColor White
 Write-Host "  |   Est. cost  : ~`$5.28/day while EKS runs        |" -ForegroundColor Yellow
 Write-Host "  |   Shutdown   : .\scripts\night-shutdown.ps1      |" -ForegroundColor Red
 Write-Host "  +--------------------------------------------------+" -ForegroundColor Cyan
@@ -422,9 +649,13 @@ Write-Host ""
 
 $Step = 0
 
+# Tracks whether the ALB role was created or its trust policy was updated.
+# If true, the ALB controller needs a rollout restart after it's running.
+$script:AlbRoleUpdated = $false
+
 # -- Pre-flight ----------------------------------------------------------------
 $Step++
-Write-Step $Step "10" "Pre-flight checks"
+Write-Step $Step "11" "Pre-flight checks"
 
 try {
     $identity = aws sts get-caller-identity --output json 2>$null | ConvertFrom-Json
@@ -434,7 +665,7 @@ try {
     exit 1
 }
 
-foreach ($tool in @("kubectl", "helm", "gh")) {
+foreach ($tool in @("kubectl", "helm", "gh", "eksctl")) {
     if (Get-Command $tool -ErrorAction SilentlyContinue) { Write-Ok "$tool found" }
     else { Write-Warn "$tool not found -- some steps may be skipped" }
 }
@@ -447,18 +678,22 @@ if (-not $env:VIRTUAL_ENV) {
     Write-Ok "Virtual environment active"
 }
 
+# Read Phase 10 flags early -- needed to gate OIDC/ALB setup inside Terraform block
+$dnsTlsEnabled = Read-TfVar "enable_dns_tls"
+$argoCdEnabled = Read-TfVar "enable_argocd"
+$domainName    = Read-TfVar "domain_name"
+
 # -- Terraform -----------------------------------------------------------------
 if (-not $SkipTerraform) {
     $Step++
-    Write-Step $Step "10" "Terraform -- AWS infrastructure"
+    Write-Step $Step "11" "Terraform -- AWS infrastructure"
     Set-Location $TerraformDir
 
     $eksExists = Test-EKSExists
+    $acct      = $identity.Account
 
     if (-not $eksExists) {
         Write-Info "EKS not found -- Phase 1 bootstrap apply"
-
-        $acct = $identity.Account
 
         # 1. Stub out providers FIRST so init doesn't fail looking for EKS
         Disable-EKSProviders
@@ -468,12 +703,12 @@ if (-not $SkipTerraform) {
             terraform init -reconfigure 2>&1 | Out-Null
             if ($LASTEXITCODE -ne 0) { throw "terraform init failed" }
 
-            # 3. NOW we can safely import existing resources
+            # 3. Import existing resources to avoid 409 conflicts
             Import-IfMissing "module.iam.aws_iam_role.eks_cluster" "guardops-prod-eks-cluster-role" "EKS cluster IAM role"
             Import-IfMissing "module.iam.aws_iam_role.eks_node"    "guardops-prod-eks-node-role"    "EKS node IAM role"
             Import-IfMissing "module.s3.aws_s3_bucket.reports"     "guardops-reports-$acct"         "S3 reports bucket"
 
-            # 4. Run the Phase 1 apply
+            # 4. Phase 1 apply: infra only, no Helm/Kubernetes providers
             terraform apply `
                 -target="module.vpc" `
                 -target="module.iam" `
@@ -501,6 +736,14 @@ if (-not $SkipTerraform) {
 
         terraform init -reconfigure 2>&1 | Out-Null
         Ensure-Namespaces
+
+        # Phase 10 pre-requisites: OIDC provider + ALB IAM role + subnet tags
+        # Must run BEFORE the full apply which deploys the ALB controller via Helm.
+        if ($dnsTlsEnabled -eq "true") {
+            Ensure-AlbControllerRole -AccountId $acct
+            Repair-SubnetClusterTags
+        }
+
         Repair-TerraformState
         Start-Sleep -Seconds 5
         Write-Info "Running Phase 2 full apply..."
@@ -512,6 +755,14 @@ if (-not $SkipTerraform) {
         Write-Info "EKS already running -- full apply"
         terraform init -reconfigure 2>&1 | Out-Null
         Ensure-Namespaces
+
+        # Phase 10 pre-requisites: OIDC provider + ALB IAM role + subnet tags
+        # On warm start: verify trust policy is current, repair subnets if needed.
+        if ($dnsTlsEnabled -eq "true") {
+            Ensure-AlbControllerRole -AccountId $acct
+            Repair-SubnetClusterTags
+        }
+
         Repair-TerraformState
         Start-Sleep -Seconds 5
         $applyExit = Invoke-TerraformApply
@@ -530,7 +781,7 @@ if (-not $SkipTerraform) {
 
 # -- kubectl -------------------------------------------------------------------
 $Step++
-Write-Step $Step "10" "Configure kubectl + wait for nodes"
+Write-Step $Step "11" "Configure kubectl + wait for nodes"
 
 aws eks update-kubeconfig --region $Region --name $ClusterName
 if ($LASTEXITCODE -ne 0) { Write-Fail "kubectl config failed"; exit 1 }
@@ -556,7 +807,7 @@ if (-not $stagingNs) {
 
 # -- Observability -------------------------------------------------------------
 $Step++
-Write-Step $Step "10" "Observability stack (Prometheus + Grafana + Loki)"
+Write-Step $Step "11" "Observability stack (Prometheus + Grafana + Loki)"
 
 $grafPods = $null
 try {
@@ -585,7 +836,7 @@ if ($grafSecret) {
 
 # -- Runtime security ----------------------------------------------------------
 $Step++
-Write-Step $Step "10" "Runtime security (Falco + Loki + Promtail)"
+Write-Step $Step "11" "Runtime security (Falco + Loki + Promtail)"
 
 $falcoPods = $null
 try {
@@ -614,7 +865,7 @@ if (-not $simExists) {
 
 # -- Self-healing --------------------------------------------------------------
 $Step++
-Write-Step $Step "10" "Self-healing (Alertmanager webhook)"
+Write-Step $Step "11" "Self-healing (Alertmanager webhook)"
 
 $webhookRunning = $null
 try {
@@ -631,18 +882,30 @@ if ($webhookRunning) {
 
 # -- Phase 10: TLS -------------------------------------------------------------
 $Step++
-Write-Step $Step "10" "Phase 10 -- TLS (cert-manager + ClusterIssuers)"
-
-$dnsTlsEnabled = Read-TfVar "enable_dns_tls"
-$argoCdEnabled = Read-TfVar "enable_argocd"
-$domainName    = Read-TfVar "domain_name"
-$argoCdUrl     = ""
-$argoCdPass    = ""
-$argoCdToken   = ""
+Write-Step $Step "11" "Phase 10 -- TLS (cert-manager + ALB controller + ClusterIssuers)"
 
 if ($dnsTlsEnabled -eq "true") {
-    Wait-Pods -NS "cert-manager" -Label "app=cert-manager" -Timeout 120 -Name "cert-manager" | Out-Null
 
+    # ── Wait for cert-manager (all 3 components must be Running) ─────────────
+    Wait-Pods -NS "cert-manager" -Label "app=cert-manager"           -Timeout 180 -Name "cert-manager" | Out-Null
+    Wait-Pods -NS "cert-manager" -Label "app=cainjector"             -Timeout 60  -Name "cainjector"   | Out-Null
+    Wait-Pods -NS "cert-manager" -Label "app=webhook"                -Timeout 60  -Name "cert-manager-webhook" | Out-Null
+
+    # ── Wait for ALB controller ───────────────────────────────────────────────
+    Wait-Pods -NS "kube-system" -Label "app.kubernetes.io/name=aws-load-balancer-controller" `
+              -Timeout 120 -Name "ALB controller" | Out-Null
+
+    # ── If the ALB role was created/updated this run, restart the controller
+    #    so it picks up a fresh STS token with the correct trust ───────────────
+    if ($script:AlbRoleUpdated) {
+        Write-Info "ALB role was updated this run -- restarting ALB controller..."
+        kubectl rollout restart deployment aws-load-balancer-controller -n kube-system 2>$null | Out-Null
+        kubectl rollout status  deployment aws-load-balancer-controller -n kube-system `
+            --timeout=120s 2>$null | Out-Null
+        Write-Ok "ALB controller restarted"
+    }
+
+    # ── Apply ClusterIssuers (cert-manager CRDs must exist first) ─────────────
     Write-Info "Applying ClusterIssuers..."
     kubectl apply -f "$RepoRoot\k8s\tls\clusterissuer-letsencrypt-staging.yaml"
     kubectl apply -f "$RepoRoot\k8s\tls\clusterissuer-letsencrypt-prod.yaml"
@@ -656,15 +919,30 @@ if ($dnsTlsEnabled -eq "true") {
         $issuerWait += 5
     }
     if ($issuerWait -ge 60) {
-        Write-Warn "ClusterIssuers not Ready yet -- check: kubectl describe clusterissuer letsencrypt-staging"
+        Write-Warn "ClusterIssuers not Ready yet"
+        Write-Info "  Check: kubectl describe clusterissuer letsencrypt-staging"
     }
 
+    # ── Report existing ALB DNS config ────────────────────────────────────────
     $existingAlb = Read-TfVar "alb_dns_name"
     if ($existingAlb -and $existingAlb -ne "") {
-        Write-Ok "ALB DNS already configured: $existingAlb"
+        Write-Ok "ALB DNS already in tfvars: $existingAlb"
     } else {
         Write-Info "alb_dns_name not set -- will populate after app deploy"
     }
+
+    # ── Check certificate status (informational) ──────────────────────────────
+    $certReady = kubectl get certificate -n default -o jsonpath="{.items[0].status.conditions[?(@.type=='Ready')].status}" 2>$null
+    if ($certReady -eq "True") {
+        Write-Ok "TLS certificate Ready"
+    } elseif ($certReady) {
+        Write-Warn "TLS certificate not Ready yet -- will complete after DNS propagation"
+        Write-Info "  Monitor: kubectl get certificate -n default -w"
+        Write-Info "  Debug:   kubectl describe certificate -n default"
+    } else {
+        Write-Info "No certificate found yet -- will be issued after app deploy + DNS setup"
+    }
+
 } else {
     Write-Info "enable_dns_tls not true in terraform.tfvars -- skipping TLS"
     Write-Info "Add:  enable_dns_tls = true  to infra/terraform/terraform.tfvars"
@@ -672,7 +950,11 @@ if ($dnsTlsEnabled -eq "true") {
 
 # -- Phase 10: ArgoCD ----------------------------------------------------------
 $Step++
-Write-Step $Step "10" "Phase 10 -- ArgoCD GitOps"
+Write-Step $Step "11" "Phase 10 -- ArgoCD GitOps"
+
+$argoCdUrl   = ""
+$argoCdPass  = ""
+$argoCdToken = ""
 
 if ($argoCdEnabled -eq "true") {
     Wait-Pods -NS "argocd" -Label "app.kubernetes.io/name=argocd-server" -Timeout 300 -Name "ArgoCD server" | Out-Null
@@ -696,8 +978,8 @@ if ($argoCdEnabled -eq "true") {
 
     if ((Get-Command "argocd" -ErrorAction SilentlyContinue) -and $argoCdUrl -and $argoCdPass) {
         Write-Info "Logging into ArgoCD CLI..."
-        $host = $argoCdUrl -replace "https://",""
-        argocd login $host --username admin --password $argoCdPass --grpc-web --insecure 2>$null
+        $argoHost = $argoCdUrl -replace "https://",""
+        argocd login $argoHost --username admin --password $argoCdPass --grpc-web --insecure 2>$null
         if ($LASTEXITCODE -eq 0) {
             $argoCdToken = argocd account generate-token --account admin 2>$null
             if ($argoCdToken) {
@@ -707,7 +989,7 @@ if ($argoCdEnabled -eq "true") {
                 if (Test-Path $GuardopsYaml) {
                     $yamlContent = Get-Content $GuardopsYaml -Raw
                     if ($yamlContent -notmatch "argocd:") {
-                        $argoSection = "`nargocd:`n"
+                        $argoSection  = "`nargocd:`n"
                         $argoSection += "  url: `"$argoCdUrl`"`n"
                         $argoSection += "  app_name_staging: `"guardops-app-staging`"`n"
                         $argoSection += "  app_name_prod: `"guardops-app-prod`"`n"
@@ -742,7 +1024,7 @@ if ($argoCdEnabled -eq "true") {
 # -- Deploy app ----------------------------------------------------------------
 if (-not $SkipDeploy) {
     $Step++
-    Write-Step $Step "10" "Deploy app (prod + staging)"
+    Write-Step $Step "11" "Deploy app (prod + staging)"
 
     Set-Location "$RepoRoot\test-project"
 
@@ -764,46 +1046,87 @@ if (-not $SkipDeploy) {
 
     Set-Location $RepoRoot
 
-    # Wire ALB DNS after deploy creates the Ingress
+    # ── Phase 10: Wire ALB DNS after deploy creates the Ingress ───────────────
     if ($dnsTlsEnabled -eq "true") {
-        $albDns = Read-TfVar "alb_dns_name"
-        if (-not $albDns -or $albDns -eq "") {
-            Write-Info "Fetching ALB address from Ingress (up to 3 min)..."
-            $albWait    = 0
-            $albAddress = ""
-            while ($albWait -lt 180 -and (-not $albAddress)) {
-                $albAddress = kubectl get ingress -n default `
-                    -o jsonpath="{.items[0].status.loadBalancer.ingress[0].hostname}" 2>$null
-                if (-not $albAddress) {
-                    Start-Sleep -Seconds 15
-                    $albWait += 15
-                    Write-Info "  ${albWait}s -- waiting for ALB..."
-                }
+
+        # Ensure the Ingress has the internet-facing annotation.
+        # The Helm values should have this, but patch it as a safety net in case
+        # they don't (avoids the "2 tagged for other cluster" subnet error).
+        Write-Info "Verifying Ingress annotations for ALB..."
+        $currentScheme = kubectl get ingress guardops-app -n default `
+            -o jsonpath="{.metadata.annotations.alb\.ingress\.kubernetes\.io/scheme}" 2>$null
+        if ($currentScheme -ne "internet-facing") {
+            Write-Warn "  Ingress missing internet-facing scheme -- patching..."
+            kubectl annotate ingress guardops-app -n default `
+                "alb.ingress.kubernetes.io/scheme=internet-facing" `
+                "alb.ingress.kubernetes.io/target-type=ip" `
+                --overwrite 2>$null | Out-Null
+            Write-Ok "  Ingress annotated: internet-facing / target-type=ip"
+
+            # Restart ALB controller to clear its internal cache
+            Write-Info "  Restarting ALB controller to pick up new annotation..."
+            kubectl rollout restart deployment aws-load-balancer-controller -n kube-system 2>$null | Out-Null
+            kubectl rollout status  deployment aws-load-balancer-controller -n kube-system `
+                --timeout=120s 2>$null | Out-Null
+        } else {
+            Write-Ok "  Ingress annotation correct: internet-facing"
+        }
+
+        # Wait for ALB address and update tfvars if it changed.
+        # Always compare current address vs tfvars -- after destroy+recreate the
+        # ALB hostname changes even if tfvars still has the old (stale) value.
+        Write-Info "Waiting for ALB address from Ingress (up to 3 min)..."
+        $albWait    = 0
+        $albAddress = ""
+        while ($albWait -lt 180 -and (-not $albAddress)) {
+            $albAddress = kubectl get ingress guardops-app -n default `
+                -o jsonpath="{.status.loadBalancer.ingress[0].hostname}" 2>$null
+            if (-not $albAddress) {
+                Start-Sleep -Seconds 15
+                $albWait += 15
+                Write-Info "  ${albWait}s -- waiting for ALB..."
             }
-            if ($albAddress) {
-                Write-Ok "ALB address: $albAddress"
+        }
+
+        if ($albAddress) {
+            $tfAlbDns = Read-TfVar "alb_dns_name"
+            if ($albAddress -ne $tfAlbDns) {
+                Write-Ok "ALB address: $albAddress (updating tfvars)"
                 Set-TfVar "alb_dns_name" $albAddress
-                Write-Info "Re-applying dns-tls for Route53 alias records..."
+                Write-Info "Re-applying dns-tls module for Route53 alias records..."
                 Set-Location $TerraformDir
                 terraform apply -target="module.dns_tls" -auto-approve
-                if ($LASTEXITCODE -eq 0) { Write-Ok "Route53 alias records created" }
-                else                     { Write-Warn "dns-tls re-apply had errors" }
+                if ($LASTEXITCODE -eq 0) { Write-Ok "Route53 alias records updated" }
+                else                     { Write-Warn "dns-tls re-apply had errors -- check terraform output" }
                 Set-Location $RepoRoot
+
+                # Show NS records once per session (registrar delegation reminder)
+                Write-Host ""
+                Write-Host "  DOMAIN SETUP REMINDER:" -ForegroundColor Yellow
+                Write-Host "  Once you have registered $domainName, delegate it by setting" -ForegroundColor Yellow
+                Write-Host "  these nameservers at your registrar:" -ForegroundColor Yellow
+                Set-Location $TerraformDir
+                terraform output name_servers 2>$null
+                Set-Location $RepoRoot
+                Write-Host ""
             } else {
-                Write-Warn "ALB address not available yet"
-                Write-Info "Get it with: kubectl get ingress -n default"
-                Write-Info "Then add to terraform.tfvars: alb_dns_name = `"THE_ALB_HOST`""
-                Write-Info "Then run: terraform apply -target=module.dns_tls"
+                Write-Ok "ALB address unchanged: $albAddress"
             }
+        } else {
+            Write-Warn "ALB address not available after 3 min"
+            Write-Info "  Check controller logs: kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller --tail=20"
+            Write-Info "  Check ingress events:  kubectl describe ingress guardops-app -n default"
+            Write-Info "  Once address appears:  Update alb_dns_name in terraform.tfvars, then:"
+            Write-Info "                         terraform apply -target=module.dns_tls"
         }
     }
 
-    # GitOps override commit
+    # ── GitOps override commit ────────────────────────────────────────────────
     if ($argoCdEnabled -eq "true" -and $argoCdToken) {
         Write-Info "Running GitOps override commits..."
         $env:ARGOCD_TOKEN = $argoCdToken
         Set-Location "$RepoRoot\test-project"
-        guardops deploy --env prod --skip-sonarqube --skip-build --skip-dast --gitops --gitops-branch main 2>$null
+        guardops deploy --env prod    --skip-sonarqube --skip-build --skip-dast --gitops --gitops-branch main 2>$null
         guardops deploy --env staging --skip-sonarqube --skip-build --skip-dast --gitops --gitops-branch main 2>$null
         Write-Ok "GitOps override files committed"
         Set-Location $RepoRoot
@@ -813,7 +1136,7 @@ if (-not $SkipDeploy) {
 # -- Port-forwards -------------------------------------------------------------
 if (-not $SkipPortForwards) {
     $Step++
-    Write-Step $Step "10" "Opening port-forwards"
+    Write-Step $Step "11" "Opening port-forwards"
 
     $forwards = @(
         @{ Svc="svc/kube-prometheus-stack-grafana";      Port="3000:80";   NS="monitoring" },
@@ -839,7 +1162,7 @@ if (-not $SkipPortForwards) {
 
 # -- Summary -------------------------------------------------------------------
 $Step++
-Write-Step $Step "10" "Summary"
+Write-Step $Step "11" "Summary"
 
 Write-Host ""
 Write-Host "  +--------------------------------------------------+" -ForegroundColor Green
@@ -873,7 +1196,19 @@ Write-Host "    kubectl get pods -n default"
 Write-Host "    kubectl get pods -n staging"
 Write-Host "    kubectl get pods -n monitoring"
 Write-Host "    kubectl get certificate -A"
+Write-Host "    kubectl get ingress -A"
 Write-Host ""
+if ($dnsTlsEnabled -eq "true") {
+    $certStatus = kubectl get certificate -n default -o jsonpath="{.items[0].status.conditions[?(@.type=='Ready')].status}" 2>$null
+    if ($certStatus -eq "True") {
+        Write-Host "  TLS : Certificate Ready -- https://$domainName is live" -ForegroundColor Green
+    } else {
+        Write-Host "  TLS : Certificate not Ready yet" -ForegroundColor Yellow
+        Write-Host "        Requires domain registered + NS delegated to Route53" -ForegroundColor Yellow
+        Write-Host "        Monitor: kubectl get certificate -n default -w" -ForegroundColor Gray
+    }
+    Write-Host ""
+}
 Write-Host "  Stop billing tonight:" -ForegroundColor Red
 Write-Host "    .\scripts\night-shutdown.ps1" -ForegroundColor Red
 Write-Host ""
