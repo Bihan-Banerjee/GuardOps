@@ -143,7 +143,7 @@ kubectl patch pod <pod-name> -n default \
 
 **Verify health:**
 ```bash
-curl -I https://guardops.dev/healthz
+curl -I https://guardops.live/healthz
 guardops status --env prod
 guardops runtime-status --env prod --window 15m   # should be clean
 guardops sync-status --env prod                   # ArgoCD should be Synced + Healthy

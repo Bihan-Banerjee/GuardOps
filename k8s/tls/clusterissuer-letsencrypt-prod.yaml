@@ -3,8 +3,8 @@
 # Phase 10: Let's Encrypt PRODUCTION ClusterIssuer
 #
 # PURPOSE:
-#   Issues real, browser-trusted TLS certificates for guardops.dev,
-#   staging.guardops.dev, and argocd.guardops.dev.
+#   Issues real, browser-trusted TLS certificates for guardops.live,
+#   staging.guardops.live, and argocd.guardops.live.
 #
 # RATE LIMITS (IMPORTANT):
 #   - 5 duplicate certificates per registered domain per week
@@ -25,7 +25,7 @@
 #        kubectl delete secret guardops-prod-tls -n default
 #        kubectl delete secret guardops-staging-tls -n staging
 #   4. Redeploy — cert-manager will issue new prod certificates.
-#   5. Verify in browser: https://guardops.dev — padlock should be green.
+#   5. Verify in browser: https://guardops.live — padlock should be green.
 #
 # AUTO-RENEWAL:
 #   cert-manager renews certificates automatically when they have less than

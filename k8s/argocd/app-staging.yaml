@@ -16,7 +16,7 @@
 #
 # VALUES OVERLAY STACK:
 #   values.yaml                   — base defaults
-#   values-staging.yaml           — staging overrides (TLS for staging.guardops.dev,
+#   values-staging.yaml           — staging overrides (TLS for staging.guardops.live,
 #                                   replicas=1, ZAP disabled, staging image prefix)
 #   values-override-staging.yaml  — auto-generated image tag (committed by CI)
 #

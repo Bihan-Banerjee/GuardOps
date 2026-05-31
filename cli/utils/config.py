@@ -23,8 +23,8 @@ Phase 9 changes:
 
 Phase 10 changes:
   - Added domain field to each environment block in DEFAULT_CONFIG
-      staging -> staging.guardops.dev
-      prod    -> guardops.dev
+      staging -> staging.guardops.live
+      prod    -> guardops.live
   - Added argocd section to DEFAULT_CONFIG
       url, app_name_staging, app_name_prod, token_env_var
   - New helper: resolve_domain(config, env) — returns the public domain for an env
@@ -102,11 +102,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     #
     #   environments:
     #     staging:
-    #       domain: staging.guardops.dev   # override if using a different domain
+    #       domain: staging.guardops.live   # override if using a different domain
     #       kubernetes:
     #         namespace: staging
     #     prod:
-    #       domain: guardops.dev
+    #       domain: guardops.live
     #
     "environments": {
         "staging": {
@@ -139,8 +139,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
             # ── Phase 10: Public domain for this environment ───────────────────
             # Used by resolve_domain() so deploy_cmd and sync_cmd can construct
             # the live URL without manual config. Override in .guardops.yaml if
-            # your domain differs from the default guardops.dev setup.
-            "domain": "staging.guardops.dev",
+            # your domain differs from the default guardops.live setup.
+            "domain": "staging.guardops.live",
         },
         "prod": {
             "kubernetes": {
@@ -160,7 +160,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "release_suffix": "",
             },
             # ── Phase 10 ──────────────────────────────────────────────────────
-            "domain": "guardops.dev",
+            "domain": "guardops.live",
         },
         # "local" environment inherits everything from the base config.
         # No overrides needed — k3d handles its own quirks via the env flag in
@@ -194,7 +194,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # and are created by the argocd Terraform module (argocd/main.tf).
     #
     "argocd": {
-        "url": "",                              # e.g. "https://argocd.guardops.dev"
+        "url": "https://argocd.guardops.live",  # ArgoCD server URL (Phase 10)
         "app_name_staging": "guardops-app-staging",
         "app_name_prod":    "guardops-app-prod",
         # Name of the environment variable that holds the ArgoCD API token.
@@ -469,12 +469,12 @@ def resolve_domain(config: dict, env: str) -> str:
         env:    "local" | "staging" | "prod"
 
     Returns:
-        Domain string, e.g. "guardops.dev" or "staging.guardops.dev".
+        Domain string, e.g. "guardops.live" or "staging.guardops.live".
         Returns "" if not configured — callers should warn and fall back.
 
     Example:
-        resolve_domain(config, "prod")    -> "guardops.dev"
-        resolve_domain(config, "staging") -> "staging.guardops.dev"
+        resolve_domain(config, "prod")    -> "guardops.live"
+        resolve_domain(config, "staging") -> "staging.guardops.live"
         resolve_domain(config, "local")   -> "test-app.local"
     """
     # User-defined env block wins
@@ -530,7 +530,7 @@ def get_argocd_url(config: dict) -> str:
         config: Full config dict from load_config().
 
     Returns:
-        URL string, e.g. "https://argocd.guardops.dev", or "".
+        URL string, e.g. "https://argocd.guardops.live", or "".
     """
     return config.get("argocd", {}).get("url", "")
 

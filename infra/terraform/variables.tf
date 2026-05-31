@@ -130,9 +130,9 @@ variable "enable_dns_tls" {
 }
 
 variable "domain_name" {
-  description = "Root domain for the Route53 hosted zone and TLS certificates. Example: guardops.dev. Must be a domain you own and can delegate NS records for."
+  description = "Root domain for the Route53 hosted zone and TLS certificates. Example: guardops.live. Must be a domain you own and can delegate NS records for."
   type        = string
-  default     = "guardops.dev"
+  default     = "guardops.live"
 }
 
 variable "alb_controller_role_arn" {

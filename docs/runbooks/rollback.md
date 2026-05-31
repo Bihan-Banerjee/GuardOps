@@ -10,7 +10,7 @@
 Roll back immediately if any of the following are true after a deploy:
 
 - `kubectl get pods -n default` shows CrashLoopBackOff or ImagePullBackOff
-- `https://guardops.dev/healthz` returns non-200
+- `https://guardops.live/healthz` returns non-200
 - Grafana shows error rate spike (> 1% 5xx responses)
 - `guardops runtime-status --env prod` reports CRITICAL Falco alerts
 - `guardops sync-status --env prod` reports Degraded
@@ -30,7 +30,7 @@ Verify:
 ```bash
 helm history guardops-app -n default          # confirm revision decremented
 kubectl rollout status deployment/guardops-app -n default --timeout=60s
-curl -I https://guardops.dev/healthz
+curl -I https://guardops.live/healthz
 ```
 
 ---
@@ -67,7 +67,7 @@ argocd app rollback guardops-app-prod <revision-number>
 ```
 
 **Via UI:**
-1. Open `https://argocd.guardops.dev/applications/guardops-app-prod`
+1. Open `https://argocd.guardops.live/applications/guardops-app-prod`
 2. Click **History and Rollback**
 3. Select the last known-good revision
 4. Click **Rollback**
@@ -105,7 +105,7 @@ kubectl get svc guardops-app-traffic -n default -o jsonpath='{.spec.selector}'
 ## Post-Rollback Checklist
 
 - [ ] `kubectl get pods -n default` — all pods Running
-- [ ] `curl -I https://guardops.dev/healthz` — HTTP 200
+- [ ] `curl -I https://guardops.live/healthz` — HTTP 200
 - [ ] `guardops sync-status --env prod` — Synced + Healthy
 - [ ] Grafana error rate back to baseline
 - [ ] Notify team in Slack: "Rolled back to revision X — investigating root cause"

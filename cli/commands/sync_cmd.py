@@ -78,7 +78,7 @@ from backend.pipeline.gitops_writer import (
     help=(
         "ArgoCD server URL. Overrides argocd.url in .guardops.yaml. "
         "Also readable from ARGOCD_URL env var. "
-        "Example: https://argocd.guardops.dev"
+        "Example: https://argocd.guardops.live"
     ),
 )
 @click.option(
@@ -99,7 +99,7 @@ def sync_status_command(env, wait, timeout, argocd_url, token_env):
       guardops sync-status --env prod
       guardops sync-status --env staging
       guardops sync-status --env prod --wait --timeout 300
-      guardops sync-status --env prod --argocd-url https://argocd.guardops.dev
+      guardops sync-status --env prod --argocd-url https://argocd.guardops.live
     """
     config = load_config()
     _     = get_env_config(config, env)   # validates env block exists
@@ -112,7 +112,7 @@ def sync_status_command(env, wait, timeout, argocd_url, token_env):
         error(
             "ArgoCD URL not configured. "
             "Set [cyan]argocd.url[/cyan] in [cyan].guardops.yaml[/cyan] "
-            "or pass [cyan]--argocd-url https://argocd.guardops.dev[/cyan].\n"
+            "or pass [cyan]--argocd-url https://argocd.guardops.live[/cyan].\n"
             "  After applying the argocd Terraform module: "
             "[dim]terraform output argocd_server_url[/dim]"
         )

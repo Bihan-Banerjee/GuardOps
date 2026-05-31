@@ -14,7 +14,7 @@
 #   - image.pullPolicy: Always   (pull from ECR on every pod restart)
 #   - replicaCount: 2            (HA — two pods behind the service)
 #   - resources: higher limits   (production workload)
-#   - ingress.host: guardops.dev (real domain)
+#   - ingress.host: guardops.live (real domain)
 #   - ingress.tls: true          (HTTPS via cert-manager + Let's Encrypt)
 #   - ingress.certManagerClusterIssuer: letsencrypt-prod
 #   - hpa.enabled: true          (autoscale 2-6 replicas at 70% CPU)
@@ -64,7 +64,7 @@ ingress:
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
     alb.ingress.kubernetes.io/ssl-redirect: "443"
 
-  host: guardops.dev
+  host: guardops.live
 
   tls: true
   # cert-manager writes the TLS cert into this Secret.

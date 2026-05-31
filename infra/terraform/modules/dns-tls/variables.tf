@@ -12,7 +12,7 @@ variable "aws_region" {
 }
 
 variable "domain_name" {
-  description = "Root domain for the Route53 hosted zone. Example: guardops.dev"
+  description = "Root domain for the Route53 hosted zone. Example: guardops.live"
   type        = string
 }
 

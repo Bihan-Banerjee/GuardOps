@@ -253,7 +253,7 @@ def trigger_argocd_sync(
 
     Args:
         app_name:   ArgoCD Application name, e.g. "guardops-app-prod".
-        argocd_url: Base URL, e.g. "https://argocd.guardops.dev".
+        argocd_url: Base URL, e.g. "https://argocd.guardops.live".
         token:      ArgoCD API token — from ARGOCD_TOKEN env var in CI.
         revision:   Git revision to sync to (default: HEAD = latest commit).
         prune:      Remove resources not in Git on this sync (default: True).

@@ -33,11 +33,11 @@ from backend.pipeline.gitops_writer import SyncResult
 MINIMAL_CONFIG = {
     "project": {"name": "guardops-app"},
     "environments": {
-        "prod":    {"domain": "guardops.dev"},
-        "staging": {"domain": "staging.guardops.dev"},
+        "prod":    {"domain": "guardops.live"},
+        "staging": {"domain": "staging.guardops.live"},
     },
     "argocd": {
-        "url":              "https://argocd.guardops.dev",
+        "url":              "https://argocd.guardops.live",
         "app_name_prod":    "guardops-app-prod",
         "app_name_staging": "guardops-app-staging",
         "token_env_var":    "ARGOCD_TOKEN",
@@ -197,7 +197,7 @@ class TestSnapshotMode:
                 ["--env", "prod"],
                 env={"ARGOCD_TOKEN": "tok"},
             )
-        assert "argocd.guardops.dev" in result.output
+        assert "argocd.guardops.live" in result.output
         assert "guardops-app-prod" in result.output
 
     def test_app_name_from_config(self, runner, mock_load_config):
@@ -332,7 +332,7 @@ class TestConfigHelperIntegration:
                 ["--env", "prod"],
                 env={"ARGOCD_TOKEN": "tok"},
             )
-        assert "guardops.dev" in result.output
+        assert "guardops.live" in result.output
 
     def test_staging_domain_shown_for_staging(self, runner, mock_load_config):
         staging_healthy = SyncResult(
@@ -345,4 +345,4 @@ class TestConfigHelperIntegration:
                 ["--env", "staging"],
                 env={"ARGOCD_TOKEN": "tok"},
             )
-        assert "staging.guardops.dev" in result.output
+        assert "staging.guardops.live" in result.output

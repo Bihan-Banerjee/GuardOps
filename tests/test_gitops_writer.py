@@ -284,7 +284,7 @@ class TestTriggerArgocdSync:
         with patch("backend.pipeline.gitops_writer.requests.post", return_value=mock_resp):
             result = trigger_argocd_sync(
                 app_name="guardops-app-prod",
-                argocd_url="https://argocd.guardops.dev",
+                argocd_url="https://argocd.guardops.live",
                 token="test-token",
             )
 
@@ -299,7 +299,7 @@ class TestTriggerArgocdSync:
         with patch("backend.pipeline.gitops_writer.requests.post", return_value=mock_resp):
             result = trigger_argocd_sync(
                 app_name="guardops-app-prod",
-                argocd_url="https://argocd.guardops.dev",
+                argocd_url="https://argocd.guardops.live",
                 token="token",
             )
         assert result.success is True
@@ -312,7 +312,7 @@ class TestTriggerArgocdSync:
         with patch("backend.pipeline.gitops_writer.requests.post", return_value=mock_resp):
             result = trigger_argocd_sync(
                 app_name="guardops-app-prod",
-                argocd_url="https://argocd.guardops.dev",
+                argocd_url="https://argocd.guardops.live",
                 token="bad-token",
             )
 
@@ -326,7 +326,7 @@ class TestTriggerArgocdSync:
         ):
             result = trigger_argocd_sync(
                 app_name="guardops-app-prod",
-                argocd_url="https://argocd.guardops.dev",
+                argocd_url="https://argocd.guardops.live",
                 token="token",
             )
 
@@ -338,11 +338,11 @@ class TestTriggerArgocdSync:
         with patch("backend.pipeline.gitops_writer.requests.post", return_value=mock_resp) as mock_post:
             trigger_argocd_sync(
                 app_name="guardops-app-prod",
-                argocd_url="https://argocd.guardops.dev",
+                argocd_url="https://argocd.guardops.live",
                 token="tok",
             )
         called_url = mock_post.call_args[0][0]
-        assert called_url == "https://argocd.guardops.dev/api/v1/applications/guardops-app-prod/sync"
+        assert called_url == "https://argocd.guardops.live/api/v1/applications/guardops-app-prod/sync"
 
     def test_trailing_slash_in_url_handled(self):
         """Trailing slash on argocd_url must not produce double-slash in API path."""
@@ -350,7 +350,7 @@ class TestTriggerArgocdSync:
         with patch("backend.pipeline.gitops_writer.requests.post", return_value=mock_resp) as mock_post:
             trigger_argocd_sync(
                 app_name="guardops-app-prod",
-                argocd_url="https://argocd.guardops.dev/",
+                argocd_url="https://argocd.guardops.live/",
                 token="tok",
             )
         called_url = mock_post.call_args[0][0]

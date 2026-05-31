@@ -8,7 +8,7 @@
 #      so no static credentials are needed.
 #   2. cert-manager — Kubernetes controller that requests and renews TLS
 #      certificates from Let's Encrypt automatically.
-#   3. Route53 hosted zone for the root domain (e.g. guardops.dev)
+#   3. Route53 hosted zone for the root domain (e.g. guardops.live)
 #   4. Route53 A records (apex, staging, argocd subdomains) as ALB aliases
 #
 # Apply order:
