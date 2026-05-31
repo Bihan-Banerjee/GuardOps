@@ -58,7 +58,6 @@ from cli.utils.config import (
     get_argocd_url,
     get_argocd_app_name,
     get_argocd_token_env_var,
-    resolve_domain,
 )
 from backend.pipeline.builder import build_image
 from backend.pipeline.deployer import (
@@ -173,7 +172,7 @@ def deploy_command(env, slot, use_gitops, gitops_branch,
     # ── Header ───────────────────────────────────────────────────────────────
     console.print()
     header_parts = [
-        f"[bold]GuardOps [cyan]Deploy[/cyan][/bold]",
+        "[bold]GuardOps [cyan]Deploy[/cyan][/bold]",
         f"[dim]{project_name}[/dim]",
         f"env=[cyan]{env}[/cyan]",
         f"ns=[cyan]{namespace}[/cyan]",

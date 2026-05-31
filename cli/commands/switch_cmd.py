@@ -67,7 +67,6 @@ from rich import box
 
 from cli.utils.config import (
     load_config,
-    get_env_config,
     resolve_namespace,
 )
 from cli.utils.output import (
