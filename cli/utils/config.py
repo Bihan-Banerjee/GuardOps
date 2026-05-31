@@ -31,6 +31,7 @@ Phase 10 changes:
   - New helper: get_argocd_app_name(config, env) — returns the ArgoCD Application name
 """
 
+import copy
 import sys
 from pathlib import Path
 from typing import Any
@@ -286,7 +287,9 @@ def merge_with_defaults(user_config: dict) -> dict:
         user      = {"a": {"x": 99}}
         result    = {"a": {"x": 99, "y": 2}}   <- y filled from defaults
     """
-    result = DEFAULT_CONFIG.copy()
+    # deepcopy so sections the user omits don't alias (and later mutate) the
+    # module-global DEFAULT_CONFIG — a plain .copy() shares nested dicts.
+    result = copy.deepcopy(DEFAULT_CONFIG)
     for key, value in user_config.items():
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):
             result[key] = {**result[key], **value}

@@ -772,7 +772,7 @@ def _build_quarantine_policy(
     """
     # Sanitize the Falco rule name for K8s label/annotation constraints.
     safe_rule = re.sub(r"[^a-zA-Z0-9._-]", "-", rule)[:63]
-    quarantined_at = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H-%M-%SZ")
+    quarantined_at = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
 
     policy = {
         "apiVersion": "networking.k8s.io/v1",

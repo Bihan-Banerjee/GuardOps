@@ -7,6 +7,8 @@ __pycache__/
 dist/
 build/
 .eggs/
+# sdist/wheel extraction output (e.g. guardops-0.10.1/) — never commit
+/guardops-*/
 
 # Environment
 .env

@@ -234,8 +234,14 @@ if (Test-Path $ConfigPath) {
         Write-Host "    loki_url already set - skipping" -ForegroundColor Gray
     }
 
-    if ($cfg -match "enabled: false") {
-        $cfg = $cfg -replace "enabled: false", "enabled: true"
+    # Scope the replace to the runtime_security block only. A bare global
+    # `-replace "enabled: false"` would also flip self_healing.enabled (which
+    # defaults to false and expects a webhook this script never deploys).
+    # The pattern matches "runtime_security:" then its first indented
+    # "enabled:" key, tolerating comment/blank lines in between.
+    $rtPattern = "(?m)^(runtime_security:[^\S\r\n]*\r?\n(?:[^\S\r\n]+.*\r?\n)*?[^\S\r\n]+enabled:[^\S\r\n]*)false"
+    if ($cfg -match $rtPattern) {
+        $cfg = $cfg -replace $rtPattern, '${1}true'
         Set-Content $ConfigPath $cfg -Encoding UTF8
         Write-Host "    runtime_security.enabled -> true" -ForegroundColor Green
     } else {

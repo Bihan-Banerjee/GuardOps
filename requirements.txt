@@ -1,7 +1,13 @@
+# Runtime dependencies for the guardops CLI.
+# Keep in sync with [project].dependencies in pyproject.toml — that is the
+# source of truth. (Prefer `pip install -e .` / `pip install guardops`; this
+# file exists for CI convenience and environments that install deps separately.)
+#
+# The webhook handler's extra deps (fastapi, uvicorn) are installed only in
+# Dockerfile.webhook, not here — the CLI itself does not import them.
 click>=8.1.7
-rich>=13.7.0
+rich>=13.7,<14.0
 pyyaml>=6.0.1
 python-dotenv>=1.0.0
 requests>=2.31.0
 boto3>=1.34.0
-kubernetes>=29.0.0
