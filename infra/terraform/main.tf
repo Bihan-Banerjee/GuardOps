@@ -32,7 +32,7 @@
 #   Phase 3 — TLS + DNS (new in Phase 10):
 #     # Set in terraform.tfvars:
 #     #   enable_dns_tls = true
-#     #   domain_name    = "guardops.dev"
+#     #   domain_name    = "guardops.live"
 #     terraform apply -target=module.dns_tls
 #     # After apply: delegate NS records at your domain registrar
 #     terraform output name_servers
@@ -47,7 +47,7 @@
 #     terraform apply -target=module.argocd
 #     # After apply: get admin password and create API token
 #     terraform output argocd_initial_password_cmd   # copy and run it
-#     # Log in: argocd login argocd.guardops.dev
+#     # Log in: argocd login argocd.guardops.live
 #     # Generate CI token: argocd account generate-token --account admin
 #     # Add as GitHub secret: gh secret set ARGOCD_TOKEN --body "<token>"
 #     # Update .guardops.yaml with argocd.url from: terraform output argocd_server_url

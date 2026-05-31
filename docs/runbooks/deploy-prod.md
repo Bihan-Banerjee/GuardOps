@@ -109,7 +109,7 @@ kubectl logs -n monitoring -l app=falco --tail=100
 
 Expected duration: **3–5 min**
 
-OWASP ZAP runs a passive baseline scan against `https://guardops.dev`. If CRITICAL
+OWASP ZAP runs a passive baseline scan against `https://guardops.live`. If CRITICAL
 findings are detected, the deploy job auto-rolls back and exits 1.
 
 Download the ZAP report from the GitHub Actions artifact tab:
@@ -138,7 +138,7 @@ guardops sync-status --env prod
 argocd app get guardops-app-prod
 ```
 
-ArgoCD UI: `https://argocd.guardops.dev/applications/guardops-app-prod`
+ArgoCD UI: `https://argocd.guardops.live/applications/guardops-app-prod`
 
 ---
 
@@ -150,11 +150,12 @@ kubectl get pods -n default
 kubectl describe pod -n default -l app.kubernetes.io/name=guardops-app
 
 # Endpoint check
-curl -I https://guardops.dev/healthz        # expect HTTP 200
-curl -I https://guardops.dev/ready          # expect HTTP 200
+curl -I https://guardops.live/healthz        # expect HTTP 200
+curl -I https://guardops.live/ready          # expect HTTP 200
 
-# Live metrics
-open https://grafana.guardops.dev           # GuardOps dashboard
+# Live metrics — Grafana is not publicly exposed; reach it via port-forward
+kubectl port-forward svc/kube-prometheus-stack-grafana 3000:80 -n monitoring
+# then open http://localhost:3000  (admin / password from morning-start.ps1)
 
 # ArgoCD final state
 guardops sync-status --env prod

@@ -16,3 +16,21 @@ node_min_size          = 1
 node_max_size          = 1
 node_desired_size      = 1
 enable_cloudwatch_logs = false
+
+# GitHub OIDC (Phase 6) — owner/name of the repo allowed to assume the CI role
+github_repo = "Bihan-Banerjee/GuardOps"
+
+# ── Phase 10: DNS + TLS + ArgoCD ──────────────────────────────────────────────
+# Set enable_dns_tls = true to provision the Route53 zone, cert-manager, and the
+# AWS Load Balancer Controller. Apply in two steps (see FIRST APPLY in main.tf):
+#   1. First apply with alb_dns_name = "" to create the zone + cert-manager.
+#   2. After `guardops deploy` provisions the ALB, set alb_dns_name and re-apply
+#      to create the apex/staging/argocd Route53 alias records.
+# alb_controller_role_arn is the IRSA role morning-start.ps1 creates
+# (guardops-alb-controller). Swap the account ID for yours.
+enable_dns_tls          = true
+domain_name             = "guardops.live"
+alb_controller_role_arn = "arn:aws:iam::236796665744:role/guardops-alb-controller"
+alb_dns_name            = ""        # leave empty on first apply
+enable_argocd           = true
+git_repo_url            = "https://github.com/Bihan-Banerjee/GuardOps"

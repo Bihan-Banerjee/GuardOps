@@ -10,7 +10,7 @@
 # contains only image.repository and image.tag (written by guardops deploy --gitops).
 #
 # Key differences from prod:
-#   - host: staging.guardops.dev  (subdomain, not apex)
+#   - host: staging.guardops.live  (subdomain, not apex)
 #   - replicaCount: 1             (cost savings — staging doesn't need HA)
 #   - hpa: disabled               (no autoscaling needed in staging)
 #   - security.tools.owasp_zap: false (DAST disabled for staging — no stable URL)
@@ -49,7 +49,7 @@ ingress:
   annotations:
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
 
-  host: staging.guardops.dev
+  host: staging.guardops.live
 
   tls: true
   tlsSecret: guardops-staging-tls

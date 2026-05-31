@@ -229,7 +229,7 @@ Pod released — network restored
 Internet
     |
     v
-Route53 (guardops.dev A alias -> ALB DNS)
+Route53 (guardops.live A alias -> ALB DNS)
     |
     v
 AWS Application Load Balancer
@@ -305,7 +305,7 @@ ap-south-1 (Mumbai)
 |    |    +-- ClusterIssuer: letsencrypt-prod                      |
 |    |                                                             |
 |    +-- argocd namespace                           [Phase 10]     |
-|    |    +-- argocd-server   (UI + API, https://argocd.guardops.dev)|
+|    |    +-- argocd-server   (UI + API, https://argocd.guardops.live)|
 |    |    +-- argocd-repo-server                                   |
 |    |    +-- argocd-application-controller                        |
 |    |    +-- Application: guardops-app-prod (manual sync)        |
@@ -325,10 +325,10 @@ ap-south-1 (Mumbai)
 |  DynamoDB: guardops-tf-lock (state locking)                      |
 |  IAM: github-actions-role (OIDC, no static keys)                 |
 |  IAM: guardops-alb-controller (IRSA for ALB controller)[Phase 10]|
-|  Route53: guardops.dev hosted zone               [Phase 10]     |
-|    guardops.dev        A alias -> ALB                            |
-|    staging.guardops.dev A alias -> ALB                           |
-|    argocd.guardops.dev  A alias -> ALB                           |
+|  Route53: guardops.live hosted zone               [Phase 10]     |
+|    guardops.live        A alias -> ALB                            |
+|    staging.guardops.live A alias -> ALB                           |
+|    argocd.guardops.live  A alias -> ALB                           |
 +------------------------------------------------------------------+
 ```
 
@@ -783,7 +783,7 @@ environments:
         owasp_zap: false          # ZAP skipped in staging (no stable URL)
     helm:
       release_suffix: "-staging"  # release: guardops-app-staging
-    domain: staging.guardops.dev  # Phase 10: used by resolve_domain()
+    domain: staging.guardops.live  # Phase 10: used by resolve_domain()
   prod:
     kubernetes:
       namespace: default
@@ -794,7 +794,7 @@ environments:
         owasp_zap: true
     helm:
       release_suffix: ""          # release: guardops-app (backward compat)
-    domain: guardops.dev          # Phase 10: used by resolve_domain()
+    domain: guardops.live          # Phase 10: used by resolve_domain()
 ```
 
 ### Blue-green workflow
@@ -857,7 +857,7 @@ Phase 10 adds browser-trusted HTTPS to all environments using cert-manager, Let'
 2. When an Ingress with that annotation is deployed, cert-manager creates a `Certificate` resource and requests a certificate from Let's Encrypt via HTTP-01 ACME challenge
 3. **Let's Encrypt** verifies domain ownership by fetching a token at `http://<domain>/.well-known/acme-challenge/<token>` — this works because the Ingress is already routing traffic
 4. The certificate is stored in a Kubernetes Secret (`guardops-prod-tls`) and auto-renewed when less than 30 days remain (Let's Encrypt certs are 90-day)
-5. **Route53** routes `guardops.dev` and `staging.guardops.dev` to the ALB via A alias records
+5. **Route53** routes `guardops.live` and `staging.guardops.live` to the ALB via A alias records
 
 ### Helm values overlay (Phase 10)
 
@@ -894,7 +894,7 @@ kubectl apply -f k8s/tls/clusterissuer-letsencrypt-prod.yaml
 kubectl get certificate -n default -w
 
 # Verify HTTPS
-curl -I https://guardops.dev/healthz
+curl -I https://guardops.live/healthz
 # HTTP/2 200 — issuer: Let's Encrypt
 ```
 
@@ -913,7 +913,7 @@ infra/terraform/modules/dns-tls/
 Enable in `terraform.tfvars`:
 ```hcl
 enable_dns_tls          = true
-domain_name             = "guardops.dev"
+domain_name             = "guardops.live"
 alb_controller_role_arn = "arn:aws:iam::236796665744:role/guardops-alb-controller"
 alb_dns_name            = ""    # populated by morning-start.ps1 after first deploy
 ```
@@ -965,8 +965,8 @@ GuardOps Sync Status  |  env=prod  |  app=guardops-app-prod
   Sync Status     Synced
   Health Status   Healthy
   Revision        abc1234
-  ArgoCD UI       https://argocd.guardops.dev/applications/guardops-app-prod
-  Live URL        https://guardops.dev
+  ArgoCD UI       https://argocd.guardops.live/applications/guardops-app-prod
+  Live URL        https://guardops.live
 
 ✓ Application guardops-app-prod is Synced + Healthy
 ```
@@ -1129,7 +1129,7 @@ environments:
         owasp_zap: false
     helm:
       release_suffix: "-staging"
-    domain: staging.guardops.dev   # Phase 10: used by sync-status and DAST target resolution
+    domain: staging.guardops.live   # Phase 10: used by sync-status and DAST target resolution
   prod:
     kubernetes:
       namespace: default
@@ -1140,14 +1140,14 @@ environments:
         owasp_zap: true
     helm:
       release_suffix: ""
-    domain: guardops.dev           # Phase 10
+    domain: guardops.live           # Phase 10
 
 # Phase 10 — ArgoCD GitOps
 # The token is NEVER stored here — only the env var name is stored.
 # Set the actual token: export ARGOCD_TOKEN="<token>"
 # In CI: add ARGOCD_TOKEN as a GitHub secret.
 argocd:
-  url: "https://argocd.guardops.dev"
+  url: "https://argocd.guardops.live"
   app_name_staging: "guardops-app-staging"
   app_name_prod: "guardops-app-prod"
   token_env_var: "ARGOCD_TOKEN"
@@ -1383,7 +1383,7 @@ Staging values (`values-staging.yaml`) add:
 - `imagePullPolicy: Always`
 - `config.ENVIRONMENT: staging`
 - `config.LOG_LEVEL: DEBUG`
-- `ingress.host: staging.guardops.dev` with TLS (Phase 10)
+- `ingress.host: staging.guardops.live` with TLS (Phase 10)
 - `ingress.certManagerClusterIssuer: letsencrypt-prod` (Phase 10)
 - `monitoring.enabled: false` (set true once kube-prometheus-stack is confirmed running)
 
@@ -1391,7 +1391,7 @@ Production values (`values-prod.yaml`) add:
 - `replicaCount: 2`
 - `imagePullPolicy: Always`
 - HPA enabled (CPU-based autoscaling, 2-10 replicas)
-- `ingress.host: guardops.dev` with TLS (Phase 10)
+- `ingress.host: guardops.live` with TLS (Phase 10)
 - `ingress.certManagerClusterIssuer: letsencrypt-prod` (Phase 10)
 - `monitoring.enabled: true` — creates ServiceMonitor for Prometheus scraping
 
@@ -1548,7 +1548,7 @@ Three things must be true: (1) subnets tagged `kubernetes.io/cluster/guardops-pr
 After `terraform destroy` + recreate, the EKS cluster gets a new OIDC issuer URL. The `guardops-alb-controller` IAM role trust policy becomes stale — the controller gets `AccessDenied` from STS. morning-start.ps1 detects this via `Ensure-AlbControllerRole` and calls `aws iam update-assume-role-policy` before Terraform apply. If you run apply manually without morning-start.ps1, update the trust policy first.
 
 **cert-manager ClusterIssuer stays Ready=False (Phase 10):**
-Usually a DNS propagation issue. The HTTP-01 ACME challenge requires the domain to be publicly reachable. Check: `nslookup -type=NS guardops.dev 8.8.8.8` — if the NS records don't return yet, wait and retry. Also check: `kubectl get challenges -n default` to see the active ACME challenge token and its error message.
+Usually a DNS propagation issue. The HTTP-01 ACME challenge requires the domain to be publicly reachable. Check: `nslookup -type=NS guardops.live 8.8.8.8` — if the NS records don't return yet, wait and retry. Also check: `kubectl get challenges -n default` to see the active ACME challenge token and its error message.
 
 **secrets context not allowed in GitHub Actions step if: (Phase 10):**
 `secrets.X` is not available in step-level `if:` expressions. Hoist to a job-level env var: `HAS_ARGOCD: ${{ secrets.ARGOCD_TOKEN != '' && 'true' || 'false' }}` and check `env.HAS_ARGOCD == 'true'` in steps. This pattern is used for all feature-gated steps in ci.yaml.
