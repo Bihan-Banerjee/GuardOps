@@ -44,7 +44,8 @@ $script:WebhookImageReady = $false
 
 # -- Configuration -------------------------------------------------------------
 $Region       = "ap-south-1"
-$RepoRoot     = "D:\EXTRA\GuardOps"
+# Repo root = parent of the scripts/ directory this file lives in.
+$RepoRoot     = Split-Path -Parent $PSScriptRoot
 $TerraformDir = "$RepoRoot\infra\terraform"
 $ClusterName  = "guardops-prod-cluster"
 $TfVarsFile   = "$TerraformDir\terraform.tfvars"
@@ -542,14 +543,12 @@ function Repair-SubnetClusterTags {
     # can auto-discover them for load balancer provisioning.
     #
     # WHY THIS IS NEEDED:
-    #   The VPC Terraform module builds the tag key as
-    #   "kubernetes.io/cluster/${project_name}-${environment}" = "guardops-prod"
-    #   but the cluster is named "guardops-prod-cluster". The ALB controller looks
-    #   for "kubernetes.io/cluster/guardops-prod-cluster" and rejects subnets
-    #   tagged for a different cluster name.
-    #
-    #   Until the Terraform VPC module is fixed (change the tag to include -cluster),
-    #   this function runs on every startup as a safety net. It is idempotent.
+    #   The VPC Terraform module already tags subnets with
+    #   "kubernetes.io/cluster/${name_prefix}-cluster" = "shared", which matches
+    #   the EKS cluster name "guardops-prod-cluster". This function is a defensive
+    #   safety net for clusters created before that tag was corrected, or when a
+    #   stale "guardops-prod" tag (without the -cluster suffix) lingers in a subnet
+    #   from older state. It is idempotent and a no-op when tags are already right.
     Write-Info "Repairing subnet cluster tags for ALB auto-discovery..."
 
     $vpcId = $null

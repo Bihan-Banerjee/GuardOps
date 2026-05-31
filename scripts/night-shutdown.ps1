@@ -32,7 +32,8 @@
 $ErrorActionPreference = "Stop"
 
 $Region       = "ap-south-1"
-$RepoRoot     = "D:\EXTRA\GuardOps"
+# Repo root = parent of the scripts/ directory this file lives in.
+$RepoRoot     = Split-Path -Parent $PSScriptRoot
 $TerraformDir = "$RepoRoot\infra\terraform"
 $TfVarsFile   = "$TerraformDir\terraform.tfvars"
 
@@ -161,7 +162,8 @@ Write-ShutdownStep "2" "8" "Uninstall Helm releases"
 $HelmReleases = @(
     # App workloads first
     @{ Name = "guardops-app";                Namespace = "default"      },
-    @{ Name = "guardops-app-staging";                Namespace = "staging"      },
+    # NOTE: staging releases (guardops-app-staging and any blue/green slot
+    # releases) are uninstalled dynamically below — see the staging sweep.
     # Observability stack
     @{ Name = "kube-prometheus-stack";       Namespace = "monitoring"   },
     @{ Name = "loki";                        Namespace = "monitoring"   },
@@ -176,6 +178,23 @@ $HelmReleases = @(
 )
 
 if ($clusterOk) {
+    # Blue-green deploys create extra slot releases in the staging namespace
+    # (guardops-app-staging-blue / -green) that aren't in the static list above.
+    # Enumerate and uninstall every release in 'staging' first so no app
+    # workload is left holding PVCs/ENIs when terraform destroy runs.
+    $stagingReleases = @()
+    try { $stagingReleases = helm list -n staging -q 2>$null } catch { }
+    foreach ($rel in $stagingReleases) {
+        if ([string]::IsNullOrWhiteSpace($rel)) { continue }
+        Write-Host "    Uninstalling $rel -n staging ..." -ForegroundColor Gray
+        try {
+            helm uninstall $rel -n staging --timeout 120s 2>$null | Out-Null
+            Write-Host "    OK  $rel uninstalled" -ForegroundColor Green
+        } catch {
+            Write-Host "    >>  $rel uninstall had errors -- continuing" -ForegroundColor Yellow
+        }
+    }
+
     foreach ($Release in $HelmReleases) {
         $releaseKey = "$($Release.Name) -n $($Release.Namespace)"
         $exists = $null

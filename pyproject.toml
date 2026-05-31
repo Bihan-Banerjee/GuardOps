@@ -44,7 +44,7 @@ dev = [
 Homepage   = "https://github.com/Bihan-Banerjee/GuardOps"
 Repository = "https://github.com/Bihan-Banerjee/GuardOps"
 "Bug Tracker" = "https://github.com/Bihan-Banerjee/GuardOps/issues"
-Changelog  = "https://github.com/Bihan-Banerjee/GuardOps/blob/main/CHANGELOG.md"
+Changelog  = "https://github.com/Bihan-Banerjee/GuardOps/blob/main/changelog.md"
 
 [project.scripts]
 guardops = "cli.main:cli"

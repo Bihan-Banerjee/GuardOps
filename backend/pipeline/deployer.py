@@ -167,7 +167,7 @@ def deploy_helm(
         "--namespace", namespace,
         "--create-namespace",   # create namespace if it doesn't exist
         "--atomic",             # auto-rollback on failure
-        "--timeout", "3m",      # wait up to 3 minutes for rollout
+        "--timeout", "5m",      # wait up to 5 minutes for rollout (matches CI)
         "--set", f"app.name={project_name}",
         "--set", f"image.repository={image_repo}",
         "--set", f"image.tag={image_tag}",

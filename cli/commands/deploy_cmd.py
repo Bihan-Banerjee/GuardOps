@@ -151,7 +151,9 @@ def deploy_command(env, slot, use_gitops, gitops_branch,
     project_name = env_config.get("project", {}).get("name", "guardops-app")
     namespace    = resolve_namespace(config, env)
 
-    replica_count = replicas or (2 if env == "prod" else 1)
+    # Explicit None check so `--replicas 0` (scale to zero) is honoured
+    # rather than falling through to the env default.
+    replica_count = replicas if replicas is not None else (2 if env == "prod" else 1)
 
     # ── Git SHA as image tag ─────────────────────────────────────────────────
     from cli.utils.system import get_command_output

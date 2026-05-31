@@ -21,6 +21,16 @@ image:
   pullPolicy: Never
 
 # ---------------------------------------------------------------------------
+# Pod security context
+# ---------------------------------------------------------------------------
+# UID/GID must match the non-root user baked into the image.
+# test-project/Dockerfile creates "appuser" with a fixed UID of 10001.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  fsGroup: 10001
+
+# ---------------------------------------------------------------------------
 # Deployment
 # ---------------------------------------------------------------------------
 replicaCount: 1
@@ -63,7 +73,10 @@ service:
 # ---------------------------------------------------------------------------
 ingress:
   enabled: true
-  className: alb
+  # Local k3d uses the nginx ingress controller (see scripts/setup-local.sh).
+  # Staging/prod override this to "alb" in their values-<env>.yaml for the
+  # AWS Load Balancer Controller on EKS.
+  className: nginx
   annotations: {}
   host: test-app.local
   tls: false
