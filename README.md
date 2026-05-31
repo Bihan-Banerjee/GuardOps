@@ -43,7 +43,7 @@ Phase 10 adds GitOps: after the Helm deploy, `--gitops` writes `values-override-
 
 ---
 
-## Current Status — v1.0.0
+## Current Status — v0.10.0
 
 | Phase | Version | Status | What was built |
 |-------|---------|--------|----------------|
