@@ -6,10 +6,28 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "guardops-app.labels" . | nindent 4 }}
-  {{- with .Values.ingress.annotations }}
   annotations:
+    {{- /*
+      Phase 10: cert-manager annotation injected automatically when
+      ingress.certManagerClusterIssuer is set in values-<env>.yaml.
+
+      This avoids requiring callers to know the exact annotation key —
+      they just set `certManagerClusterIssuer: letsencrypt-prod` in
+      their values file and cert-manager is wired up correctly.
+
+      The annotation is also addable via ingress.annotations for any
+      other cert-manager options (e.g. cert-manager.io/common-name).
+    */}}
+    {{- if .Values.ingress.certManagerClusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.certManagerClusterIssuer | quote }}
+    {{- end }}
+    {{- if .Values.ingress.tls }}
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
     {{- toYaml . | nindent 4 }}
-  {{- end }}
+    {{- end }}
 spec:
   {{- if .Values.ingress.className }}
   ingressClassName: {{ .Values.ingress.className }}

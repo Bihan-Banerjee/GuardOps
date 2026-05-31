@@ -1,0 +1,66 @@
+# k8s/argocd/project.yaml
+#
+# Phase 10: GuardOps ArgoCD AppProject
+#
+# The AppProject is a least-privilege scope that controls what ArgoCD Applications
+# in the "guardops" project are allowed to do:
+#
+#   sourceRepos:   Only our own GitHub repo can be a source.
+#                  Prevents a misconfigured Application from pulling from an
+#                  arbitrary repo and deploying untrusted code.
+#
+#   destinations:  ArgoCD can only deploy into "default" and "staging" namespaces
+#                  on the local cluster. It cannot touch other namespaces (monitoring,
+#                  argocd, kube-system) or remote clusters.
+#
+#   clusterResourceWhitelist:
+#                  Namespaces can be created at the cluster level (needed for
+#                  CreateNamespace=true sync option). All other cluster-scoped
+#                  resources (ClusterRoles, CRDs etc.) are blocked.
+#
+#   namespaceResourceWhitelist:
+#                  All resource types are allowed within the scoped namespaces.
+#                  This is intentionally broad — the namespace scope itself is
+#                  the security boundary.
+#
+# This manifest is equivalent to the kubernetes_manifest.argocd_project resource
+# in infra/terraform/modules/argocd/main.tf. Use this file for:
+#   - Manual bootstrapping if Terraform is unavailable
+#   - CI-based ArgoCD bootstrap (argocd-autopilot pattern)
+#   - Reference when debugging ArgoCD permission errors
+#
+# Apply:
+#   kubectl apply -f k8s/argocd/project.yaml
+# Verify:
+#   kubectl get appproject guardops -n argocd
+#   argocd proj get guardops
+
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: guardops
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: guardops
+    guardops.io/phase: "10"
+spec:
+  description: "GuardOps application project — scopes deployable namespaces and source repos"
+
+  sourceRepos:
+    - https://github.com/Bihan-Banerjee/GuardOps
+
+  destinations:
+    - namespace: default
+      server: https://kubernetes.default.svc
+    - namespace: staging
+      server: https://kubernetes.default.svc
+
+  # Allow ArgoCD to create Namespaces at the cluster level
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+
+  # Allow all resource types within the scoped namespaces
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"

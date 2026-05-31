@@ -39,7 +39,7 @@ RUN pip install --upgrade pip==25.3 && \
     pip cache purge
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
-FROM python:3.11-slim AS runtime
+FROM python:3.11-slim-bookworm AS runtime
 
 WORKDIR /app
 

@@ -1,0 +1,80 @@
+# k8s/argocd/app-staging.yaml
+#
+# Phase 10: ArgoCD Application — staging
+#
+# Manages the guardops-app-staging Helm release in the staging namespace.
+#
+# SYNC STRATEGY: auto-sync ENABLED (prune + selfHeal)
+#   Every commit to main that modifies values-override-staging.yaml is
+#   automatically applied to the staging namespace within ~3 minutes (ArgoCD's
+#   default polling interval). No explicit sync trigger needed for staging.
+#
+#   prune=true:    Resources deleted from Git are also deleted in the cluster.
+#   selfHeal=true: Manual kubectl changes are reverted to match Git state.
+#                  This keeps staging reliably reproducible — "works on my staging"
+#                  means the same thing for every developer.
+#
+# VALUES OVERLAY STACK:
+#   values.yaml                   — base defaults
+#   values-staging.yaml           — staging overrides (TLS for staging.guardops.dev,
+#                                   replicas=1, ZAP disabled, staging image prefix)
+#   values-override-staging.yaml  — auto-generated image tag (committed by CI)
+#
+# Apply (standalone):
+#   kubectl apply -f k8s/argocd/project.yaml
+#   kubectl apply -f k8s/argocd/app-staging.yaml
+# Force sync (skipping auto-sync wait):
+#   argocd app sync guardops-app-staging
+# Check:
+#   argocd app get guardops-app-staging
+#   argocd app history guardops-app-staging
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: guardops-app-staging
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: guardops
+    guardops.io/env: staging
+    guardops.io/phase: "10"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: guardops
+
+  source:
+    repoURL: https://github.com/Bihan-Banerjee/GuardOps
+    targetRevision: HEAD
+    path: k8s/helm/guardops-app
+    helm:
+      valueFiles:
+        - values.yaml
+        - values-staging.yaml
+        - values-override-staging.yaml
+      releaseName: guardops-app-staging
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: staging
+
+  syncPolicy:
+    automated:
+      prune: true      # delete resources removed from Git
+      selfHeal: true   # revert manual cluster changes to match Git
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - ServerSideApply=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 2m
+
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/template/spec/containers/0/image

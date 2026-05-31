@@ -63,7 +63,7 @@ service:
 # ---------------------------------------------------------------------------
 ingress:
   enabled: true
-  className: nginx
+  className: alb
   annotations: {}
   host: test-app.local
   tls: false

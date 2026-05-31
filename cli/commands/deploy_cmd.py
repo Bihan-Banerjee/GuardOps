@@ -1,56 +1,39 @@
 """
 cli/commands/deploy_cmd.py
 
-`guardops deploy` command — Phase 9 version.
+`guardops deploy` command — Phase 10 version.
 
 Flow:
   Step 1: Docker build
   Step 2: Security scans (semgrep, bandit, trivy-fs, trivy image, sonarqube)
           -> blocks if HIGH+ findings unless --skip-scan
   Step 3: ECR push (only when --env prod or --env staging)
-  Step 4: Helm deploy (all envs)
+  Step 4: Helm deploy  AND/OR  GitOps override commit (controlled by --gitops flag)
   Step 5: DAST — OWASP ZAP baseline scan (prod only)
           -> auto-rollback if CRITICAL findings detected
+
+Phase 10 changes vs Phase 9:
+  - New flag: --gitops (default False)
+      When set, Step 4 additionally:
+        a) writes values-override-<env>.yaml with the new image tag
+        b) git-commits the override file with [skip ci] message
+        c) pushes to origin/<branch> so ArgoCD picks it up
+        d) triggers an explicit ArgoCD sync via the REST API (prod only —
+           staging has auto-sync enabled so no explicit trigger needed)
+      The direct Helm upgrade still runs alongside the GitOps push so
+      the cluster reflects the new image immediately, not after ArgoCD's
+      polling interval. ArgoCD then reconciles and takes over ownership.
+  - New flag: --gitops-branch (default "main") — branch to commit the override to
+  - New import: gitops_writer (write_image_override, commit_and_push,
+                               trigger_argocd_sync)
+  - New imports from config: get_argocd_url, get_argocd_app_name,
+                             get_argocd_token_env_var, resolve_domain
 
 Phase 9 changes vs Phase 8:
   - --env now accepts "local" | "staging" | "prod" (was "local" | "prod")
   - New flag: --slot [blue|green] — activates blue-green deploy mode
-      guardops deploy --env staging --slot blue   # deploy blue slot
-      guardops deploy --env staging --slot green  # deploy green slot
   - Environment-specific config resolution via get_env_config() / resolve_*()
-      - staging namespace auto-resolved to "staging"
-      - image tags prefixed: staging-<sha> vs <sha>
-      - DAST auto-skipped for staging (no stable URL)
-  - Helm release name includes env suffix + slot suffix when applicable:
-      local:           guardops-app
-      staging:         guardops-app-staging
-      staging + blue:  guardops-app-staging-blue
-      prod:            guardops-app-prod (kept separate from legacy "guardops-app" releases)
-  - Two new kwargs passed to deploy_helm():
-      release_name     — explicit release name (previously derived inside deployer)
-      extra_set_values — dict of --set values for Helm (used for blueGreen.*)
-
-  DEPLOYER CHANGE REQUIRED (backend/pipeline/deployer.py):
-    deploy_helm() must accept two new keyword arguments:
-
-      def deploy_helm(
-          project_name: str,
-          image_ref: str,
-          namespace: str,
-          replicas: int,
-          env: str,
-          release_name: str | None = None,       # NEW — override release name
-          extra_set_values: dict | None = None,  # NEW — appended as --set k=v
-      ) -> DeployResult:
-
-    Inside deploy_helm, if release_name is provided use it instead of
-    _sanitize_release_name(project_name). For extra_set_values, append
-    a "--set", "key=value" pair for each entry before running helm upgrade.
-
-    Also update the values-file selection logic:
-      if env in ("staging", "prod"):
-          extra_flags += ["-f", f"values-{env}.yaml"]
-    (previously only checked env == "prod")
+  - Helm release name includes env suffix + slot suffix when applicable
 
 Environments:
   --env local    k3d cluster, imagePullPolicy=Never, values.yaml, no ECR push
@@ -58,6 +41,7 @@ Environments:
   --env prod     ECR push, default namespace, values-prod.yaml, full DAST
 """
 
+import os
 import sys
 import time
 import click
@@ -71,6 +55,10 @@ from cli.utils.config import (
     resolve_namespace,
     resolve_image_tag,
     resolve_helm_release_name,
+    get_argocd_url,
+    get_argocd_app_name,
+    get_argocd_token_env_var,
+    resolve_domain,
 )
 from backend.pipeline.builder import build_image
 from backend.pipeline.deployer import (
@@ -80,6 +68,12 @@ from backend.pipeline.deployer import (
     _sanitize_release_name,
 )
 from backend.pipeline.pusher import push_to_ecr
+# ── Phase 10: GitOps writer ───────────────────────────────────────────────────
+from backend.pipeline.gitops_writer import (
+    write_image_override,
+    commit_and_push,
+    trigger_argocd_sync,
+)
 from backend.security.semgrep_runner import run_semgrep
 from backend.security.bandit_runner import run_bandit
 from backend.security.trivy_runner import run_trivy_image, run_trivy_filesystem
@@ -99,6 +93,15 @@ from backend.security.zap_runner import run_zap_baseline, ZapScanResult
                   "Helm release (e.g. guardops-app-staging-blue). Use "
                   "'guardops switch --slot <slot>' to cut traffic over."
               ))
+@click.option("--gitops", "use_gitops", is_flag=True, default=False,
+              help=(
+                  "GitOps mode: after the direct Helm deploy, write values-override-<env>.yaml, "
+                  "commit it, push to origin, and trigger an ArgoCD sync. "
+                  "Requires argocd.url in .guardops.yaml and ARGOCD_TOKEN env var. "
+                  "Use with --env staging or --env prod only."
+              ))
+@click.option("--gitops-branch", default="main", show_default=True,
+              help="Git branch to commit the image override to (default: main).")
 @click.option("--skip-scan", is_flag=True,
               help="Skip security scans (development only — never use in prod)")
 @click.option("--skip-build", is_flag=True,
@@ -115,34 +118,40 @@ from backend.security.zap_runner import run_zap_baseline, ZapScanResult
               help="Minimum severity that blocks deployment (pre-deploy scans)")
 @click.option("--replicas", default=None, type=int,
               help="Number of pod replicas (overrides values.yaml)")
-def deploy_command(env, slot, skip_scan, skip_build, skip_sonarqube,
+def deploy_command(env, slot, use_gitops, gitops_branch,
+                   skip_scan, skip_build, skip_sonarqube,
                    skip_trivy, skip_dast, fail_on, replicas):
     """
     Build, scan, and deploy the application.
 
     \b
     Examples:
-      guardops deploy                          # local k3d
-      guardops deploy --env staging            # staging namespace on EKS
-      guardops deploy --env prod               # production on EKS
-      guardops deploy --env staging --slot blue    # blue slot (blue-green)
-      guardops deploy --env staging --slot green   # green slot (blue-green)
-      guardops deploy --skip-scan              # dev only, skips all scans
-      guardops deploy --skip-dast              # dev only, skips ZAP
+      guardops deploy                            # local k3d
+      guardops deploy --env staging              # staging namespace on EKS
+      guardops deploy --env prod                 # production on EKS
+      guardops deploy --env prod --gitops        # GitOps mode: commit + ArgoCD sync
+      guardops deploy --env staging --slot blue  # blue slot (blue-green)
+      guardops deploy --env staging --slot green # green slot (blue-green)
+      guardops deploy --skip-scan                # dev only, skips all scans
+      guardops deploy --skip-dast                # dev only, skips ZAP
     """
     start_time = time.time()
     config = load_config()
 
+    # ── Validate --gitops is only used with cloud envs ────────────────────────
+    if use_gitops and env == "local":
+        error(
+            "--gitops is only supported for --env staging and --env prod. "
+            "Local k3d deployments use direct Helm — no GitOps commit needed."
+        )
+        sys.exit(1)
+
     # ── Resolve env-aware config ─────────────────────────────────────────────
-    # get_env_config deep-merges the environment block on top of the base config
-    # so that staging/prod overrides (namespace, ZAP flag, etc.) take effect
-    # transparently without changing any downstream code.
     env_config = get_env_config(config, env)
 
     project_name = env_config.get("project", {}).get("name", "guardops-app")
     namespace    = resolve_namespace(config, env)
 
-    # Replica count: CLI flag > prod default (2) > 1
     replica_count = replicas or (2 if env == "prod" else 1)
 
     # ── Git SHA as image tag ─────────────────────────────────────────────────
@@ -150,18 +159,12 @@ def deploy_command(env, slot, skip_scan, skip_build, skip_sonarqube,
     tag_result = get_command_output(["git", "rev-parse", "--short", "HEAD"])
     sha_tag    = tag_result.strip() if tag_result.strip() else "latest"
 
-    # Environment-prefixed tag: "staging-abc1234" for staging, "abc1234" for prod/local.
     image_tag = resolve_image_tag(sha_tag, env, config)
 
     # ── Helm release name ────────────────────────────────────────────────────
-    # Includes env suffix for staging and slot suffix for blue-green.
-    # Examples:  guardops-app  /  guardops-app-staging  /  guardops-app-staging-blue
     helm_release_name = resolve_helm_release_name(project_name, env, config, slot)
 
     # ── Extra Helm --set values for blue-green ────────────────────────────────
-    # Passed through to deploy_helm() so the Helm chart can add the slot label
-    # to pods and enable the blueGreen selector in the Deployment template.
-    # deploy_helm() appends these as --set blueGreen.enabled=true --set blueGreen.slot=blue
     helm_extra_values: dict[str, str] = {}
     if slot:
         helm_extra_values["blueGreen.enabled"] = "true"
@@ -178,6 +181,8 @@ def deploy_command(env, slot, skip_scan, skip_build, skip_sonarqube,
     ]
     if slot:
         header_parts.append(f"slot=[cyan]{slot}[/cyan]")
+    if use_gitops:
+        header_parts.append("[cyan]gitops=on[/cyan]")
     console.rule(" | ".join(header_parts))
 
     # ── Step 1: Docker Build ─────────────────────────────────────────────────
@@ -213,10 +218,8 @@ def deploy_command(env, slot, skip_scan, skip_build, skip_sonarqube,
         scan_results = []
         source_path = env_config.get("docker", {}).get("context", ".")
 
-        # Use the env-resolved fail_on_severity (staging and prod both default to HIGH).
-        effective_fail_on = fail_on  # CLI flag always wins
+        effective_fail_on = fail_on
         if not fail_on or fail_on == "HIGH":
-            # No explicit CLI override — read from env config.
             effective_fail_on = env_config.get("security", {}).get("fail_on_severity", "HIGH")
 
         info("Running Semgrep...")
@@ -277,7 +280,7 @@ def deploy_command(env, slot, skip_scan, skip_build, skip_sonarqube,
             sys.exit(1)
         success("Image imported into k3d")
 
-    # ── Step 4: Helm Deploy ──────────────────────────────────────────────────
+    # ── Step 4: Helm Deploy  +  GitOps Override (Phase 10) ───────────────────
     console.rule("[bold]Step 4 / 5 — Helm Deploy[/bold]")
 
     if slot:
@@ -290,10 +293,6 @@ def deploy_command(env, slot, skip_scan, skip_build, skip_sonarqube,
             f"to cut traffic to this slot."
         )
 
-    # NOTE: deploy_helm() in backend/pipeline/deployer.py must accept:
-    #   release_name: str | None = None       — uses this instead of sanitizing project_name
-    #   extra_set_values: dict | None = None  — appended as --set key=val to helm upgrade
-    # See module docstring at the top of this file for the full signature change.
     deploy_result = deploy_helm(
         project_name=project_name,
         image_ref=full_image_ref,
@@ -313,6 +312,70 @@ def deploy_command(env, slot, skip_scan, skip_build, skip_sonarqube,
         f"Deployed [cyan]{deploy_result.helm_release}[/cyan] "
         f"revision [cyan]{deploy_result.helm_revision}[/cyan]"
     )
+
+    # ── Phase 10: GitOps override commit ─────────────────────────────────────
+    # Runs AFTER the direct Helm deploy succeeds. This means the cluster
+    # already has the new image; the commit gives ArgoCD a source-of-truth
+    # record and lets it take over future drift reconciliation.
+    #
+    # Skipped for local (no ArgoCD) and when --gitops is not set.
+    # Skipped for blue-green slot deploys — the override file tracks the
+    # current "main" image, not slot images which are managed separately.
+    gitops_result = None
+    if use_gitops and env in ("staging", "prod") and not slot:
+        info("Writing GitOps image override...")
+        try:
+            override_path = write_image_override(env=env, image_ref=full_image_ref)
+            gitops_result = commit_and_push(
+                override_path=override_path,
+                env=env,
+                image_tag=image_tag,
+                branch=gitops_branch,
+            )
+        except Exception as exc:
+            # GitOps commit failure is a warning, not a hard failure —
+            # the Helm deploy already succeeded so the app is running.
+            warn(
+                f"GitOps override commit failed: {exc}. "
+                "The Helm deploy succeeded but ArgoCD will not auto-sync this release. "
+                "Commit values-override-{env}.yaml manually to resolve."
+            )
+            gitops_result = None
+        else:
+            if gitops_result and not gitops_result.success:
+                warn(
+                    f"GitOps commit failed: {gitops_result.error_message}. "
+                    "Helm deploy succeeded — cluster is running the new image."
+                )
+
+        # ── Trigger ArgoCD sync for prod (staging uses auto-sync) ────────────
+        # Staging ArgoCD Application has automated.prune=true and selfHeal=true,
+        # so the commit push alone is sufficient for staging.
+        # Prod has auto-sync disabled — CI must trigger explicitly.
+        if gitops_result and gitops_result.success and env == "prod":
+            argocd_url = get_argocd_url(config)
+            token_var  = get_argocd_token_env_var(config)
+            token      = os.environ.get(token_var, "")
+            app_name   = get_argocd_app_name(config, env)
+
+            if argocd_url and token:
+                info(f"Triggering ArgoCD sync for [cyan]{app_name}[/cyan]...")
+                sync_trigger = trigger_argocd_sync(
+                    app_name=app_name,
+                    argocd_url=argocd_url,
+                    token=token,
+                )
+                if not sync_trigger.success:
+                    warn(
+                        f"ArgoCD sync trigger failed: {sync_trigger.error_message}. "
+                        "Run [bold]guardops sync-status --env prod --wait[/bold] manually."
+                    )
+            else:
+                info(
+                    "ArgoCD URL or token not configured — skipping explicit sync trigger. "
+                    "Set [cyan]argocd.url[/cyan] in .guardops.yaml and export "
+                    f"[cyan]{token_var}[/cyan] to enable."
+                )
 
     # ── Step 5: DAST — OWASP ZAP ─────────────────────────────────────────────
     console.rule("[bold]Step 5 / 5 — DAST (OWASP ZAP)[/bold]")
@@ -352,6 +415,8 @@ def deploy_command(env, slot, skip_scan, skip_build, skip_sonarqube,
     ]
     if slot:
         panel_lines.insert(3, f"Slot:          {slot}")
+    if gitops_result and gitops_result.success and not gitops_result.skipped:
+        panel_lines.append(f"GitOps commit: {gitops_result.commit_sha}")
 
     result_panel(title="Deployment complete", lines=panel_lines)
 
@@ -361,6 +426,11 @@ def deploy_command(env, slot, skip_scan, skip_build, skip_sonarqube,
         info(
             f"To activate this slot: "
             f"[bold green]guardops switch --slot {slot} --env {env}[/bold green]"
+        )
+    if use_gitops and env in ("staging", "prod"):
+        info(
+            f"To verify ArgoCD reconciliation: "
+            f"[bold green]guardops sync-status --env {env} --wait[/bold green]"
         )
     if env == "local":
         info(
@@ -389,15 +459,11 @@ def _run_dast_step(
     security_cfg = config.get("security", {})
     zap_enabled  = security_cfg.get("tools", {}).get("owasp_zap", False)
 
-    # ── Skip paths ───────────────────────────────────────────────────────────
-
     if skip_dast:
         warn("Skipping DAST (--skip-dast). NEVER use this in production.")
         return ZapScanResult(skipped=True, skip_reason="--skip-dast flag")
 
     if not zap_enabled:
-        # For staging this is the normal path — owasp_zap is False in values-staging.yaml.
-        # The message is different to avoid confusion for staging operators.
         if env == "staging":
             info("DAST skipped for staging environment (expected — ZAP runs in prod only).")
         else:
@@ -420,7 +486,6 @@ def _run_dast_step(
             skip_reason=f"DAST only runs in prod environment (got env={env})",
         )
 
-    # ── Determine target URL ─────────────────────────────────────────────────
     target_url = (
         security_cfg.get("zap_target_url", "").strip()
         or service_url
@@ -446,7 +511,6 @@ def _run_dast_step(
         output_dir=report_dir,
     )
 
-    # ── Handle scan failure ──────────────────────────────────────────────────
     if not zap_result.success and not zap_result.skipped:
         warn(f"ZAP scan failed: {zap_result.error_message}")
         warn(
@@ -455,11 +519,9 @@ def _run_dast_step(
         )
         return zap_result
 
-    # ── Print DAST summary ───────────────────────────────────────────────────
     if not zap_result.skipped:
         _print_dast_summary(zap_result)
 
-    # ── Auto-rollback on CRITICAL ────────────────────────────────────────────
     if zap_result.blocked:
         counts = zap_result.severity_counts
         error(
@@ -469,7 +531,6 @@ def _run_dast_step(
         console.print(f"  [dim]ZAP report: {zap_result.html_report_path}[/dim]")
 
         info("Rolling back Helm release...")
-        # Use the explicit release name so rollback targets the correct slot release.
         release_name = helm_release_name or _sanitize_release_name(project_name)
         rollback_result = rollback_helm(
             release_name=release_name,

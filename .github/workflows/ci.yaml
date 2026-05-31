@@ -1,14 +1,15 @@
 # .github/workflows/ci.yaml
 #
-# GuardOps CI/CD Pipeline — Phase 7
+# GuardOps CI/CD Pipeline — Phase 10
 #
 # Jobs:
 #   1. build-test      — lint, type-check, unit tests, coverage
-#   2. sast            — Semgrep + Bandit source code scanning
+#   2. sast            — Semgrep + Bandit + SonarQube source code scanning
 #   3. container-scan  — Docker build + Trivy image scan + ECR push
-#   4. deploy          — Helm upgrade to EKS + OWASP ZAP DAST
+#   4. deploy          — Helm upgrade to EKS + OWASP ZAP DAST + GitOps override commit (Phase 10)
 #   5. runtime-gate    — Falco alert check via Loki (Phase 7)
 #   6. upload-reports  — Push scan reports to S3 (always runs if AWS role exists)
+#   7. sync-gate       — ArgoCD Synced + Healthy confirmation (Phase 10)
 #
 # Security gates:
 #   Job 2 blocks on HIGH+ SAST findings
@@ -16,6 +17,21 @@
 #   Job 4 only runs if jobs 1-3 all pass AND branch is main AND EKS exists
 #   Job 5 only runs if deploy passed AND HAS_FALCO_ENABLED is true
 #   Job 6 always runs so reports are saved even when pipeline fails
+#   Job 7 only runs if deploy passed AND ARGOCD_TOKEN secret is set (Phase 10)
+#
+# Phase 10 changes:
+#   Job 4 (deploy) — two new steps at the end of the job:
+#     "Write GitOps image override + trigger ArgoCD (prod)" — commits
+#     values-override-prod.yaml and triggers ArgoCD sync.
+#     "Write GitOps image override (staging)" — commits
+#     values-override-staging.yaml so ArgoCD auto-sync picks it up.
+#     Both steps gated by HAS_ARGOCD job-level env var (hoisted from
+#     ARGOCD_TOKEN secret — secrets context not allowed in step if:).
+#   Job 7 (sync-gate) — NEW — polls guardops sync-status --env prod --wait
+#     until ArgoCD reports Synced + Healthy or times out at 300s.
+#     Skipped gracefully if ARGOCD_TOKEN is not set.
+#   deploy job permissions — added contents: write for GitOps push.
+#   deploy job checkout — added token + fetch-depth: 0 for GitOps push.
 #
 # Phase 7 change — Falco runtime gate added:
 #   After Helm deploy, port-forwards Loki and queries for CRITICAL Falco
@@ -32,7 +48,10 @@
 #   AWS_ACCOUNT_ID          — your 12-digit account ID
 #   GUARDOPS_S3_BUCKET      — bucket name from `terraform output s3_reports_bucket_name`
 #   HAS_ZAP_ENABLED         — set to "true" to enable Phase 6 DAST steps
-#   HAS_FALCO_ENABLED       — set to "true" to enable Phase 7 runtime gate (NEW)
+#   HAS_FALCO_ENABLED       — set to "true" to enable Phase 7 runtime gate
+#   ARGOCD_TOKEN            — ArgoCD API token for GitOps steps (Phase 10)
+#                             Generate: argocd account generate-token --account admin
+#                             Store:    gh secret set ARGOCD_TOKEN --body "<token>"
 #   SEMGREP_APP_TOKEN       — optional, for Semgrep cloud dashboard
 #   SONAR_TOKEN             — optional, for SonarQube
 #   SONAR_HOST_URL          — optional, for SonarQube
@@ -470,10 +489,14 @@ jobs:
 
     permissions:
       id-token: write
-      contents: read
+      contents: write   # Phase 10: needed so the GitOps override commit can push
 
     env:
       HAS_ZAP_ENABLED: ${{ secrets.HAS_ZAP_ENABLED }}
+      # Phase 10: hoist ARGOCD_TOKEN existence to job-level env so step-level
+      # if: conditions can reference it. secrets context is not allowed directly
+      # inside step if: expressions — only job-level env: and job-level if: work.
+      HAS_ARGOCD: ${{ secrets.ARGOCD_TOKEN != '' && 'true' || 'false' }}
 
     if: |
       github.ref == 'refs/heads/main' &&
@@ -483,7 +506,14 @@ jobs:
     environment: production
 
     steps:
+      # Phase 10: token + fetch-depth added.
+      # token: GITHUB_TOKEN gives this job push access so the GitOps override
+      # commit step can push values-override-prod.yaml back to origin/main.
+      # fetch-depth: 0 gives the full git history so git rev-parse works.
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -502,6 +532,19 @@ jobs:
         uses: azure/setup-helm@v4
         with:
           version: "3.17.0"
+
+      # Phase 10: GuardOps CLI install needed for the GitOps steps below.
+      # Skipped in earlier jobs because they use direct tool invocations.
+      # This job now uses `guardops deploy --gitops` to write and push the
+      # values-override-<env>.yaml files.
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install GuardOps CLI
+        run: pip install -e ".[dev]" --quiet
 
       - name: Helm lint — validate chart before deploying
         run: |
@@ -660,6 +703,48 @@ jobs:
           helm history guardops-app --namespace "$K8S_NS"
           echo "::error::Deployment rolled back due to CRITICAL DAST findings."
           exit 1
+
+      # ── Phase 10: GitOps image override commit ────────────────────────────
+      #
+      # These two steps run AFTER the Helm deploy succeeds (and after DAST
+      # passes). They write values-override-<env>.yaml with the new image tag,
+      # commit it with [skip ci] so this push does not re-trigger the pipeline,
+      # and push to origin/main.
+      #
+      # For prod: also triggers an explicit ArgoCD sync via the REST API,
+      # since prod has auto-sync disabled in the ArgoCD Application spec.
+      # For staging: the commit push is sufficient — staging has auto-sync
+      # enabled and will reconcile within ~3 minutes on its own.
+      #
+      # Both steps are gated by HAS_ARGOCD (hoisted from ARGOCD_TOKEN secret).
+      # If ARGOCD_TOKEN is not set, these steps are skipped and the pipeline
+      # passes normally — GitOps is additive, not required.
+
+      - name: Write GitOps image override + trigger ArgoCD (prod)
+        if: env.HAS_ARGOCD == 'true'
+        env:
+          ARGOCD_TOKEN: ${{ secrets.ARGOCD_TOKEN }}
+        run: |
+          guardops deploy \
+            --env prod \
+            --skip-scan \
+            --skip-build \
+            --skip-dast \
+            --gitops \
+            --gitops-branch main
+
+      - name: Write GitOps image override (staging)
+        if: env.HAS_ARGOCD == 'true'
+        env:
+          ARGOCD_TOKEN: ${{ secrets.ARGOCD_TOKEN }}
+        run: |
+          guardops deploy \
+            --env staging \
+            --skip-scan \
+            --skip-build \
+            --skip-dast \
+            --gitops \
+            --gitops-branch main
 
   # ── Job 5: Runtime Security Gate (Phase 7) ──────────────────────────────────
   #
@@ -823,3 +908,78 @@ jobs:
           else
             echo "No reports found to upload — this is OK if earlier jobs were skipped"
           fi
+
+  # ── Job 7: ArgoCD Sync Gate (Phase 10) ───────────────────────────────────────
+  #
+  # Runs after the runtime-gate passes. Polls `guardops sync-status --env prod
+  # --wait` until ArgoCD confirms the prod Application is Synced + Healthy,
+  # or fails the pipeline if it doesn't reach that state within 300 seconds.
+  #
+  # WHY THIS JOB:
+  #   The GitOps override commit in Job 4 triggers ArgoCD to start reconciling,
+  #   but the push returns immediately without waiting for ArgoCD to finish.
+  #   This job is the confirmation gate — it blocks the pipeline green until
+  #   ArgoCD has actually applied the new image and pods are healthy.
+  #
+  # SKIP BEHAVIOUR:
+  #   If ARGOCD_TOKEN is not set, the job prints a skip notice and exits 0.
+  #   This means teams that haven't set up ArgoCD yet are not blocked — the
+  #   gate is opt-in via the secret, consistent with HAS_ZAP_ENABLED and
+  #   HAS_FALCO_ENABLED patterns in Jobs 4 and 5.
+  #
+  # The final "Print ArgoCD snapshot" step uses `if: always()` so the terminal
+  # ArgoCD state is printed even when the wait step times out — gives the
+  # operator something to look at without having to log into the ArgoCD UI.
+  sync-gate:
+    name: ArgoCD Sync Gate (prod)
+    runs-on: ubuntu-latest
+    needs: runtime-gate
+
+    permissions:
+      id-token: write
+      contents: read
+
+    # Hoist secret existence to job-level env — same pattern as HAS_ZAP_ENABLED
+    # and HAS_FALCO_ENABLED. secrets context not allowed in step-level if:.
+    env:
+      HAS_ARGOCD: ${{ secrets.ARGOCD_TOKEN != '' && 'true' || 'false' }}
+
+    if: |
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'push' &&
+      vars.HAS_EKS_CLUSTER == 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install GuardOps CLI
+        run: pip install -e ".[dev]" --quiet
+
+      - name: Wait for ArgoCD — Synced + Healthy (prod)
+        if: env.HAS_ARGOCD == 'true'
+        env:
+          ARGOCD_TOKEN: ${{ secrets.ARGOCD_TOKEN }}
+        run: |
+          guardops sync-status \
+            --env prod \
+            --wait \
+            --timeout 300
+
+      - name: Print ArgoCD snapshot (always, for CI log visibility)
+        if: always() && env.HAS_ARGOCD == 'true'
+        env:
+          ARGOCD_TOKEN: ${{ secrets.ARGOCD_TOKEN }}
+        run: guardops sync-status --env prod
+
+      - name: Sync gate skipped (ArgoCD not configured)
+        if: env.HAS_ARGOCD == 'false'
+        run: |
+          echo "Sync gate skipped — ARGOCD_TOKEN secret not set."
+          echo "To enable: gh secret set ARGOCD_TOKEN --body \"<token>\""
+          echo "Generate a token: argocd account generate-token --account admin"

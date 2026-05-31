@@ -1,0 +1,62 @@
+# k8s/tls/clusterissuer-letsencrypt-staging.yaml
+#
+# Phase 10: Let's Encrypt STAGING ClusterIssuer
+#
+# PURPOSE:
+#   Use this first when setting up cert-manager. The staging CA is NOT
+#   trusted by browsers (you will see a certificate warning) but it has
+#   much higher rate limits than prod — safe to iterate on without
+#   burning the 5 duplicate certificates/domain/week prod limit.
+#
+# WORKFLOW:
+#   1. Apply this file first:
+#        kubectl apply -f k8s/tls/clusterissuer-letsencrypt-staging.yaml
+#   2. Check it becomes Ready:
+#        kubectl describe clusterissuer letsencrypt-staging
+#        # Status.Conditions[0].Type should be "Ready", Status "True"
+#   3. Temporarily set values-prod.yaml ingress.annotations to use this issuer:
+#        cert-manager.io/cluster-issuer: "letsencrypt-staging"
+#   4. Deploy with guardops deploy --env prod — watch the Certificate resource:
+#        kubectl get certificate -n default -w
+#        kubectl describe certificate guardops-prod-tls -n default
+#   5. Once the Certificate reaches Ready=True (even with a staging cert),
+#      switch to letsencrypt-prod ClusterIssuer and redeploy.
+#
+# Apply:
+#   kubectl apply -f k8s/tls/clusterissuer-letsencrypt-staging.yaml
+# Check:
+#   kubectl describe clusterissuer letsencrypt-staging
+#   kubectl get clusterissuer
+
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+  labels:
+    app.kubernetes.io/managed-by: guardops
+    guardops.io/phase: "10"
+spec:
+  acme:
+    # Let's Encrypt STAGING directory — NOT trusted by browsers, safe for testing
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+
+    # Replace with your real email address.
+    # Let's Encrypt sends expiry notices and policy updates here.
+    email: bihanbanerjee26@gmail.com
+
+    # cert-manager stores the ACME account private key in this Secret.
+    # The Secret is created automatically — do not create it manually.
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
+
+    solvers:
+      # HTTP-01 challenge: cert-manager temporarily creates an Ingress that
+      # serves a token file at /.well-known/acme-challenge/<token>.
+      # Let's Encrypt fetches this URL to prove you control the domain.
+      # Requires the domain to be publicly reachable on port 80.
+      - http01:
+          ingress:
+            # Must match the ingressClassName in your Helm values.yaml.
+            # For EKS + nginx ingress controller: nginx
+            # For EKS + AWS ALB controller: alb
+            ingressClassName: alb
