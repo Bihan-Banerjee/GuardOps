@@ -46,31 +46,35 @@ resources:
     cpu: "500m"
 
 # ---------------------------------------------------------------------------
-# Ingress — prod domain with Let's Encrypt TLS
+# Ingress — prod domain with ACM TLS (terminated at the ALB)
 # ---------------------------------------------------------------------------
+# WHY ACM, not cert-manager:
+#   An AWS ALB terminates HTTPS itself and can ONLY use an AWS ACM certificate —
+#   it cannot read a Kubernetes Secret (that is an nginx-ingress pattern). So the
+#   TLS cert is a DNS-validated ACM cert (covers guardops.live + *.guardops.live),
+#   referenced by ARN below. Provision once with:
+#     aws acm request-certificate --domain-name guardops.live \
+#       --subject-alternative-names "*.guardops.live" --validation-method DNS \
+#       --region ap-south-1
+#   then add the returned validation CNAME to the Route53 zone and wait for
+#   Status=ISSUED. The ALB controller attaches the cert to the :443 listener.
 ingress:
   enabled: true
   className: alb
 
-  # Phase 10: cert-manager picks up this field via the ingress.yaml template.
-  # cert-manager creates a Certificate resource and stores the TLS cert+key in
-  # the Secret named by tlsSecret below.
-  certManagerClusterIssuer: letsencrypt-prod
-
   annotations:
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
     alb.ingress.kubernetes.io/ssl-redirect: "443"
+    # ACM certificate for guardops.live + *.guardops.live (ap-south-1).
+    alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:ap-south-1:236796665744:certificate/9068b1dc-6273-45ac-9076-051e1397e326"
 
   host: guardops.live
 
-  tls: true
-  # cert-manager writes the TLS cert into this Secret.
-  # If the Secret doesn't exist yet, cert-manager creates it after the
-  # ACME HTTP-01 challenge completes (usually < 60 seconds).
-  tlsSecret: guardops-prod-tls
+  # TLS is terminated at the ALB using the ACM cert above — no K8s TLS Secret.
+  tls: false
+  tlsSecret: ""
 
 # ---------------------------------------------------------------------------
 # Horizontal Pod Autoscaler
