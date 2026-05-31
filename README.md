@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/Bihan-Banerjee/GuardOps/actions/workflows/ci.yaml/badge.svg)](https://github.com/Bihan-Banerjee/GuardOps/actions)
 
-GuardOps wraps a complete secure delivery pipeline behind a single command. Given any application repo, it builds a Docker image, runs four security scanners in sequence, deploys to Kubernetes via Helm, runs a post-deploy DAST scan, exposes live metrics to Prometheus, queries runtime security alerts from Loki, and automatically quarantines compromised pods via Alertmanager webhooks — blocking the pipeline if HIGH or CRITICAL findings are detected at any stage.
+GuardOps wraps a complete secure delivery pipeline behind a single command. Given any application repo, it builds a Docker image, runs four security scanners in sequence, deploys to Kubernetes via Helm, runs a post-deploy DAST scan, exposes live metrics to Prometheus, queries runtime security alerts from Loki, automatically quarantines compromised pods via Alertmanager webhooks, serves the application on a real HTTPS domain via cert-manager + Let's Encrypt + Route53, and keeps the cluster state continuously reconciled with Git via ArgoCD — blocking the pipeline if HIGH or CRITICAL findings are detected at any stage.
 
 ```
 guardops deploy --env prod
@@ -34,9 +34,16 @@ guardops quarantine-status --env staging
 
 Shows pods currently isolated by the Phase 8 self-healing system — active NetworkPolicies, quarantined pod names, triggering Falco rule, and age. The `--env` flag scopes output to the correct namespace automatically. Use `--release <pod>` to manually lift a quarantine after investigation.
 
+```
+guardops deploy --env prod --gitops
+guardops sync-status --env prod --wait
+```
+
+Phase 10 adds GitOps: after the Helm deploy, `--gitops` writes `values-override-prod.yaml` with the new image tag, commits it with `[skip ci]`, pushes to origin, and triggers an ArgoCD sync. `guardops sync-status --wait` polls ArgoCD every 10s until Synced + Healthy — used as CI Job 7 gate after DAST passes.
+
 ---
 
-## Current Status — v0.9.0
+## Current Status — v1.0.0
 
 | Phase | Version | Status | What was built |
 |-------|---------|--------|----------------|
@@ -50,6 +57,7 @@ Shows pods currently isolated by the Phase 8 self-healing system — active Netw
 | 7 — Runtime Security | v0.7.0 | ✅ Done | Loki + Promtail log pipeline, Falco-format alert ingestion, `guardops runtime-status`, CI runtime gate |
 | 8 — Self-Healing | v0.8.0 | ✅ Done | Alertmanager webhook handler, automatic NetworkPolicy quarantine on CRITICAL Falco alert, `guardops quarantine-status`, Terraform alertmanager-webhook module |
 | 9 — Multi-Environment | v0.9.0 | ✅ Done | Staging + prod namespace separation, blue-green deploy strategy, `guardops switch --slot`, environment-scoped config helpers, `staging-<sha>` ECR tags, `--env` on quarantine-status |
+| 10 — Full Production | v0.10.0 | ✅ **Current** | Real domain(in progress) + TLS via cert-manager + Let's Encrypt + Route53, ArgoCD GitOps (override-file pattern), `guardops deploy --gitops`, `guardops sync-status` CLI, 7-job CI pipeline, automated morning-start.ps1 (OIDC repair, subnet tag repair, state identity repair, webhook image build, ALB DNS wiring), night-shutdown.ps1 (Ingress drain + ALB wait), production runbooks |
 
 ---
 
@@ -57,7 +65,9 @@ Shows pods currently isolated by the Phase 8 self-healing system — active Netw
 
 | Phase | Target | What it adds |
 |-------|--------|-------------|
-| 10 — Full Production | v1.0.0 | Real domain + TLS via cert-manager, ArgoCD GitOps, runbook documentation |
+| 11 — Supply Chain + Admission Control | v0.11.0 | SBOM + Cosign image signing + Kyverno policy enforcement |
+| 12 — Scan Database | v0.12.0 | Persistent vulnerability metadata store |
+| 13 — Dashboard | v1.11.0 | Web UI for pipeline status and findings |
 
 ---
 
@@ -67,7 +77,7 @@ Shows pods currently isolated by the Phase 8 self-healing system — active Netw
 Developer
     |
     v
-guardops deploy [--env local|staging|prod] [--slot blue|green]
+guardops deploy [--env local|staging|prod] [--slot blue|green] [--gitops]
     |
     +-- Step 1: Docker Build ──────────────────────────+
     |       Multi-stage build (builder + runtime)       |
@@ -98,12 +108,30 @@ guardops deploy [--env local|staging|prod] [--slot blue|green]
     |         label to pods + slot-specific release name|
     |       Automatic rollback on timeout or error      |
     |                                                   |
+    |   [--gitops only — Phase 10] ─────────────────── |
+    |       Write values-override-<env>.yaml            |
+    |         (image.repository + image.tag only)       |
+    |       git commit [skip ci] + push to origin/main  |
+    |       POST /api/v1/applications/<app>/sync        |
+    |         to ArgoCD REST API (prod only)            |
+    |       ArgoCD reconciles -> cluster == Git         |
+    |                                                   |
     +-- Step 5: DAST (Phase 6) ────────────────────────+
             OWASP ZAP baseline scan (passive)
             Target: live deployed application
             BLOCKED + auto-rollback if CRITICAL found
             Report written to security/reports/
             Skipped for local + staging (no stable URL)
+
+guardops sync-status --env prod [--wait] (Phase 10)
+    |
+    +-- GET /api/v1/applications/guardops-app-prod
+    |     (ArgoCD REST API, token from ARGOCD_TOKEN env)
+    +-- Snapshot mode: one poll, Rich table, exit 0 unless Degraded
+    +-- Wait mode (--wait): poll every 10s until Synced+Healthy
+    |     exit 0 on Healthy, exit 1 on Degraded/timeout
+    +-- Prints kubectl + argocd debug commands on failure
+    +-- Used as CI Job 7 gate after DAST passes
 
 guardops switch --slot green --env staging (Phase 9)
     |
@@ -195,6 +223,44 @@ POST /webhook status=resolved
 Pod released — network restored
 ```
 
+### TLS + GitOps Flow (Phase 10)
+
+```
+Internet
+    |
+    v
+Route53 (guardops.dev A alias -> ALB DNS)
+    |
+    v
+AWS Application Load Balancer
+    |
+    v
+NGINX Ingress Controller
+    |   cert-manager watches Ingress cert-manager.io/cluster-issuer annotation
+    |   Requests certificate from Let's Encrypt via HTTP-01 ACME challenge
+    |   Certificate stored in Secret guardops-prod-tls (auto-renewed < 30d expiry)
+    v
+guardops-app pods (HTTPS, port 443 terminated at Ingress)
+
+Git push to main
+    |
+    v
+CI Pipeline — 7 jobs:
+  Job 1-3: Build, SAST, Trivy, ECR push
+  Job 4:   Helm deploy (direct) + GitOps override commit + ArgoCD sync trigger
+  Job 5:   Runtime security gate (Falco/Loki)
+  Job 6:   ZAP DAST gate
+  Job 7:   ArgoCD sync gate (Synced+Healthy confirmation) [Phase 10 NEW]
+    |
+    v
+ArgoCD (argocd namespace)
+    +-- Watches GitHub repo for commits to values-override-*.yaml
+    +-- Staging: auto-sync (prune + selfHeal, reconciles within ~3 min)
+    +-- Prod:    manual sync (CI Job 4 triggers, Job 7 confirms)
+    +-- Self-heals: reverts manual kubectl changes back to Git state
+    +-- ignoreDifferences: image field (avoids OutOfSync during direct deploy window)
+```
+
 ### Infrastructure (AWS, Terraform-managed)
 
 ```
@@ -220,16 +286,35 @@ ap-south-1 (Mumbai)
 |    |    +-- guardops-app Service (traffic switch) [Phase 9]      |
 |    |                                                             |
 |    +-- monitoring namespace                                      |
-|         +-- Prometheus  (kube-prometheus-stack)                  |
-|         +-- Grafana     (pre-loaded dashboards)                  |
-|         +-- Alertmanager                                         |
-|         +-- kube-state-metrics, node-exporter                    |
-|         +-- Loki        (log aggregation, 10Gi EBS)  [Phase 7]  |
-|         +-- Promtail    (log shipping DaemonSet)      [Phase 7]  |
-|         +-- falco-simulator CronJob (every 3 min)    [Phase 7]  |
-|         +-- guardops-alertmanager-webhook pod         [Phase 8]  |
-|              +-- /healthz, /readyz, /webhook endpoints           |
-|              +-- ServiceAccount + ClusterRole (RBAC)             |
+|    |    +-- Prometheus  (kube-prometheus-stack)                  |
+|    |    +-- Grafana     (pre-loaded dashboards)                  |
+|    |    +-- Alertmanager                                         |
+|    |    +-- kube-state-metrics, node-exporter                    |
+|    |    +-- Loki        (log aggregation, 10Gi EBS)  [Phase 7]  |
+|    |    +-- Promtail    (log shipping DaemonSet)      [Phase 7]  |
+|    |    +-- falco-simulator CronJob (every 3 min)    [Phase 7]  |
+|    |    +-- guardops-alertmanager-webhook pod         [Phase 8]  |
+|    |         +-- /healthz, /readyz, /webhook endpoints           |
+|    |         +-- ServiceAccount + ClusterRole (RBAC)             |
+|    |                                                             |
+|    +-- cert-manager namespace                     [Phase 10]     |
+|    |    +-- cert-manager controller                              |
+|    |    +-- cert-manager-cainjector                              |
+|    |    +-- cert-manager-webhook                                 |
+|    |    +-- ClusterIssuer: letsencrypt-staging                   |
+|    |    +-- ClusterIssuer: letsencrypt-prod                      |
+|    |                                                             |
+|    +-- argocd namespace                           [Phase 10]     |
+|    |    +-- argocd-server   (UI + API, https://argocd.guardops.dev)|
+|    |    +-- argocd-repo-server                                   |
+|    |    +-- argocd-application-controller                        |
+|    |    +-- Application: guardops-app-prod (manual sync)        |
+|    |    +-- Application: guardops-app-staging (auto-sync)       |
+|    |    +-- AppProject: guardops (namespace-scoped)             |
+|    |                                                             |
+|    +-- kube-system                                               |
+|         +-- aws-load-balancer-controller          [Phase 10]     |
+|              (IRSA: guardops-alb-controller role)                |
 |                                                                  |
 |  ECR: guardops-app (scan-on-push, 10-image lifecycle)            |
 |       :staging-<sha>  (staging builds)               [Phase 9]  |
@@ -239,6 +324,11 @@ ap-south-1 (Mumbai)
 |  S3:  guardops-tfstate-* (Terraform remote state)               |
 |  DynamoDB: guardops-tf-lock (state locking)                      |
 |  IAM: github-actions-role (OIDC, no static keys)                 |
+|  IAM: guardops-alb-controller (IRSA for ALB controller)[Phase 10]|
+|  Route53: guardops.dev hosted zone               [Phase 10]     |
+|    guardops.dev        A alias -> ALB                            |
+|    staging.guardops.dev A alias -> ALB                           |
+|    argocd.guardops.dev  A alias -> ALB                           |
 +------------------------------------------------------------------+
 ```
 
@@ -249,7 +339,7 @@ Push to main
     |
     v
 Job 1: build-test
-    pytest (240+ tests) + ruff + mypy
+    pytest (341 tests) + ruff + mypy
     |
     v
 Job 2: sast
@@ -257,7 +347,7 @@ Job 2: sast
     |
     v
 Job 3: container-scan
-    Docker build (multi-stage) + Trivy (cached DB)
+    Docker build (multi-stage) + Trivy (cached DB, --ignore-unfixed)
     Gates on fixable HIGH/CRITICAL CVEs
     ECR push via GitHub OIDC (no static IAM keys)
     |
@@ -267,6 +357,9 @@ Job 4: deploy              <-- active when HAS_EKS_CLUSTER=true
     kubectl rollout status verify
     OWASP ZAP DAST scan (passive baseline)  <-- Phase 6
     Auto-rollback on CRITICAL DAST findings <-- Phase 6
+    Write values-override-<env>.yaml        <-- Phase 10 (if ARGOCD_TOKEN set)
+    git commit [skip ci] + push             <-- Phase 10
+    Trigger ArgoCD sync (prod)              <-- Phase 10
     |
     v
 Job 5: runtime-gate        <-- active when HAS_FALCO_ENABLED=true [Phase 7]
@@ -278,6 +371,13 @@ Job 5: runtime-gate        <-- active when HAS_FALCO_ENABLED=true [Phase 7]
 Job 6: upload-reports      <-- always runs
     Scan artifacts -> S3 bucket
     Path: reports/<repo>/<branch>/<sha>/<run-id>/
+    |
+    v
+Job 7: sync-gate           <-- active when ARGOCD_TOKEN set [Phase 10]
+    guardops sync-status --env prod --wait --timeout 300
+    Polls ArgoCD API every 10s until Synced+Healthy
+    Exits 1 if Degraded or timeout (300s)
+    Always prints final ArgoCD snapshot to CI log
 ```
 
 ---
@@ -309,7 +409,7 @@ guardops deploy
 # Build, scan, push to ECR, deploy to EKS (prod)
 guardops deploy --env prod
 
-# Deploy to staging namespace (tag: staging-, ZAP skipped)
+# Deploy to staging namespace (tag: staging-<sha>, ZAP skipped)
 guardops deploy --env staging
 
 # Skip SonarQube if not configured
@@ -361,7 +461,19 @@ guardops quarantine-status --env staging        # staging namespace
 guardops quarantine-status -A                   # all namespaces
 
 # Release a quarantined pod after investigation
-guardops quarantine-status --release  --namespace staging
+guardops quarantine-status --release <pod> --namespace staging
+
+# Phase 10: Deploy with GitOps override commit + ArgoCD sync trigger
+export ARGOCD_TOKEN="<your-argocd-api-token>"
+guardops deploy --env prod --gitops
+guardops deploy --env staging --gitops
+
+# Phase 10: Check ArgoCD Application status (snapshot)
+guardops sync-status --env prod
+guardops sync-status --env staging
+
+# Phase 10: Wait until Synced+Healthy (CI gate or manual confirmation)
+guardops sync-status --env prod --wait --timeout 300
 ```
 
 ---
@@ -385,7 +497,7 @@ The test app exposes three custom Prometheus metrics:
 ```bash
 # Port-forward Grafana
 kubectl port-forward svc/kube-prometheus-stack-grafana 3000:80 -n monitoring
-# Open http://localhost:3000  (admin / guardops-grafana-2024)
+# Open http://localhost:3000  (admin / <password from morning-start.ps1 output>)
 
 # Port-forward Prometheus
 kubectl port-forward svc/kube-prometheus-stack-prometheus 9090:9090 -n monitoring
@@ -401,9 +513,11 @@ kubectl port-forward svc/kube-prometheus-stack-alertmanager 9093:9093 -n monitor
 
 # Port-forward webhook handler (Phase 8)
 kubectl port-forward svc/guardops-alertmanager-webhook 9095:9095 -n monitoring
-# curl http://localhost:9095/healthz  -> {"status":"ok","version":"0.9.0"}
+# curl http://localhost:9095/healthz  -> {"status":"ok","version":"1.0.0"}
 # curl http://localhost:9095/readyz   -> {"status":"ready","kubectl":"..."}
 ```
+
+All port-forwards are opened automatically by `.\scripts\morning-start.ps1`.
 
 ### Useful PromQL queries
 
@@ -443,24 +557,24 @@ rate(container_cpu_usage_seconds_total{namespace="default"}[5m])
 ### Setup (morning start)
 
 ```powershell
-# After terraform apply and kubectl configure:
-.\scripts\setup-observability.ps1           # run from repo root
-.\scripts\setup-runtime-security.ps1        # Phase 7: Loki + Promtail + Falco simulator
-# Phase 8 webhook handler deployed automatically by terraform apply
-# (enable_self_healing = true in terraform.tfvars)
-kubectl apply -f k8s/alertmanager/quarantine-webhook.yaml  # Phase 8: wire Alertmanager
+# Full automated startup — handles all phases including Phase 10
+.\scripts\morning-start.ps1
+
+# Skip Terraform if cluster is already running
+.\scripts\morning-start.ps1 -SkipTerraform
+
+# Skip app deploy (observability + port-forwards only)
+.\scripts\morning-start.ps1 -SkipTerraform -SkipDeploy
 ```
 
-### Shutdown (nightly — prevents orphaned EBS volumes)
+### Shutdown (nightly — prevents orphaned resources and billing)
 
 ```powershell
-helm uninstall kube-prometheus-stack -n monitoring
-helm uninstall loki -n monitoring
-helm uninstall promtail -n monitoring
-kubectl delete pvc --all -n monitoring
-Start-Sleep -Seconds 30
-cd infra/terraform && terraform destroy -auto-approve
+# Automated shutdown — drains ALBs, uninstalls Helm, destroys infra
+.\scripts\night-shutdown.ps1
 ```
+
+The shutdown script deletes Ingress objects first (drains ALBs from AWS), uninstalls all Helm releases in correct order, deletes PVCs, scales the node group to 0, runs terraform destroy, clears the stale `alb_dns_name` from tfvars, and verifies no billable resources remain.
 
 ---
 
@@ -557,7 +671,7 @@ The handler runs as a Kubernetes Deployment in the `monitoring` namespace, deplo
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/healthz` | GET | Liveness probe — returns `{"status":"ok","version":"0.9.0"}` |
+| `/healthz` | GET | Liveness probe — returns `{"status":"ok","version":"1.0.0"}` |
 | `/readyz` | GET | Readiness probe — verifies kubectl is reachable; returns 503 if not |
 | `/webhook` | POST | Alertmanager webhook receiver |
 
@@ -617,6 +731,8 @@ docker build -t "${ECR}:webhook-latest" -f Dockerfile.webhook .
 docker push "${ECR}:webhook-latest"
 ```
 
+morning-start.ps1 builds and pushes this image automatically if it is missing from ECR.
+
 ### Testing quarantine manually
 
 ```powershell
@@ -661,22 +777,24 @@ environments:
     kubernetes:
       namespace: staging
     docker:
-      image_tag_prefix: staging   # images tagged staging-
+      image_tag_prefix: staging   # images tagged staging-<sha>
     security:
       tools:
         owasp_zap: false          # ZAP skipped in staging (no stable URL)
     helm:
       release_suffix: "-staging"  # release: guardops-app-staging
+    domain: staging.guardops.dev  # Phase 10: used by resolve_domain()
   prod:
     kubernetes:
       namespace: default
     docker:
-      image_tag_prefix: ""        # images tagged  only
+      image_tag_prefix: ""        # images tagged <sha> only
     security:
       tools:
         owasp_zap: true
     helm:
       release_suffix: ""          # release: guardops-app (backward compat)
+    domain: guardops.dev          # Phase 10: used by resolve_domain()
 ```
 
 ### Blue-green workflow
@@ -729,6 +847,160 @@ Switching is atomic: a single `kubectl apply` updates both the selector and the 
 
 ---
 
+## TLS + Real Domain (Phase 10)
+
+Phase 10 adds browser-trusted HTTPS to all environments using cert-manager, Let's Encrypt, and Route53.
+
+### How it works
+
+1. **cert-manager** (installed by `modules/dns-tls` Terraform module) watches Ingress resources for the `cert-manager.io/cluster-issuer` annotation
+2. When an Ingress with that annotation is deployed, cert-manager creates a `Certificate` resource and requests a certificate from Let's Encrypt via HTTP-01 ACME challenge
+3. **Let's Encrypt** verifies domain ownership by fetching a token at `http://<domain>/.well-known/acme-challenge/<token>` — this works because the Ingress is already routing traffic
+4. The certificate is stored in a Kubernetes Secret (`guardops-prod-tls`) and auto-renewed when less than 30 days remain (Let's Encrypt certs are 90-day)
+5. **Route53** routes `guardops.dev` and `staging.guardops.dev` to the ALB via A alias records
+
+### Helm values overlay (Phase 10)
+
+ArgoCD and direct Helm deploys both use a three-file overlay stack:
+
+```
+values.yaml                     (base defaults — local/k3d)
+    + values-<env>.yaml         (env overrides — TLS, replicas, HPA)
+    + values-override-<env>.yaml (image tag only — auto-written by --gitops)
+```
+
+The override file contains only:
+```yaml
+# Auto-generated by guardops deploy — do not edit manually.
+image:
+  repository: 236796665744.dkr.ecr.ap-south-1.amazonaws.com/guardops-app
+  tag: "abc1234"
+  pullPolicy: Always
+```
+
+Every image promotion is a two-line git diff. ArgoCD can determine exactly what changed on each deploy at a glance.
+
+### ClusterIssuer setup
+
+```bash
+# Apply staging issuer first (higher rate limits — safe for testing)
+kubectl apply -f k8s/tls/clusterissuer-letsencrypt-staging.yaml
+kubectl describe clusterissuer letsencrypt-staging   # wait for Ready: True
+
+# After staging is confirmed working, apply prod issuer
+kubectl apply -f k8s/tls/clusterissuer-letsencrypt-prod.yaml
+
+# Watch certificate issuance (usually < 90s after DNS propagates)
+kubectl get certificate -n default -w
+
+# Verify HTTPS
+curl -I https://guardops.dev/healthz
+# HTTP/2 200 — issuer: Let's Encrypt
+```
+
+### Terraform module
+
+```
+infra/terraform/modules/dns-tls/
+    main.tf       cert-manager Helm release (v1.14.4, installCRDs=true)
+                  aws-load-balancer-controller Helm release (IRSA)
+                  aws_route53_zone + A alias records (count-gated on alb_dns_name)
+    variables.tf  domain_name, cluster_name, alb_controller_role_arn, vpc_id,
+                  alb_dns_name (default ""), alb_hosted_zone_id (default ap-south-1)
+    outputs.tf    route53_zone_id, name_servers, staging_domain, argocd_domain
+```
+
+Enable in `terraform.tfvars`:
+```hcl
+enable_dns_tls          = true
+domain_name             = "guardops.dev"
+alb_controller_role_arn = "arn:aws:iam::236796665744:role/guardops-alb-controller"
+alb_dns_name            = ""    # populated by morning-start.ps1 after first deploy
+```
+
+---
+
+## ArgoCD GitOps (Phase 10)
+
+Phase 10 adds GitOps via ArgoCD. Every image promotion is a git commit. ArgoCD continuously reconciles the cluster state with Git and self-heals any drift.
+
+### How it works
+
+```
+guardops deploy --env prod --gitops
+    |
+    +-- Helm deploy (direct, immediate effect)
+    +-- write values-override-prod.yaml { image.tag: <new-sha> }
+    +-- git commit -m "chore(gitops): promote prod image to <sha> [skip ci]"
+    +-- git push origin main
+    +-- POST /api/v1/applications/guardops-app-prod/sync (ArgoCD API)
+    |
+    v
+ArgoCD detects commit -> reconciles -> cluster matches Git
+    |
+    v
+guardops sync-status --env prod --wait
+    |
+    +-- Poll GET /api/v1/applications/guardops-app-prod every 10s
+    +-- Terminal states: Synced+Healthy (exit 0), Degraded (exit 1), Timeout (exit 1)
+```
+
+### Application configuration
+
+| Application | Namespace | Auto-sync | Purpose |
+|-------------|-----------|-----------|---------|
+| `guardops-app-prod` | default | Disabled | Prod — CI triggers sync explicitly after DAST |
+| `guardops-app-staging` | staging | Enabled (prune + selfHeal) | Staging — auto-applies commits within ~3 min |
+
+Both applications ignore differences on the container image field (`ignoreDifferences` on `/spec/template/spec/containers/0/image`) to prevent OutOfSync during the window between direct Helm deploy and ArgoCD reconciliation.
+
+### `guardops sync-status` output
+
+```
+GuardOps Sync Status  |  env=prod  |  app=guardops-app-prod
+──────────────────────────────────────────────────────────────
+
+  Field           Value
+  Application     guardops-app-prod
+  Sync Status     Synced
+  Health Status   Healthy
+  Revision        abc1234
+  ArgoCD UI       https://argocd.guardops.dev/applications/guardops-app-prod
+  Live URL        https://guardops.dev
+
+✓ Application guardops-app-prod is Synced + Healthy
+```
+
+### Terraform module
+
+```
+infra/terraform/modules/argocd/
+    main.tf       ArgoCD Helm release (v6.7.3, server.insecure=true)
+                  AppProject: guardops (namespace-scoped)
+                  Application: guardops-app-prod (manual sync)
+                  Application: guardops-app-staging (auto-sync)
+    variables.tf  project_name, domain_name, git_repo_url, eks_dependency
+    outputs.tf    argocd_server_url, prod_app_name, staging_app_name,
+                  initial_admin_password_command, generate_api_token_command
+```
+
+Enable in `terraform.tfvars`:
+```hcl
+enable_argocd = true
+git_repo_url  = "https://github.com/Bihan-Banerjee/GuardOps"
+```
+
+### ArgoCD k8s manifests
+
+```
+k8s/argocd/
+    project.yaml      AppProject scoped to default + staging namespaces
+    app-prod.yaml     Application — manual sync, valueFiles overlay
+    app-staging.yaml  Application — auto-sync (prune + selfHeal), valueFiles overlay
+```
+
+---
+
 ## Security Pipeline
 
 Four pre-deploy tools run in sequence, followed by one post-deploy DAST scan, one post-deploy runtime check, and continuous self-healing in production. All findings are normalised to a unified severity scale before gating.
@@ -738,11 +1010,12 @@ Four pre-deploy tools run in sequence, followed by one post-deploy DAST scan, on
 | Semgrep | Pre-deploy | SAST | Code patterns, secrets, OWASP Top 10 | ERROR=HIGH, WARNING=MEDIUM, INFO=LOW |
 | Bandit | Pre-deploy | SAST | Python-specific vulnerabilities | Adjusted by confidence level |
 | Trivy (fs) | Pre-deploy | Secret/IaC | Hardcoded secrets, misconfigs | Direct |
-| Trivy (image) | Pre-deploy | SCA | CVEs in OS packages and Python deps | UNKNOWN mapped to LOW |
+| Trivy (image) | Pre-deploy | SCA | CVEs in OS packages and Python deps (fixable only) | UNKNOWN mapped to LOW |
 | SonarQube | Pre-deploy | Quality gate | Security hotspots, code smells | BLOCKER=CRITICAL, CRITICAL=HIGH, MAJOR=MEDIUM |
 | OWASP ZAP | Post-deploy | DAST | Runtime HTTP vulns, missing headers, exposed endpoints | High=CRITICAL, Medium=HIGH, Low=MEDIUM, Info=LOW |
 | Falco (via Loki) | Post-deploy | Runtime | Shell spawns, file reads, package managers, root processes | Maps Falco priority to unified scale |
 | Alertmanager webhook | Continuous | Self-healing | Automatic pod quarantine on CRITICAL Falco alert | CRITICAL triggers quarantine |
+| ArgoCD | Continuous | Drift detection | Cluster state vs Git state reconciliation | OutOfSync triggers alert/self-heal |
 
 **Bandit confidence adjustment:**
 
@@ -793,6 +1066,7 @@ Static IAM user credentials (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) are 
 |--------|---------|
 | `HAS_ZAP_ENABLED` | Set to `true` to enable ZAP DAST in CI deploy job |
 | `HAS_FALCO_ENABLED` | Set to `true` to enable runtime gate in CI (Phase 7) |
+| `ARGOCD_TOKEN` | ArgoCD API token for GitOps steps + sync-gate (Phase 10) |
 | `SEMGREP_APP_TOKEN` | Semgrep cloud dashboard |
 | `SONAR_TOKEN` | SonarQube |
 | `SONAR_HOST_URL` | SonarQube |
@@ -855,6 +1129,7 @@ environments:
         owasp_zap: false
     helm:
       release_suffix: "-staging"
+    domain: staging.guardops.dev   # Phase 10: used by sync-status and DAST target resolution
   prod:
     kubernetes:
       namespace: default
@@ -865,6 +1140,17 @@ environments:
         owasp_zap: true
     helm:
       release_suffix: ""
+    domain: guardops.dev           # Phase 10
+
+# Phase 10 — ArgoCD GitOps
+# The token is NEVER stored here — only the env var name is stored.
+# Set the actual token: export ARGOCD_TOKEN="<token>"
+# In CI: add ARGOCD_TOKEN as a GitHub secret.
+argocd:
+  url: "https://argocd.guardops.dev"
+  app_name_staging: "guardops-app-staging"
+  app_name_prod: "guardops-app-prod"
+  token_env_var: "ARGOCD_TOKEN"
 ```
 
 ---
@@ -883,6 +1169,11 @@ Options:
   --slot [blue|green]    Blue-green slot. Creates a slot-specific Helm release
                          (guardops-app-staging-blue) and labels pods with
                          guardops.io/slot=<slot>. Use guardops switch to cut traffic.
+  --gitops               Phase 10: after Helm deploy, write values-override-<env>.yaml,
+                         git commit [skip ci] + push, trigger ArgoCD sync.
+                         Only valid for --env staging or --env prod.
+                         Requires ARGOCD_TOKEN env var for prod sync trigger.
+  --gitops-branch TEXT   Git branch to push the override commit to. Default: main
   --skip-scan            Skip security scans. Never use in prod.
   --skip-build           Reuse existing image.
   --skip-sonarqube       Skip SonarQube scan.
@@ -907,6 +1198,27 @@ Options:
                          Defaults to the project name from .guardops.yaml.
   --dry-run              Preview what would change without applying anything.
 ```
+
+### `guardops sync-status` (Phase 10)
+
+```
+Options:
+  --env [staging|prod]   Required. Environment whose ArgoCD Application to inspect.
+  --wait                 Block until Synced+Healthy or --timeout.
+                         Exits 0 on success, 1 on timeout or Degraded.
+                         Use as a CI gate after guardops deploy --gitops.
+  --timeout INTEGER      Maximum seconds to wait when --wait is set. Default: 300
+  --argocd-url TEXT      ArgoCD server URL. Overrides argocd.url in config.
+                         Also readable from ARGOCD_URL env var.
+  --token-env TEXT       Name of the env var holding the ArgoCD API token.
+                         Overrides argocd.token_env_var in config. Default: ARGOCD_TOKEN
+
+Exit codes:
+  0  Application is Synced+Healthy (or OutOfSync in snapshot mode — transient)
+  1  Degraded, API unreachable, config missing, token missing, or --wait timeout
+```
+
+**Prerequisites:** `ARGOCD_TOKEN` env var must be set and ArgoCD must be reachable.
 
 ### `guardops scan`
 
@@ -946,7 +1258,7 @@ Options:
                          Intended for CI post-deploy gates.
 ```
 
-**Prerequisites:** Loki must be reachable. Run `kubectl port-forward svc/loki 3100:3100 -n monitoring` first.
+**Prerequisites:** Loki must be reachable. Run `kubectl port-forward svc/loki 3100:3100 -n monitoring` first, or use morning-start.ps1 which does this automatically.
 
 ### `guardops quarantine-status` (Phase 8/9)
 
@@ -1019,9 +1331,21 @@ infra/terraform/
                     ServiceAccount + ClusterRole + Deployment + ClusterIP Service
                     Requires live EKS + monitoring namespace + webhook image in ECR.
                     Use enable_self_healing=true in terraform.tfvars.
+        dns-tls/    Phase 10 — cert-manager + AWS Load Balancer Controller + Route53
+                    Installs cert-manager v1.14.4 (installCRDs=true) and the
+                    AWS Load Balancer Controller with IRSA. Creates Route53 hosted
+                    zone and A alias records (gated on alb_dns_name != "").
+                    Use enable_dns_tls=true in terraform.tfvars.
+                    Requires alb_controller_role_arn (created by morning-start.ps1).
+        argocd/     Phase 10 — ArgoCD GitOps controller + Applications
+                    Installs ArgoCD v6.7.3. Creates AppProject (namespace-scoped),
+                    Application guardops-app-prod (manual sync), and
+                    Application guardops-app-staging (auto-sync + selfHeal).
+                    Use enable_argocd=true in terraform.tfvars.
+                    Requires enable_dns_tls=true (ArgoCD Ingress needs TLS).
 ```
 
-**Always-on (near-zero cost):** ECR, S3, DynamoDB, remote state bucket, OIDC provider, IAM role.
+**Always-on (near-zero cost):** ECR, S3, DynamoDB, remote state bucket, OIDC provider, IAM role, IAM guardops-alb-controller role (Phase 10), Route53 hosted zone ($0.50/month, Phase 10).
 
 **Destroy nightly (~$5.28/day when running):** EKS control plane ($0.10/hr), t3.large node ($0.075/hr), NAT gateways ($0.045/hr each).
 
@@ -1034,16 +1358,16 @@ terraform init && terraform apply -auto-approve
 cd infra/terraform
 terraform init -migrate-state
 
-# Daily operations
-terraform apply -auto-approve    # morning (~12 min)
-terraform destroy -auto-approve  # evening (~8 min)
+# Daily operations — use scripts instead of raw terraform
+.\scripts\morning-start.ps1      # morning: full stack up (~30-40 min)
+.\scripts\night-shutdown.ps1     # evening: full stack down (~15 min)
 ```
 
 ---
 
 ## Helm Chart
 
-The Helm chart at `k8s/helm/guardops-app/` (v0.4.0) deploys with security defaults applied at the pod level:
+The Helm chart at `k8s/helm/guardops-app/` (v0.5.0) deploys with security defaults applied at the pod level:
 
 ```yaml
 securityContext:
@@ -1058,18 +1382,38 @@ Staging values (`values-staging.yaml`) add:
 - `replicaCount: 1`
 - `imagePullPolicy: Always`
 - `config.ENVIRONMENT: staging`
+- `config.LOG_LEVEL: DEBUG`
+- `ingress.host: staging.guardops.dev` with TLS (Phase 10)
+- `ingress.certManagerClusterIssuer: letsencrypt-prod` (Phase 10)
 - `monitoring.enabled: false` (set true once kube-prometheus-stack is confirmed running)
 
 Production values (`values-prod.yaml`) add:
 - `replicaCount: 2`
 - `imagePullPolicy: Always`
 - HPA enabled (CPU-based autoscaling, 2-10 replicas)
-- Ingress with TLS configuration
+- `ingress.host: guardops.dev` with TLS (Phase 10)
+- `ingress.certManagerClusterIssuer: letsencrypt-prod` (Phase 10)
 - `monitoring.enabled: true` — creates ServiceMonitor for Prometheus scraping
+
+Phase 10 override files (`values-override-<env>.yaml`) — auto-generated by `guardops deploy --gitops`:
+- Written to `k8s/helm/guardops-app/values-override-prod.yaml` and `values-override-staging.yaml`
+- Contains only `image.repository`, `image.tag`, `image.pullPolicy`
+- Committed with `[skip ci]` so CI is not re-triggered
+- Loaded last in the ArgoCD Application `valueFiles` list — takes precedence over all other values
 
 Blue-green values (injected via `--set` by `guardops deploy --slot`):
 - `blueGreen.enabled: true`
 - `blueGreen.slot: blue|green` — adds `guardops.io/slot` label to pods and Deployment selector
+
+The Helm `ingress.yaml` template (Phase 10 update) auto-injects the cert-manager annotation and SSL redirect when `ingress.certManagerClusterIssuer` is set:
+```yaml
+{{- if .Values.ingress.certManagerClusterIssuer }}
+cert-manager.io/cluster-issuer: {{ .Values.ingress.certManagerClusterIssuer | quote }}
+{{- end }}
+{{- if .Values.ingress.tls }}
+nginx.ingress.kubernetes.io/ssl-redirect: "true"
+{{- end }}
+```
 
 ---
 
@@ -1122,11 +1466,12 @@ mypy cli/ backend/ --ignore-missing-imports
 |------|-------|--------|
 | test_builder.py | 15 | Image naming, build success and failure paths, ECR tag format |
 | test_config.py | 12 | YAML read/write, defaults, config existence checks |
-| test_config_phase9.py | 20 | get_env_config, resolve_namespace, resolve_image_tag, resolve_helm_release_name |
-| test_security.py | 68 | All 4 runners: skip, timeout, malformed JSON, severity mapping, report output |
 | test_deployer.py | 37 | kubectl apply, k3d import, rollout wait, rollback, service URL |
 | test_deployer_phase3.py | 35 | Helm deploy, rollback, release name sanitisation, chart path resolution |
+| test_security.py | 68 | All 4 runners: skip, timeout, malformed JSON, severity mapping, report output |
 | test_runtime_security.py | 53 | Falco priority mapping, FalcoQueryResult counts/filtering, Loki HTTP layer, --fail-on logic |
+| test_gitops_writer.py | 30 | write_image_override, _split_image_ref, commit_and_push, trigger_argocd_sync, get_app_status, poll_until_healthy |
+| test_sync_cmd.py | 24 | sync_status_command: missing URL/token, snapshot mode, wait mode, staging vs prod config |
 
 ---
 
@@ -1135,7 +1480,7 @@ mypy cli/ backend/ --ignore-missing-imports
 **State lock after interrupted apply:**
 ```powershell
 # If terraform hangs on "Acquiring state lock":
-terraform force-unlock -force 
+terraform force-unlock -force <lock-id>
 ```
 
 **Subnet CIDR conflict after incomplete destroy:**
@@ -1143,7 +1488,7 @@ terraform force-unlock -force
 # If terraform apply fails with InvalidSubnet.Conflict:
 aws ec2 describe-subnets --filters "Name=cidrBlock,Values=10.0.1.0/24" `
     --query "Subnets[0].SubnetId" --output text
-terraform import module.vpc.aws_subnet.public[1] 
+terraform import module.vpc.aws_subnet.public[1] <subnet-id>
 terraform apply -auto-approve
 ```
 
@@ -1173,6 +1518,7 @@ If resources are deleted outside Terraform (e.g. `kubectl delete deployment`) an
 terraform state rm "module.alertmanager_webhook[0].kubernetes_deployment.webhook"
 terraform apply -auto-approve
 ```
+morning-start.ps1 detects and fixes this automatically via `Repair-TerraformState`.
 
 **Webhook image uses /venv/bin/python, not system Python:**
 The app image's CMD uses `/venv/bin/python` (an isolated virtualenv). All pip installs for the webhook handler in `Dockerfile.webhook` must target the venv: `RUN /venv/bin/python -m pip install ...`. Installing via `/usr/local/bin/pip` writes to a different site-packages that the venv Python cannot see.
@@ -1181,7 +1527,7 @@ The app image's CMD uses `/venv/bin/python` (an isolated virtualenv). All pip in
 The `readyz` endpoint in `alertmanager_handler.py` calls `kubectl version --client`. If your handler image uses kubectl v1.27 or earlier, remove `--short` from that call — the flag was removed and causes a non-zero exit code that makes `/readyz` return 503.
 
 **setup-observability.ps1 must run from repo root:**
-The script uses relative paths to `k8s/observability/`. Running it from inside `scripts\` resolves to `scripts\k8s\observability\...` which does not exist. Always run from `D:\EXTRA\GuardOps`: `.\scripts\setup-observability.ps1`. The `ServiceMonitor` CRD that kube-prometheus-stack installs is also required by the Helm chart's `servicemonitor.yaml` template — if the chart deploy fails with `no matches for kind "ServiceMonitor"`, it means the observability stack was not installed first.
+The script uses relative paths to `k8s/observability/`. Running it from inside `scripts\` resolves to `scripts\k8s\observability\...` which does not exist. Always run from `D:\EXTRA\GuardOps`: `.\scripts\setup-observability.ps1`. Use `.\scripts\morning-start.ps1` which handles the working directory automatically.
 
 **monitoring.enabled in values-staging.yaml:**
 Set to `false` on a fresh cluster before kube-prometheus-stack is installed, to avoid the duplicate port warning and ServiceMonitor CRD dependency. Flip to `true` once the stack is confirmed running.
@@ -1189,16 +1535,35 @@ Set to `false` on a fresh cluster before kube-prometheus-stack is installed, to 
 **Blue-green traffic Service not owned by Helm:**
 The shared `guardops-app` Service in the staging namespace is created by `guardops switch`, not by any Helm release. It will not appear in `helm list` and will not be deleted by `helm uninstall`. To clean it up manually: `kubectl delete svc guardops-app -n staging`.
 
-**Nightly shutdown order matters:**
+**Nightly shutdown — use the script, not manual steps:**
 ```powershell
-helm uninstall kube-prometheus-stack -n monitoring  
-helm uninstall loki -n monitoring
-helm uninstall promtail -n monitoring
-kubectl delete pvc --all -n monitoring             
-Start-Sleep -Seconds 30                             
-cd infra/terraform && terraform destroy -auto-approve
+.\scripts\night-shutdown.ps1
 ```
-Skipping the Helm uninstall leaves orphaned EBS volumes that persist after `terraform destroy` and continue billing silently.
+The script deletes Ingress objects first (ALB drain), then Helm releases in correct order, then PVCs, then scales nodes to 0, then `terraform destroy`. Skipping any step leaves orphaned AWS resources that bill silently.
+
+**ALB Ingress ADDRESS empty after deploy (Phase 10):**
+Three things must be true: (1) subnets tagged `kubernetes.io/cluster/guardops-prod-cluster=shared` — morning-start.ps1 runs `Repair-SubnetClusterTags`; (2) ALB controller IRSA trust policy has current OIDC URL — morning-start.ps1 runs `Ensure-AlbControllerRole`; (3) Ingress annotated `alb.ingress.kubernetes.io/scheme=internet-facing` — morning-start.ps1 patches this after deploy. If the ADDRESS is still empty after all three, check: `kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller --tail=30`.
+
+**ALB controller OIDC trust rotation after destroy+recreate (Phase 10):**
+After `terraform destroy` + recreate, the EKS cluster gets a new OIDC issuer URL. The `guardops-alb-controller` IAM role trust policy becomes stale — the controller gets `AccessDenied` from STS. morning-start.ps1 detects this via `Ensure-AlbControllerRole` and calls `aws iam update-assume-role-policy` before Terraform apply. If you run apply manually without morning-start.ps1, update the trust policy first.
+
+**cert-manager ClusterIssuer stays Ready=False (Phase 10):**
+Usually a DNS propagation issue. The HTTP-01 ACME challenge requires the domain to be publicly reachable. Check: `nslookup -type=NS guardops.dev 8.8.8.8` — if the NS records don't return yet, wait and retry. Also check: `kubectl get challenges -n default` to see the active ACME challenge token and its error message.
+
+**secrets context not allowed in GitHub Actions step if: (Phase 10):**
+`secrets.X` is not available in step-level `if:` expressions. Hoist to a job-level env var: `HAS_ARGOCD: ${{ secrets.ARGOCD_TOKEN != '' && 'true' || 'false' }}` and check `env.HAS_ARGOCD == 'true'` in steps. This pattern is used for all feature-gated steps in ci.yaml.
+
+**Trivy blocking on unfixable CVEs (Phase 10):**
+`perl-base` CVEs on Debian 13.5 have Status: `affected` with no Fixed Version. These are OS-level issues Debian hasn't patched. The CI Trivy gate uses `--ignore-unfixed` so only fixable CVEs block the pipeline. morning-start.ps1 deploy uses `--skip-scan` — scans are a CI concern, not a startup script concern.
+
+**[skip ci] in GitOps commit message (Phase 10):**
+The override commit uses `[skip ci]` so GitHub Actions does not re-trigger the pipeline when it detects the push. Without this, the pipeline would loop: deploy → commit → trigger → deploy → commit → ...
+
+**PowerShell here-string closing tag:**
+The `"@` closing tag must be at column 0 with no leading whitespace. Indenting it causes "Unexpected token" parse errors. Used in morning-start.ps1 for the ALB trust policy JSON.
+
+**ArgoCD OutOfSync immediately after guardops deploy (Phase 10):**
+Expected during the window between the direct Helm deploy (immediate) and the GitOps override commit landing and ArgoCD reconciling. The `ignoreDifferences` block in the Application spec suppresses this. Use `guardops sync-status --env prod --wait` to confirm reconciliation completes normally.
 
 ---
 
@@ -1216,7 +1581,8 @@ Skipping the Helm uninstall leaves orphaned EBS volumes that persist after `terr
 | v0.6.1 | Published | OWASP ZAP DAST post-deploy scan, auto-rollback on CRITICAL, ZAP image fix (ghcr.io), Windows Docker compat |
 | v0.7.0 | Published | Loki + Promtail log pipeline, Falco-format alert ingestion, `guardops runtime-status` CLI, CI runtime gate job, Falco rules + simulator |
 | v0.8.0 | Published | Self-healing: Alertmanager webhook handler, automatic pod quarantine via NetworkPolicy, auto-release on alert resolved, `guardops quarantine-status` CLI, Terraform alertmanager-webhook module, Dockerfile.webhook, PrometheusRule + AlertmanagerConfig wiring |
-| v0.9.0 | **Current** | Multi-environment: staging + prod namespace separation, `guardops deploy --env staging`, blue-green deploy with `--slot blue/green`, `guardops switch` traffic cutover, environment-scoped config helpers, `staging-<sha>` ECR image tags, `--env` flag on quarantine-status, Helm chart v0.4.0 with blueGreen values |
+| v0.9.0 | Published | Multi-environment: staging + prod namespace separation, `guardops deploy --env staging`, blue-green deploy with `--slot blue/green`, `guardops switch` traffic cutover, environment-scoped config helpers, `staging-<sha>` ECR image tags, `--env` flag on quarantine-status, Helm chart v0.4.0 with blueGreen values |
+| v0.10.0 | **Current** | Full production: real domain(in progress) + TLS (cert-manager v1.14.4 + Let's Encrypt + Route53), ArgoCD v6.7.3 GitOps (override-file pattern, auto-sync staging, manual-sync prod, `ignoreDifferences` on image field), `guardops deploy --gitops` + `--gitops-branch`, `guardops sync-status` (ArgoCD REST API snapshot + blocking wait), CI Job 7 sync-gate, 7-job pipeline, `morning-start.ps1` full automation (EKS provider bootstrap stub, 409-conflict import, OIDC trust rotation, subnet tag repair, state identity repair, webhook image build, Ingress annotation patch, ALB DNS wiring), `night-shutdown.ps1` (Ingress drain + ALB drain + ordered Helm uninstall + alb_dns_name clear), `GUARDOPS_CONTEXT_10.md`, production runbooks (deploy-prod, rollback, incident-response), 341 tests |
 
 ---
 
@@ -1224,14 +1590,12 @@ Skipping the Helm uninstall leaves orphaned EBS volumes that persist after `terr
 
 | Version | Status | Description |
 |---------|--------|-------------|
-| v1.0.0 | Planned | Real domain, TLS via cert-manager, ArgoCD GitOps, full runbooks |
-| v1.1.0 | Planned | SBOM + Cosign signing |
-| v1.2.0 | Planned | Kyverno admission control |
-| v1.3.0 | Planned | Scan metadata database |
-| v1.4.0 | Planned | Web dashboard |
-| v1.5.0 | Planned | Vulnerability waivers |
-| v1.6.0 | Planned | LLM-assisted triage |
-| v1.7.0 | Planned | Risk-based scoring (scoped) |
+| v0.11.0 | Planned | SBOM + Cosign signing + Kyverno admission control |
+| v0.12.0 | Planned | Scan metadata database |
+| v1.1.0 | Planned | Web dashboard |
+| v1.2.0 | Planned | Vulnerability waivers |
+| v1.3.0 | Planned | LLM-assisted triage |
+| v1.4.0 | Planned | Risk-based scoring (scoped) |
 
 ---
 

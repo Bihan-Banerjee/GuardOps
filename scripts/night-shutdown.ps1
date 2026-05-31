@@ -161,7 +161,7 @@ Write-ShutdownStep "2" "8" "Uninstall Helm releases"
 $HelmReleases = @(
     # App workloads first
     @{ Name = "guardops-app";                Namespace = "default"      },
-    @{ Name = "guardops-app";                Namespace = "staging"      },
+    @{ Name = "guardops-app-staging";                Namespace = "staging"      },
     # Observability stack
     @{ Name = "kube-prometheus-stack";       Namespace = "monitoring"   },
     @{ Name = "loki";                        Namespace = "monitoring"   },
