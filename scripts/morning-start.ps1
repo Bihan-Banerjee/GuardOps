@@ -151,6 +151,27 @@ function Import-IfMissing {
     else                     { Write-Warn "Import of $Desc skipped (may not exist yet)" }
 }
 
+function Import-Route53Zone {
+    # Re-attach the Route53 hosted zone that night-shutdown.ps1 detaches from
+    # Terraform state before destroy (so the registrar nameserver delegation
+    # survives the nightly teardown). The zone still exists in AWS; without this,
+    # the full apply would create a DUPLICATE zone with new NS, breaking DNS.
+    # Looked up by name so the zone ID is never hardcoded. Idempotent via
+    # Import-IfMissing (skips if already managed).
+    if (-not $domainName) { return }
+    $zoneId = $null
+    try {
+        $zoneId = (aws route53 list-hosted-zones-by-name --dns-name $domainName `
+            --query "HostedZones[0].Id" --output text 2>$null)
+    } catch { }
+    if ($zoneId) { $zoneId = $zoneId.Trim() -replace "/hostedzone/", "" }
+    if ($zoneId -and $zoneId -ne "None") {
+        Import-IfMissing "module.dns_tls[0].aws_route53_zone.guardops" $zoneId "Route53 hosted zone (preserved across shutdown)"
+    } else {
+        Write-Info "No existing Route53 zone for $domainName -- apply will create it"
+    }
+}
+
 function Disable-EKSProviders {
     Write-Info "Stubbing EKS-dependent providers for bootstrap apply..."
     Copy-Item $MainTf "$MainTf.full"
@@ -741,6 +762,7 @@ if (-not $SkipTerraform) {
         if ($dnsTlsEnabled -eq "true") {
             Ensure-AlbControllerRole -AccountId $acct
             Repair-SubnetClusterTags
+            Import-Route53Zone
         }
 
         Repair-TerraformState
@@ -760,6 +782,7 @@ if (-not $SkipTerraform) {
         if ($dnsTlsEnabled -eq "true") {
             Ensure-AlbControllerRole -AccountId $acct
             Repair-SubnetClusterTags
+            Import-Route53Zone
         }
 
         Repair-TerraformState
@@ -931,7 +954,7 @@ if ($dnsTlsEnabled -eq "true") {
     }
 
     # ── Check certificate status (informational) ──────────────────────────────
-    $certReady = kubectl get certificate -n default -o jsonpath="{.items[0].status.conditions[?(@.type=='Ready')].status}" 2>$null
+    $certReady = kubectl get certificate -n default -o jsonpath="{.items[*].status.conditions[?(@.type=='Ready')].status}" 2>$null
     if ($certReady -eq "True") {
         Write-Ok "TLS certificate Ready"
     } elseif ($certReady) {
@@ -1198,7 +1221,7 @@ Write-Host "    kubectl get certificate -A"
 Write-Host "    kubectl get ingress -A"
 Write-Host ""
 if ($dnsTlsEnabled -eq "true") {
-    $certStatus = kubectl get certificate -n default -o jsonpath="{.items[0].status.conditions[?(@.type=='Ready')].status}" 2>$null
+    $certStatus = kubectl get certificate -n default -o jsonpath="{.items[*].status.conditions[?(@.type=='Ready')].status}" 2>$null
     if ($certStatus -eq "True") {
         Write-Host "  TLS : Certificate Ready -- https://$domainName is live" -ForegroundColor Green
     } else {

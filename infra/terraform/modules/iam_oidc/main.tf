@@ -44,7 +44,11 @@ resource "aws_iam_openid_connect_provider" "github" {
   }
 
   lifecycle {
-    prevent_destroy = true
+    # Disabled: night-shutdown.ps1 runs a full `terraform destroy` nightly, and
+    # this role/provider is recreated identically by morning-start.ps1 (the role
+    # ARN is stable by name, so the AWS_ROLE_ARN GitHub secret is unaffected).
+    # prevent_destroy here would block the entire teardown plan.
+    prevent_destroy = false
   }
 }
 
@@ -90,7 +94,11 @@ resource "aws_iam_role" "github_actions" {
   }
 
   lifecycle {
-    prevent_destroy = true
+    # Disabled: night-shutdown.ps1 runs a full `terraform destroy` nightly, and
+    # this role/provider is recreated identically by morning-start.ps1 (the role
+    # ARN is stable by name, so the AWS_ROLE_ARN GitHub secret is unaffected).
+    # prevent_destroy here would block the entire teardown plan.
+    prevent_destroy = false
   }
 }
 
@@ -104,7 +112,11 @@ resource "aws_iam_role_policy" "ci_policy" {
   name = "${var.project_name}-ci-policy"
   role = aws_iam_role.github_actions.id
   lifecycle {
-    prevent_destroy = true   
+    # Disabled: night-shutdown.ps1 runs a full `terraform destroy` nightly, and
+    # this role/provider is recreated identically by morning-start.ps1 (the role
+    # ARN is stable by name, so the AWS_ROLE_ARN GitHub secret is unaffected).
+    # prevent_destroy here would block the entire teardown plan.
+    prevent_destroy = false   
   }
   policy = jsonencode({
     Version = "2012-10-17"

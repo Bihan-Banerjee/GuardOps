@@ -124,8 +124,13 @@ resource "helm_release" "cert_manager" {
   atomic  = true
   wait    = true
 
-  # cert-manager needs the cluster to exist but does NOT need the ALB
-  # controller to be running first — they can coexist in any order.
+  # The AWS Load Balancer Controller registers a mutating webhook on ALL Service
+  # objects with failurePolicy=Fail. If cert-manager creates its Services while
+  # the controller pods aren't Ready, the webhook call fails with "no endpoints
+  # available for service aws-load-balancer-webhook-service" and cert-manager's
+  # atomic install rolls back. Installing cert-manager only AFTER the controller
+  # is fully rolled out (wait=true on that release) avoids the race.
+  depends_on = [helm_release.aws_load_balancer_controller]
 }
 
 # ── Route53 hosted zone ───────────────────────────────────────────────────────

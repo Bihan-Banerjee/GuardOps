@@ -1,13 +1,12 @@
 [project]
 name = "guardops"
-version = "0.10.1"
+version = "0.10.2"
 description = "Autonomous DevSecOps CLI — build, scan, deploy, and monitor runtime security"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [
-    { name = "Bihan Banerjee" },
-    { email = "bihanbanerjee26@gmail.com" }
+    { name = "Bihan Banerjee", email = "bihanbanerjee26@gmail.com" }
 ]
 keywords = [
     "devsecops", "security", "kubernetes", "devops", "cli",

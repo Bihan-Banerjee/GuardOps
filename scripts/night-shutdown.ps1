@@ -106,7 +106,10 @@ if ($clusterOk) {
     # corresponding AWS Application Load Balancers automatically.
     $ingressCount = 0
     foreach ($ns in @("default", "staging")) {
-        $ingresses = kubectl get ingress -n $ns --no-headers 2>$null
+        # try/catch: with $ErrorActionPreference=Stop, kubectl's "No resources
+        # found" stderr otherwise terminates the whole script before destroy.
+        $ingresses = $null
+        try { $ingresses = kubectl get ingress -n $ns --no-headers 2>$null } catch { }
         if ($ingresses) {
             kubectl delete ingress --all -n $ns 2>$null | Out-Null
             $lines = ($ingresses | Measure-Object -Line).Lines
@@ -268,6 +271,35 @@ if ($ClusterName) {
 # ── Step 5/8: terraform destroy ──────────────────────────────────────────────
 Write-ShutdownStep "5" "8" "terraform destroy  (10-20 min -- do not close this window)"
 Write-Host ""
+
+# Preserve the Route53 hosted zone so the delegated nameservers survive the
+# teardown. Without this, terraform deletes the zone and the next startup creates
+# a NEW one with different NS, forcing re-delegation at the registrar.
+# morning-start.ps1 re-imports the zone on the next run. Idempotent: safe if the
+# zone was already detached or DNS/TLS is disabled.
+$dnsTlsEnabled = Read-TfVar "enable_dns_tls"
+if ($dnsTlsEnabled -eq "true") {
+    Write-Host "    Preserving Route53 zone (detaching from Terraform state)..." -ForegroundColor Gray
+    try { terraform state rm "module.dns_tls[0].aws_route53_zone.guardops" 2>&1 | Out-Null } catch { }
+}
+
+# Drop cluster-resident resources from state before destroy. Step 2 already
+# `helm uninstall`-ed the releases and the rest vanish with the EKS cluster, but
+# Terraform's helm/kubernetes providers lose their cluster connection once EKS is
+# mid-destroy ("Kubernetes cluster unreachable: no configuration has been
+# provided"), which aborts the whole teardown. Removing them lets destroy handle
+# only AWS infra; morning-start.ps1 recreates them on the fresh cluster.
+# try/catch + the [0] index make absent modules (disabled features) harmless.
+Write-Host "    Detaching cluster-resident resources (helm/k8s) from state..." -ForegroundColor Gray
+foreach ($addr in @(
+    "module.dns_tls[0].helm_release.aws_load_balancer_controller",
+    "module.dns_tls[0].helm_release.cert_manager",
+    "module.alertmanager_webhook[0]",
+    "module.argocd[0]",
+    "module.falco[0]"
+)) {
+    try { terraform state rm $addr 2>&1 | Out-Null } catch { }
+}
 
 terraform destroy -auto-approve
 
