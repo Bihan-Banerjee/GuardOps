@@ -832,6 +832,10 @@ if (-not $SkipTerraform) {
             Import-IfMissing "module.iam.aws_iam_role.eks_cluster" "guardops-prod-eks-cluster-role" "EKS cluster IAM role"
             Import-IfMissing "module.iam.aws_iam_role.eks_node"    "guardops-prod-eks-node-role"    "EKS node IAM role"
             Import-IfMissing "module.s3.aws_s3_bucket.reports"     "guardops-reports-$acct"         "S3 reports bucket"
+            # ECR repo preserved by night-shutdown (non-empty, so it survives the
+            # destroy). Only the repository itself 409s on create; the lifecycle
+            # policy and the S3 bucket sub-resources are idempotent config applies.
+            Import-IfMissing 'module.ecr.aws_ecr_repository.repos["guardops-app"]' "guardops-app" "ECR repository (preserved across shutdown)"
 
             # Adopt the GitHub OIDC provider + CI role preserved by night-shutdown
             # BEFORE the Phase 1 apply recreates module.iam_oidc (avoids 409s).
