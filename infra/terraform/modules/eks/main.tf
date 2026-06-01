@@ -13,6 +13,25 @@
 #
 # ALWAYS run `terraform destroy` when done for the day.
 # EKS control plane alone costs $0.10/hour even with zero nodes.
+#
+# PHASE 11: the cluster IRSA OIDC provider is registered at the bottom of this
+# file so other modules (e.g. kyverno) can grant pods least-privilege IAM roles
+# scoped to their ServiceAccount instead of the shared node role.
+
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+    # tls is used only to read the cluster OIDC issuer's CA thumbprint, which
+    # AWS requires when registering an IAM OIDC identity provider (IRSA).
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
+  }
+}
 
 locals {
   name_prefix = "${var.project_name}-${var.environment}"
@@ -122,6 +141,30 @@ resource "aws_eks_addon" "ebs_csi" {
   addon_name                  = "aws-ebs-csi-driver"
   resolve_conflicts_on_update = "OVERWRITE"
   depends_on                  = [aws_eks_node_group.main]
+}
+
+# ── IRSA: cluster OIDC identity provider (Phase 11) ───────────────────────────
+#
+# IAM Roles for Service Accounts (IRSA) lets a specific pod assume an IAM role
+# via its projected ServiceAccount token rather than the shared node instance
+# profile. Registering the cluster's OIDC issuer as an IAM identity provider is
+# the one-time prerequisite for any IRSA role on this cluster.
+#
+# Added in Phase 11 so the Kyverno admission/background controllers can read
+# cosign signatures from the private ECR repo with a least-privilege,
+# SA-scoped role (see modules/kyverno). Recreated automatically each morning
+# because the cluster — and therefore its OIDC issuer URL — is rebuilt nightly.
+
+data "tls_certificate" "oidc" {
+  url = aws_eks_cluster.main.identity[0].oidc[0].issuer
+}
+
+resource "aws_iam_openid_connect_provider" "eks" {
+  url             = aws_eks_cluster.main.identity[0].oidc[0].issuer
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = [data.tls_certificate.oidc.certificates[0].sha1_fingerprint]
+
+  tags = { Name = "${local.name_prefix}-eks-oidc" }
 }
 
 

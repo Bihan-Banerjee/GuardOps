@@ -9,7 +9,8 @@
 # Pending forever with no obvious error in the pod logs.
 #
 # This policy attachment is the ONLY change from Phase 4B.
-# Everything else (cluster role, node role, CI user) is identical.
+# (The legacy static CI user was removed in Phase 6/11 — see section 3 below;
+# CI now authenticates via GitHub OIDC in modules/iam_oidc.)
 
 locals {
   name_prefix = "${var.project_name}-${var.environment}"
@@ -78,75 +79,19 @@ resource "aws_iam_role_policy_attachment" "ebs_csi_policy" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
 }
 
-# ── 3. CI/CD User ─────────────────────────────────────────────────────────────
-
-resource "aws_iam_user" "ci" {
-  name = "${local.name_prefix}-ci-user"
-  tags = { Name = "${local.name_prefix}-ci-user", Purpose = "github-actions" }
-}
-
-# nosemgrep: no-iam-data-exfiltration
-resource "aws_iam_user_policy" "ci_policy" {
-  name = "${local.name_prefix}-ci-policy"
-  user = aws_iam_user.ci.name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-
-      {
-        Sid      = "ECRAuth"
-        Effect   = "Allow"
-        Action   = ["ecr:GetAuthorizationToken"]
-        Resource = "*"
-      },
-      {
-        Sid    = "ECRPush"
-        Effect = "Allow"
-        Action = [
-          "ecr:BatchCheckLayerAvailability",
-          "ecr:CompleteLayerUpload",
-          "ecr:DescribeRepositories",
-          "ecr:GetDownloadUrlForLayer",
-          "ecr:InitiateLayerUpload",
-          "ecr:PutImage",
-          "ecr:UploadLayerPart",
-          "ecr:CreateRepository",
-          "ecr:PutLifecyclePolicy",
-        ]
-        Resource = "arn:aws:ecr:${var.aws_region}:${var.aws_account_id}:repository/*"
-      },
-
-      {
-        Sid    = "S3Reports"
-        Effect = "Allow"
-        Action = [
-          "s3:PutObject",
-          "s3:GetObject",
-          "s3:ListBucket",
-        ]
-        Resource = [
-          "arn:aws:s3:::${var.project_name}-reports-${var.aws_account_id}",
-          "arn:aws:s3:::${var.project_name}-reports-${var.aws_account_id}/*",
-        ]
-      },
-
-      {
-        Sid    = "EKSDeploy"
-        Effect = "Allow"
-        Action = [
-          "eks:DescribeCluster",
-          "eks:ListClusters",
-        ]
-        Resource = "arn:aws:eks:${var.aws_region}:${var.aws_account_id}:cluster/*"
-      },
-    ]
-  })
-}
-
-# nosemgrep: no-iam-creds-exposure
-resource "aws_iam_access_key" "ci" {
-  user = aws_iam_user.ci.name
-}
+# ── 3. CI/CD User — REMOVED (Phase 6/11) ─────────────────────────────────────
+#
+# The legacy static IAM user (guardops-prod-ci-user) with long-lived access keys
+# was superseded by GitHub OIDC in Phase 6 (modules/iam_oidc). CI assumes the
+# github_actions role via OIDC and no longer uses AWS_ACCESS_KEY_ID/SECRET, so
+# the user is intentionally removed here. This also clears the EntityAlreadyExists
+# 409 that blocked morning-start.ps1 when the orphaned user existed in AWS but not
+# in Terraform state, and removes unused long-lived credentials (security).
+#
+# If the old user still exists in your account, delete it once:
+#   aws iam list-access-keys   --user-name guardops-prod-ci-user
+#   aws iam delete-access-key  --user-name guardops-prod-ci-user --access-key-id <id>
+#   aws iam delete-user-policy --user-name guardops-prod-ci-user --policy-name guardops-prod-ci-policy
+#   aws iam delete-user        --user-name guardops-prod-ci-user
 
 

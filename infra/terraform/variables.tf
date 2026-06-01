@@ -166,3 +166,22 @@ variable "git_repo_url" {
   type        = string
   default     = "https://github.com/Bihan-Banerjee/GuardOps"
 }
+
+# ── Admission Control (Phase 11) ──────────────────────────────────────────────
+
+variable "enable_kyverno" {
+  description = "Deploy the kyverno module: Kyverno admission controller + IRSA role for reading cosign signatures from ECR. EKS-only — leave false for local k3d. Policies are applied separately by scripts/setup-admission-control.ps1 (or morning-start.ps1)."
+  type        = bool
+  default     = false
+}
+
+variable "kyverno_policy_action" {
+  description = "Default validationFailureAction the Kyverno ClusterPolicies ship with: \"Audit\" (record violations in PolicyReports, block nothing) or \"Enforce\" (reject non-compliant/unsigned pods). Start with Audit, verify reports, then flip to Enforce. Read by morning-start.ps1 / setup-admission-control.ps1 when applying k8s/kyverno/*.yaml."
+  type        = string
+  default     = "Audit"
+
+  validation {
+    condition     = contains(["Audit", "Enforce"], var.kyverno_policy_action)
+    error_message = "kyverno_policy_action must be either \"Audit\" or \"Enforce\"."
+  }
+}

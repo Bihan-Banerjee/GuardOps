@@ -34,3 +34,12 @@ alb_controller_role_arn = "arn:aws:iam::236796665744:role/guardops-alb-controlle
 alb_dns_name            = ""        # leave empty on first apply
 enable_argocd           = true
 git_repo_url            = "https://github.com/Bihan-Banerjee/GuardOps"
+
+# ── Phase 11: Admission control (Kyverno) ─────────────────────────────────────
+# Set enable_kyverno = true to install Kyverno + the IRSA role that lets it read
+# cosign signatures from private ECR. Apply with -target=module.kyverno, then run
+# scripts/setup-admission-control.ps1 to apply the ClusterPolicies.
+# Start with Audit (record only); flip to Enforce once the PolicyReports are clean
+# (kyverno_policy_action = "Enforce" or scripts/setup-admission-control.ps1 -Enforce).
+enable_kyverno        = true
+kyverno_policy_action = "Audit"

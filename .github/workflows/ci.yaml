@@ -1,11 +1,11 @@
 # .github/workflows/ci.yaml
 #
-# GuardOps CI/CD Pipeline — Phase 10
+# GuardOps CI/CD Pipeline — Phase 11
 #
 # Jobs:
 #   1. build-test      — lint, type-check, unit tests, coverage
 #   2. sast            — Semgrep + Bandit + SonarQube source code scanning
-#   3. container-scan  — Docker build + Trivy image scan + ECR push
+#   3. container-scan  — Docker build + Trivy scan + ECR push + SBOM + cosign keyless sign (Phase 11)
 #   4. deploy          — Helm upgrade to EKS + OWASP ZAP DAST + GitOps override commit (Phase 10)
 #   5. runtime-gate    — Falco alert check via Loki (Phase 7)
 #   6. upload-reports  — Push scan reports to S3 (always runs if AWS role exists)
@@ -32,6 +32,20 @@
 #     Skipped gracefully if ARGOCD_TOKEN is not set.
 #   deploy job permissions — added contents: write for GitOps push.
 #   deploy job checkout — added token + fetch-depth: 0 for GitOps push.
+#
+# Phase 11 changes — Supply chain (SBOM + Cosign keyless signing):
+#   Job 3 (container-scan) — after the ECR push, new steps:
+#     - capture the pushed image's sha256 digest (sign the digest, not the tag)
+#     - generate a Syft SBOM (CycloneDX + SPDX), upload as artifact + to S3
+#     - cosign keyless sign the image by digest, and attest the SBOMs +
+#       SLSA-style provenance (Sigstore: Fulcio cert + Rekor transparency log)
+#   No NEW secrets are required: keyless signing reuses the job's existing
+#   `id-token: write` OIDC token, and the existing AWS_ROLE_ARN already grants
+#   the ECR write needed to store the cosign .sig/.att artifacts. The Rekor
+#   entry is public and contains only the image digest + the repo workflow
+#   identity (no source, no secrets).
+#   Kyverno (enable_kyverno) verifies these signatures at admission on EKS —
+#   see infra/terraform/modules/kyverno and k8s/kyverno/.
 #
 # Phase 7 change — Falco runtime gate added:
 #   After Helm deploy, port-forwards Loki and queries for CRITICAL Falco
@@ -336,6 +350,8 @@ jobs:
 
     outputs:
       image-tag: ${{ steps.meta.outputs.tag }}
+      image-digest: ${{ steps.digest.outputs.digest }}
+      image-ref-digest: ${{ steps.digest.outputs.ref }}
 
     steps:
       - uses: actions/checkout@v4
@@ -456,6 +472,17 @@ jobs:
               --encryption-configuration encryptionType=AES256 \
               --region ${{ env.AWS_REGION }}
 
+      # Phase 11: cosign-aware retention so image signatures (.sig/.att, which are
+      # themselves tagged images) are not expired out from under a running image.
+      - name: Ensure cosign-aware ECR lifecycle policy
+        if: ${{ env.HAS_AWS == 'true' }}
+        run: |
+          aws ecr put-lifecycle-policy \
+            --repository-name ${{ env.IMAGE_NAME }} \
+            --region ${{ env.AWS_REGION }} \
+            --lifecycle-policy-text '{"rules":[{"rulePriority":1,"description":"Expire untagged after 7 days","selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":7},"action":{"type":"expire"}},{"rulePriority":2,"description":"Keep last 25 images incl cosign artifacts","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":25},"action":{"type":"expire"}}]}' \
+            || echo "::warning::could not set ECR lifecycle policy (missing ecr:PutLifecyclePolicy?) — continuing"
+
       - name: Tag and push to ECR
         if: ${{ env.HAS_AWS == 'true' }}
         run: |
@@ -473,6 +500,118 @@ jobs:
 
           echo "Successfully pushed: ${FULL_REF}"
           echo "Also tagged latest: ${LATEST_REF}"
+
+      # ── Phase 11: SBOM (Syft) ───────────────────────────────────────────────
+      # Generated from the locally-built image so it runs even on fork PRs that
+      # have no AWS role (HAS_AWS=false) and never push to ECR.
+      - name: Install Syft
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+            | sh -s -- -b /usr/local/bin
+          syft version
+
+      - name: Generate SBOM (CycloneDX + SPDX JSON)
+        run: |
+          syft "${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }}" \
+            -o cyclonedx-json=security/reports/sbom.cdx.json \
+            -o spdx-json=security/reports/sbom.spdx.json
+          echo "SBOM packages (CycloneDX):"
+          grep -c '"bom-ref"' security/reports/sbom.cdx.json || true
+
+      - name: Upload SBOM artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-reports
+          path: |
+            security/reports/sbom.cdx.json
+            security/reports/sbom.spdx.json
+          if-no-files-found: warn
+
+      # ── Phase 11: capture pushed digest (sign the digest, not the tag) ──────
+      - name: Capture image digest from ECR
+        id: digest
+        if: ${{ env.HAS_AWS == 'true' }}
+        run: |
+          set -euo pipefail
+          DIGEST=$(aws ecr describe-images \
+            --repository-name "${{ env.IMAGE_NAME }}" \
+            --image-ids imageTag="${{ steps.meta.outputs.tag }}" \
+            --region "${{ env.AWS_REGION }}" \
+            --query 'imageDetails[0].imageDigest' --output text)
+          if [ -z "$DIGEST" ] || [ "$DIGEST" = "None" ]; then
+            echo "describe-images returned no digest; falling back to imagetools"
+            DIGEST=$(docker buildx imagetools inspect "${{ steps.meta.outputs.full_ref }}" \
+              --format '{{json .Manifest.Digest}}' | tr -d '"')
+          fi
+          REF="${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "ref=${REF}"       >> "$GITHUB_OUTPUT"
+          echo "Signing target: ${REF}"
+
+      # ── Phase 11: Cosign keyless sign + SBOM/provenance attestations ────────
+      - name: Install Cosign
+        if: ${{ env.HAS_AWS == 'true' }}
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: Cosign keyless sign (by digest)
+        if: ${{ env.HAS_AWS == 'true' }}
+        env:
+          COSIGN_YES: "true"
+        run: |
+          set -euo pipefail
+          cosign sign "${{ steps.digest.outputs.ref }}"
+          echo "Signed (keyless) — signature + Rekor entry created."
+
+      - name: Cosign attest SBOMs (CycloneDX + SPDX)
+        if: ${{ env.HAS_AWS == 'true' }}
+        env:
+          COSIGN_YES: "true"
+        run: |
+          set -euo pipefail
+          cosign attest --type cyclonedx \
+            --predicate security/reports/sbom.cdx.json \
+            "${{ steps.digest.outputs.ref }}"
+          cosign attest --type spdxjson \
+            --predicate security/reports/sbom.spdx.json \
+            "${{ steps.digest.outputs.ref }}"
+
+      - name: Cosign attest provenance (best-effort)
+        if: ${{ env.HAS_AWS == 'true' }}
+        env:
+          COSIGN_YES: "true"
+        run: |
+          set -euo pipefail
+          cat > security/reports/provenance.json <<JSON
+          {
+            "buildType": "https://github.com/${{ github.repository }}/ci",
+            "builder": { "id": "https://github.com/${{ github.repository }}/.github/workflows/ci.yaml@${{ github.ref }}" },
+            "invocation": { "configSource": { "uri": "git+https://github.com/${{ github.repository }}@${{ github.sha }}" } },
+            "metadata": { "buildInvocationID": "${{ github.run_id }}" }
+          }
+          JSON
+          cosign attest --type slsaprovenance \
+            --predicate security/reports/provenance.json \
+            "${{ steps.digest.outputs.ref }}" \
+            || echo "::warning::provenance attestation failed — continuing"
+
+      - name: Upload SBOM to S3 (per-digest)
+        if: ${{ env.HAS_AWS == 'true' }}
+        env:
+          S3_BUCKET: ${{ secrets.GUARDOPS_S3_BUCKET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${S3_BUCKET:-}" ]; then
+            echo "GUARDOPS_S3_BUCKET unset — skipping SBOM S3 upload"
+            exit 0
+          fi
+          SAFE_DIGEST=$(echo "${{ steps.digest.outputs.digest }}" | tr ':' '_')
+          DEST="s3://${S3_BUCKET}/sbom/${{ env.IMAGE_NAME }}/${SAFE_DIGEST}/"
+          aws s3 cp security/reports/sbom.cdx.json  "${DEST}" --no-progress
+          aws s3 cp security/reports/sbom.spdx.json "${DEST}" --no-progress
+          echo "Uploaded SBOM to ${DEST}"
 
       - name: Upload container scan report
         if: always()

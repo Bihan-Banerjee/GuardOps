@@ -3,6 +3,90 @@
 All notable changes are documented here.
 Format: [Semantic Versioning](https://semver.org)
 
+## [0.11.0] — 2026-06-01
+
+### Added
+- **Supply chain security (Phase 11): SBOM + Cosign keyless signing + Kyverno.**
+- CI `container-scan`: generate a Syft SBOM (CycloneDX + SPDX), upload it as an
+  artifact and to S3, sign the image **by digest** with cosign keyless (GitHub
+  OIDC → Fulcio → Rekor), and attest the SBOMs + SLSA-style provenance. No new
+  secrets — keyless reuses the job's `id-token: write`.
+- `infra/terraform/modules/kyverno`: Kyverno admission controller (Helm) plus an
+  IRSA role that lets its controllers read cosign signatures from private ECR.
+  Gated by `enable_kyverno`; `kyverno_policy_action` selects Audit vs Enforce.
+- `modules/eks`: registered the cluster IRSA OIDC provider + `oidc_provider_*`
+  outputs (prerequisite for SA-scoped IAM roles).
+- `k8s/kyverno/`: ClusterPolicies — keyless image-signature verification
+  (`mutateDigest`), a required CycloneDX SBOM attestation, and a best-practice
+  pack (no `:latest`, ECR-only, runAsNonRoot, drop ALL caps, no privilege
+  escalation / privileged / host namespaces, resource requests+limits; read-only
+  rootfs as an Audit-only advisory).
+- `scripts/setup-admission-control.ps1`: apply the policies, with `-Enforce` to
+  flip Audit → Enforce (and the verify webhooks to `failurePolicy: Fail`).
+- CLI: `guardops sbom <image>` (Syft) and `guardops verify-image <ref>` (cosign
+  verify; `--attestation` also checks the SBOM), backed by
+  `backend/security/sbom_runner.py` + `cosign_verifier.py`.
+- `docs/runbooks/supply-chain-admission-control.md`: install, verify, Audit →
+  Enforce, rollback, and troubleshooting.
+
+### Changed
+- `modules/ecr`: cosign-aware lifecycle (expire untagged after 7 days, keep last
+  25 tagged) so image signatures are not expired out from under running images;
+  the CI repo-create step applies the same policy to the `guardops-app` repo.
+- `morning-start.ps1`: new Phase 11 step applies the Kyverno ClusterPolicies once
+  Kyverno is Ready (gated by `enable_kyverno`); step counter is now `/12`.
+- `night-shutdown.ps1`: delete the GuardOps ClusterPolicies and uninstall Kyverno
+  first (clears admission webhooks), and detach `module.kyverno` from state before
+  `terraform destroy`.
+- Helm chart bumped 0.4.0 → 0.5.0.
+
+### Fixed
+- CI auth: preserve the GitHub Actions OIDC provider + CI role across the nightly
+  `terraform destroy` (`night-shutdown.ps1` detaches them from state, like the
+  Route53 zone; `morning-start.ps1` re-imports them via `Import-GithubOidc`) so
+  CI no longer fails with "No OpenIDConnect provider found … for
+  https://token.actions.githubusercontent.com" while the cluster is down.
+- mypy: annotate the ArgoCD sync payload in `backend/pipeline/gitops_writer.py`
+  as `dict[str, Any]` so `requests.post(json=…)` type-checks.
+- Removed the legacy static CI IAM user (`aws_iam_user.ci` + inline policy +
+  access key + `ci_user_*` outputs) from `modules/iam`. It was superseded by
+  GitHub OIDC in Phase 6 and was unused; its orphaned presence in AWS caused a
+  `409 EntityAlreadyExists` that aborted `morning-start.ps1`. Removing it also
+  deletes unused long-lived credentials. (Delete the old AWS user once — see the
+  note in `modules/iam/main.tf`.)
+- `morning-start.ps1`: warm the helm chart repository cache (`Ensure-HelmRepos`)
+  before the full `terraform apply`. The Terraform helm provider downloads charts
+  through the shared helm CLI cache under `%TEMP%\helm`; on a fresh/cleared TEMP
+  that cache is empty and the apply failed with "could not download chart: no
+  cached repo found (try 'helm repo update')". Adds every repo the modules pull
+  (eks-charts, jetstack, argo, falcosecurity, grafana, kyverno,
+  prometheus-community) and runs `helm repo update`.
+- Kyverno `verify-images` policy: digest pinning is now action-dependent
+  (`__DIGEST_PIN__`). Kyverno rejects `mutateDigest: true` under
+  `validationFailureAction: Audit` ("mutateDigest must be set to false for 'Audit'
+  failure action"), so `mutateDigest`/`verifyDigest` are `false` in Audit and
+  `true` only in Enforce. The setup/morning-start scripts substitute it.
+- `morning-start.ps1`: auto-retry the full `terraform apply` once (transient
+  helm/webhook rollout races on a busy single node), and adopt an orphaned
+  `kyverno` helm release into state (`Import-KyvernoRelease`) to avoid
+  "cannot re-use a name that is still in use".
+- Kyverno chart pinned **3.2.6 → 3.4.6** (Kyverno 1.12 → 1.14.5). Chart 3.2.x
+  pulled its report-cleanup CronJobs *and* helm hooks (`policyReportsCleanup`,
+  `remove-configmap`) from `bitnami/kubectl:1.28.5`, which was removed from Docker
+  Hub (Bitnami image purge) → ImagePullBackOff blocked both the `wait=true` install
+  and the uninstall hooks. 3.4.x pulls those images from `reg.kyverno.io` /
+  `alpine/kubectl`, fixing it at the source. The `policyReportsCleanup` post-install
+  hook is still disabled (blocking + pointless on a nightly cluster). IRSA
+  serviceAccount annotations and the other value keys were verified against 3.4.6.
+- `morning-start.ps1`: the new import/repo helpers now use the repo's
+  `try { … 2>&1 | Out-Null } catch { }` pattern so a not-in-state `terraform
+  state show` no longer becomes a terminating error under `ErrorAction Stop`.
+
+### Notes
+- Policies ship in **Audit** by default — verify the PolicyReports, then flip to
+  Enforce. Read-only root filesystem stays Audit-only until the app chart adds a
+  writable `emptyDir` (tracked follow-up).
+
 ## [0.10.2] — 2026-05-31
 
 ### Changed

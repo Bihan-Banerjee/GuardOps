@@ -52,7 +52,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import requests
 
@@ -267,7 +267,7 @@ def trigger_argocd_sync(
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
-    payload = {
+    payload: dict[str, Any] = {
         "revision": revision,
         "prune": prune,
         "dryRun": False,
