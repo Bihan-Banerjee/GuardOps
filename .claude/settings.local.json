@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs grep -l \"image:\")",
+      "Bash(xargs grep -l \"namespace:\")"
+    ]
+  }
+}
