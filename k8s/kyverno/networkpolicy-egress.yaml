@@ -1,0 +1,53 @@
+# k8s/kyverno/networkpolicy-egress.yaml
+#
+# GuardOps — Phase 11 — Kyverno egress allow-list (REFERENCE — NOT auto-applied)
+#
+# IMPORTANT:
+#   scripts/setup-admission-control.ps1 and scripts/morning-start.ps1 deliberately
+#   SKIP files named networkpolicy* when applying k8s/kyverno/. This file is a
+#   documented reference, applied manually ONLY if you later introduce a
+#   default-deny egress policy in the kyverno namespace.
+#
+# WHY NOT APPLIED BY DEFAULT:
+#   The kyverno namespace currently has no default-deny, so egress is already
+#   open and Kyverno reaches everything it needs. A NetworkPolicy with an Egress
+#   rule is itself deny-by-default for the pods it selects — applying an
+#   incomplete allow-list here could silently block Kyverno from the API server,
+#   ECR, or Sigstore and break admission. Apply it only once you have confirmed
+#   the full set of destinations and that NetworkPolicy enforcement is active on
+#   this cluster (AWS VPC CNI network policy agent).
+#
+# WHAT KYVERNO NEEDS OUTBOUND:
+#   - DNS (UDP/TCP 53) — service discovery
+#   - 443 — the EKS API server, private ECR (signatures/attestations), and the
+#           Sigstore public-good roots (fulcio.sigstore.dev, rekor.sigstore.dev,
+#           tuf-repo-cdn.sigstore.dev) used by keyless verification
+#
+# APPLY MANUALLY (only when hardening egress):
+#   kubectl apply -f k8s/kyverno/networkpolicy-egress.yaml
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: guardops-kyverno-egress
+  namespace: kyverno
+  labels:
+    app.kubernetes.io/managed-by: guardops
+    guardops.io/phase: "11"
+    guardops.io/policy-type: kyverno-egress
+spec:
+  # Applies to all Kyverno controller pods in the namespace.
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    # DNS resolution
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # HTTPS: API server, ECR, and the Sigstore public-good roots
+    - ports:
+        - protocol: TCP
+          port: 443

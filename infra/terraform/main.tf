@@ -1,6 +1,16 @@
 # infra/terraform/main.tf
 #
-# GuardOps — Root Terraform Configuration — Phase 10
+# GuardOps — Root Terraform Configuration — Phase 11
+#
+# Changes from Phase 10:
+#   - modules/eks: registered the cluster IRSA OIDC provider + oidc_provider_*
+#     outputs (prerequisite for SA-scoped IAM roles like kyverno's ECR reader)
+#   - Added kyverno module: Kyverno admission controller + IRSA role for reading
+#     cosign signatures from ECR (gated by enable_kyverno, default false)
+#   - Added enable_kyverno, kyverno_policy_action variables
+#   - Added outputs: kyverno_status, kyverno_ecr_role_arn, kyverno_policy_action
+#   - modules/ecr: cosign-aware lifecycle policy (expire untagged, keep last 25
+#     tagged) so image signatures are not expired out from under running images
 #
 # Changes from Phase 8:
 #   - Added dns-tls module: Route53 + cert-manager + AWS Load Balancer Controller
@@ -57,6 +67,18 @@
 #     kubectl get ingress -n default -o jsonpath='{.items[0].status.loadBalancer.ingress[0].hostname}'
 #     # Set in terraform.tfvars:   alb_dns_name = "<alb-address>"
 #     terraform apply -target=module.dns_tls   # creates Route53 alias records
+#
+#   Phase 6 — Admission control (new in Phase 11):
+#     # Set in terraform.tfvars:
+#     #   enable_kyverno        = true
+#     #   kyverno_policy_action = "Audit"   # flip to "Enforce" after verifying
+#     terraform apply -target=module.kyverno
+#     # Then apply the ClusterPolicies (Kyverno must be Ready first):
+#     .\scripts\setup-admission-control.ps1
+#     # Verify nothing is blocked, read the reports:
+#     kubectl get clusterpolicy ; kubectl get polr -A
+#     # When ready to block: re-run with -Enforce (or set kyverno_policy_action=Enforce)
+#     .\scripts\setup-admission-control.ps1 -Enforce
 #
 # Estimated cost (Phase 10 additions):
 #   Route53 hosted zone : $0.50/month (negligible)
@@ -333,4 +355,55 @@ output "argocd_initial_password_cmd" {
 output "argocd_generate_token_cmd" {
   description = "Run this after logging in to generate a CI API token. Add result as GitHub secret ARGOCD_TOKEN."
   value       = var.enable_argocd ? module.argocd[0].generate_api_token_command : "ArgoCD not enabled"
+}
+
+# ── Phase 11: Admission Control (Kyverno) ──────────────────────────────────────
+#
+# Gated by enable_kyverno (default: false) — same gate pattern as Phase 7/8/10.
+# EKS-only: leave false for local k3d (unsigned pullPolicy:Never images there).
+#
+# Installs the Kyverno admission controller plus an IRSA role that lets it read
+# cosign signatures from the private ECR repo (see modules/kyverno). The
+# ClusterPolicies in k8s/kyverno/ are applied AFTER Kyverno is Ready by
+# scripts/setup-admission-control.ps1 (or the Phase 11 step in morning-start.ps1),
+# not by Terraform — Terraform would otherwise need the Kyverno CRD schema at
+# plan time, before the CRDs exist.
+#
+# PREREQUISITES before setting enable_kyverno = true:
+#   1. EKS cluster running (the cluster OIDC provider, added to modules/eks in
+#      Phase 11, is what the IRSA role trusts).
+#   2. Images signed by CI (the verify-images policy checks the GitHub Actions
+#      keyless identity). Run a CI build on main first, then verify with:
+#        guardops verify-image <ecr>/guardops-app@<digest>
+#   3. Roll out in Audit first (kyverno_policy_action = "Audit"), confirm the
+#      PolicyReports, then flip to Enforce.
+
+module "kyverno" {
+  source = "./modules/kyverno"
+  count  = var.enable_kyverno ? 1 : 0
+
+  project_name      = var.project_name
+  aws_region        = var.aws_region
+  aws_account_id    = var.aws_account_id
+  policy_action     = var.kyverno_policy_action
+  oidc_provider_arn = module.eks.oidc_provider_arn
+  oidc_provider_url = module.eks.oidc_provider_url
+  eks_dependency    = module.eks
+
+  depends_on = [module.eks]
+}
+
+output "kyverno_status" {
+  description = "Kyverno Helm release status. After apply, run scripts/setup-admission-control.ps1 to apply the ClusterPolicies."
+  value       = var.enable_kyverno ? module.kyverno[0].kyverno_release_status : "Kyverno not enabled — set enable_kyverno = true"
+}
+
+output "kyverno_ecr_role_arn" {
+  description = "IRSA role ARN the Kyverno controllers use to read cosign signatures from ECR."
+  value       = var.enable_kyverno ? module.kyverno[0].kyverno_ecr_role_arn : "Kyverno not enabled"
+}
+
+output "kyverno_policy_action" {
+  description = "Default validationFailureAction the Kyverno ClusterPolicies are applied with."
+  value       = var.enable_kyverno ? module.kyverno[0].policy_action : "Kyverno not enabled"
 }

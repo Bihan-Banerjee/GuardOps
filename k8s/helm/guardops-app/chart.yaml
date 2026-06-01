@@ -4,7 +4,7 @@ description: >
   GuardOps managed application chart.
   Deployed by `guardops deploy` — do not apply manually.
 type: application
-version: 0.4.0
+version: 0.5.0
 appVersion: "1.0.0"
 keywords:
   - guardops
@@ -18,3 +18,10 @@ maintainers:
 #   - values.yaml: blueGreen section (enabled: false, slot: "")
 #   - values-staging.yaml: new file — staging environment overrides
 #   - Chart version bumped: 0.3.0 → 0.4.0
+#
+# Phase 11 changes (0.5.0):
+#   - No template changes. Pods already satisfy the Kyverno best-practice pack
+#     (runAsNonRoot, drop ALL caps, no privilege escalation, resource limits).
+#   - Chart version bumped: 0.4.0 → 0.5.0
+#   - Follow-up: set readOnlyRootFilesystem: true + a writable emptyDir so the
+#     read-only-rootfs policy (currently Audit-only) can move to Enforce.

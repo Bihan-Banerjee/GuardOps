@@ -43,7 +43,7 @@ Phase 10 adds GitOps: after the Helm deploy, `--gitops` writes `values-override-
 
 ---
 
-## Current Status — v0.10.2
+## Current Status — v0.11.0
 
 | Phase | Version | Status | What was built |
 |-------|---------|--------|----------------|
@@ -57,7 +57,8 @@ Phase 10 adds GitOps: after the Helm deploy, `--gitops` writes `values-override-
 | 7 — Runtime Security | v0.7.0 | ✅ Done | Loki + Promtail log pipeline, Falco-format alert ingestion, `guardops runtime-status`, CI runtime gate |
 | 8 — Self-Healing | v0.8.0 | ✅ Done | Alertmanager webhook handler, automatic NetworkPolicy quarantine on CRITICAL Falco alert, `guardops quarantine-status`, Terraform alertmanager-webhook module |
 | 9 — Multi-Environment | v0.9.0 | ✅ Done | Staging + prod namespace separation, blue-green deploy strategy, `guardops switch --slot`, environment-scoped config helpers, `staging-<sha>` ECR tags, `--env` on quarantine-status |
-| 10 — Full Production | v0.10.0 | ✅ **Current** | Real domain(in progress) + TLS via cert-manager + Let's Encrypt + Route53, ArgoCD GitOps (override-file pattern), `guardops deploy --gitops`, `guardops sync-status` CLI, 7-job CI pipeline, automated morning-start.ps1 (OIDC repair, subnet tag repair, state identity repair, webhook image build, ALB DNS wiring), night-shutdown.ps1 (Ingress drain + ALB wait), production runbooks |
+| 10 — Full Production | v0.10.0 | ✅ Done | Real domain(in progress) + TLS via cert-manager + Let's Encrypt + Route53, ArgoCD GitOps (override-file pattern), `guardops deploy --gitops`, `guardops sync-status` CLI, 7-job CI pipeline, automated morning-start.ps1 (OIDC repair, subnet tag repair, state identity repair, webhook image build, ALB DNS wiring), night-shutdown.ps1 (Ingress drain + ALB wait), production runbooks |
+| 11 — Supply Chain + Admission Control | v0.11.0 | ✅ **Current** | Syft SBOM (CycloneDX + SPDX), Cosign **keyless** image signing + SBOM/provenance attestations (Sigstore: Fulcio + Rekor), Kyverno admission control — keyless signature verification (`mutateDigest`) + required SBOM attestation + best-practice policy pack (Audit→Enforce), IRSA for Kyverno→ECR, `guardops verify-image` / `guardops sbom`, `scripts/setup-admission-control.ps1`, cosign-aware ECR lifecycle |
 
 ---
 
@@ -65,7 +66,6 @@ Phase 10 adds GitOps: after the Helm deploy, `--gitops` writes `values-override-
 
 | Phase | Target | What it adds |
 |-------|--------|-------------|
-| 11 — Supply Chain + Admission Control | v0.11.0 | SBOM + Cosign image signing + Kyverno policy enforcement |
 | 12 — Scan Database | v0.12.0 | Persistent vulnerability metadata store |
 | 13 — Dashboard | v1.11.0 | Web UI for pipeline status and findings |
 
@@ -1001,6 +1001,42 @@ k8s/argocd/
 
 ---
 
+## Supply Chain Security (Phase 11)
+
+Phase 11 proves that the image running in the cluster is the exact artifact CI built, and blocks anything else. Three layers: an **SBOM** for every image, a **Cosign keyless signature** (Sigstore), and **Kyverno** admission policies that verify the signature before a pod is allowed to run.
+
+### How it works
+
+1. **SBOM (Syft).** The CI `container-scan` job runs `syft` on the built image and writes a CycloneDX + SPDX SBOM. It is uploaded as a CI artifact, copied to S3 under `sbom/guardops-app/<digest>/`, and attached to the image as a signed attestation.
+2. **Keyless signing (Cosign).** After the ECR push, CI captures the image's `sha256` digest and runs `cosign sign` **by digest**. Keyless signing uses the workflow's GitHub OIDC token — Fulcio issues a short-lived certificate, the signature is recorded in the Rekor transparency log, and the `.sig`/`.att` artifacts are stored next to the image in ECR. No private keys and no new secrets (the job already has `id-token: write`).
+3. **Admission control (Kyverno).** On EKS, the `guardops-verify-image-signatures` ClusterPolicy re-checks each `guardops-app` image at admission against the expected CI identity, and `mutateDigest` pins the verified digest. A best-practice pack (no `:latest`, ECR-only, runAsNonRoot, drop ALL caps, no privilege escalation, resource limits) runs alongside it. Kyverno reads the signatures from the private ECR repo via an IRSA role (`modules/kyverno`), with the node role's ECR ReadOnly as a fallback.
+
+### Verify a signature locally
+
+```bash
+guardops verify-image <account>.dkr.ecr.ap-south-1.amazonaws.com/guardops-app@sha256:<digest>
+guardops verify-image <ref> --attestation     # also verify the CycloneDX SBOM attestation
+guardops sbom guardops-app:latest             # generate a local SBOM
+cosign tree <ref>                             # list signatures + attestations
+```
+
+### Audit → Enforce rollout
+
+Policies ship in **Audit** (record violations, block nothing). Inspect the reports, then flip to Enforce:
+
+```powershell
+kubectl get clusterpolicy
+kubectl get polr -A                            # PolicyReports (pass/fail per pod)
+.\scripts\setup-admission-control.ps1 -Enforce # block unsigned/non-compliant pods
+```
+
+Enforcement is scoped to the `default` and `staging` namespaces; system namespaces (kube-system, kyverno, argocd, monitoring, cert-manager) are excluded so a Sigstore outage can never block cluster-critical workloads. Read-only root filesystem ships Audit-only until the app chart adds a writable `emptyDir`.
+
+Terraform: `infra/terraform/modules/kyverno` (gated by `enable_kyverno`, `kyverno_policy_action`).
+Policies: `k8s/kyverno/`. Runbook: `docs/runbooks/supply-chain-admission-control.md`.
+
+---
+
 ## Security Pipeline
 
 Four pre-deploy tools run in sequence, followed by one post-deploy DAST scan, one post-deploy runtime check, and continuous self-healing in production. All findings are normalised to a unified severity scale before gating.
@@ -1182,6 +1218,37 @@ Options:
   --fail-on [LOW|MEDIUM|HIGH|CRITICAL]
                          Severity threshold that blocks deploy. Default: HIGH
   --replicas INTEGER     Override replica count.
+```
+
+### `guardops verify-image` (Phase 11)
+
+```
+Usage: guardops verify-image <image-ref> [options]
+
+Verify the cosign keyless signature on an image against the GuardOps CI identity.
+
+Options:
+  --repo TEXT             GitHub owner/name for the expected signer identity.
+                          Default: Bihan-Banerjee/GuardOps
+  --identity-regexp TEXT  Override the certificate identity regexp (advanced).
+  --oidc-issuer TEXT      Expected OIDC issuer. Default:
+                          https://token.actions.githubusercontent.com
+  --attestation           Also verify the signed CycloneDX SBOM attestation.
+
+Exit: 0 verified · 1 failed or cosign not installed
+```
+
+### `guardops sbom` (Phase 11)
+
+```
+Usage: guardops sbom <image-ref> [options]
+
+Generate a CycloneDX + SPDX SBOM for an image using Syft (same SBOM CI attests).
+
+Options:
+  --output-dir TEXT       Directory to write SBOM files. Default: security/reports
+
+Exit: 0 generated · 1 syft not installed or generation failed
 ```
 
 ### `guardops switch` (Phase 9)
@@ -1582,7 +1649,8 @@ Expected during the window between the direct Helm deploy (immediate) and the Gi
 | v0.7.0 | Published | Loki + Promtail log pipeline, Falco-format alert ingestion, `guardops runtime-status` CLI, CI runtime gate job, Falco rules + simulator |
 | v0.8.0 | Published | Self-healing: Alertmanager webhook handler, automatic pod quarantine via NetworkPolicy, auto-release on alert resolved, `guardops quarantine-status` CLI, Terraform alertmanager-webhook module, Dockerfile.webhook, PrometheusRule + AlertmanagerConfig wiring |
 | v0.9.0 | Published | Multi-environment: staging + prod namespace separation, `guardops deploy --env staging`, blue-green deploy with `--slot blue/green`, `guardops switch` traffic cutover, environment-scoped config helpers, `staging-<sha>` ECR image tags, `--env` flag on quarantine-status, Helm chart v0.4.0 with blueGreen values |
-| v0.10.0 | **Current** | Full production: real domain(in progress) + TLS (cert-manager v1.14.4 + Let's Encrypt + Route53), ArgoCD v6.7.3 GitOps (override-file pattern, auto-sync staging, manual-sync prod, `ignoreDifferences` on image field), `guardops deploy --gitops` + `--gitops-branch`, `guardops sync-status` (ArgoCD REST API snapshot + blocking wait), CI Job 7 sync-gate, 7-job pipeline, `morning-start.ps1` full automation (EKS provider bootstrap stub, 409-conflict import, OIDC trust rotation, subnet tag repair, state identity repair, webhook image build, Ingress annotation patch, ALB DNS wiring), `night-shutdown.ps1` (Ingress drain + ALB drain + ordered Helm uninstall + alb_dns_name clear), `GUARDOPS_CONTEXT_10.md`, production runbooks (deploy-prod, rollback, incident-response), 341 tests |
+| v0.10.0 | Published | Full production: real domain(in progress) + TLS (cert-manager v1.14.4 + Let's Encrypt + Route53), ArgoCD v6.7.3 GitOps (override-file pattern, auto-sync staging, manual-sync prod, `ignoreDifferences` on image field), `guardops deploy --gitops` + `--gitops-branch`, `guardops sync-status` (ArgoCD REST API snapshot + blocking wait), CI Job 7 sync-gate, 7-job pipeline, `morning-start.ps1` full automation (EKS provider bootstrap stub, 409-conflict import, OIDC trust rotation, subnet tag repair, state identity repair, webhook image build, Ingress annotation patch, ALB DNS wiring), `night-shutdown.ps1` (Ingress drain + ALB drain + ordered Helm uninstall + alb_dns_name clear), `GUARDOPS_CONTEXT_10.md`, production runbooks (deploy-prod, rollback, incident-response), 341 tests |
+| v0.11.0 | **Current** | Supply chain: Syft SBOM (CycloneDX + SPDX, S3 + artifact), Cosign **keyless** signing by digest + SBOM/SLSA-provenance attestations (Sigstore Fulcio + Rekor, no new secrets), Kyverno admission control — `verifyImages` keyless signature check with `mutateDigest` + required SBOM attestation + best-practice pack (no `:latest`, ECR-only, runAsNonRoot, drop ALL caps, no privesc/privileged/host-ns, resource limits; read-only-rootfs Audit-only), IRSA `modules/kyverno` for Kyverno→ECR + cluster OIDC provider in `modules/eks`, cosign-aware ECR lifecycle, `guardops verify-image` / `guardops sbom`, `setup-admission-control.ps1` (Audit→Enforce), Phase 11 steps in morning-start/night-shutdown |
 
 ---
 
@@ -1590,7 +1658,6 @@ Expected during the window between the direct Helm deploy (immediate) and the Gi
 
 | Version | Status | Description |
 |---------|--------|-------------|
-| v0.11.0 | Planned | SBOM + Cosign signing + Kyverno admission control |
 | v0.12.0 | Planned | Scan metadata database |
 | v1.1.0 | Planned | Web dashboard |
 | v1.2.0 | Planned | Vulnerability waivers |

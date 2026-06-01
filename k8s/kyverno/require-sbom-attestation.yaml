@@ -1,0 +1,78 @@
+# k8s/kyverno/require-sbom-attestation.yaml
+#
+# GuardOps — Phase 11 — Require a signed SBOM attestation (Kyverno)
+#
+# PURPOSE:
+#   Goes one step beyond a bare signature: requires that each guardops-app image
+#   carries a CycloneDX SBOM attestation, signed by the same CI keyless identity.
+#   The CI container-scan job produces this with:
+#     cosign attest --type cyclonedx --predicate sbom.cdx.json <ref>
+#   This guarantees that anything admitted has a published, tamper-evident bill of
+#   materials — the supply-chain inventory needed for later CVE triage.
+#
+# PLACEHOLDERS (substituted before kubectl apply — see verify-images.yaml):
+#   __CI_ISSUER__ · __CI_SUBJECT__ · __POLICY_ACTION__
+#
+# NOTE ON predicate type:
+#   cosign `--type cyclonedx` records the in-toto predicateType
+#   "https://cyclonedx.org/bom". Kyverno matches attestations on that exact type.
+#   If you switch the CI attestation format, update `type` to match.
+#
+# RELATIONSHIP TO verify-images.yaml:
+#   That policy mutates the digest; this one only checks the attestation exists,
+#   so mutateDigest/verifyDigest are disabled here to avoid double-mutation.
+#   Operators may keep this policy in Audit even after verify-images goes Enforce
+#   if they want signatures hard-required but SBOM presence advisory.
+#
+# VERIFY / TEST:
+#   cosign verify-attestation --type cyclonedx \
+#     --certificate-identity-regexp ".*ci.yaml.*" \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com <ref>
+
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: guardops-require-sbom-attestation
+  labels:
+    app.kubernetes.io/managed-by: guardops
+    guardops.io/phase: "11"
+    guardops.io/policy-type: supply-chain
+  annotations:
+    policies.kyverno.io/title: Require Signed CycloneDX SBOM Attestation
+    policies.kyverno.io/category: Supply Chain Security
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Requires every guardops-app image to carry a CycloneDX SBOM attestation
+      signed by the GuardOps CI workflow identity.
+spec:
+  validationFailureAction: __POLICY_ACTION__
+  background: false
+  webhookTimeoutSeconds: 30
+  failurePolicy: Ignore
+  rules:
+    - name: require-cyclonedx-sbom
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - default
+                - staging
+      verifyImages:
+        - imageReferences:
+            - "*.dkr.ecr.*.amazonaws.com/guardops-app*"
+          mutateDigest: false
+          verifyDigest: false
+          required: true
+          attestations:
+            - type: https://cyclonedx.org/bom
+              attestors:
+                - count: 1
+                  entries:
+                    - keyless:
+                        subject: "__CI_SUBJECT__"
+                        issuer: "__CI_ISSUER__"
+                        rekor:
+                          url: https://rekor.sigstore.dev

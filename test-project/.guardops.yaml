@@ -32,3 +32,9 @@ self_healing:
   enabled: true
   webhook_url: ''
 
+
+admission_control:
+  enabled: true
+  engine: kyverno
+  policy_action: "Audit"
+

@@ -1,0 +1,96 @@
+# k8s/kyverno/verify-images.yaml
+#
+# GuardOps — Phase 11 — Keyless image-signature verification (Kyverno)
+#
+# PURPOSE:
+#   Admission-time proof that every guardops-app image running in default/staging
+#   was built and signed by the GuardOps CI workflow. The CI container-scan job
+#   signs each image by digest with cosign keyless (GitHub Actions OIDC → Fulcio
+#   short-lived cert → Rekor transparency log). This policy re-checks that
+#   signature against the expected CI identity before the pod is admitted.
+#
+# PLACEHOLDERS (substituted by scripts/setup-admission-control.ps1 and the
+# Phase 11 step in scripts/morning-start.ps1 before `kubectl apply`):
+#   __CI_ISSUER__     → https://token.actions.githubusercontent.com
+#   __CI_SUBJECT__    → https://github.com/<owner>/<repo>/.github/workflows/ci.yaml@refs/heads/*
+#   __POLICY_ACTION__ → Audit (record only) | Enforce (reject unsigned)
+#   __DIGEST_PIN__    → false (Audit) | true (Enforce). Kyverno REQUIRES
+#                       mutateDigest=false when validationFailureAction=Audit
+#                       (you cannot mutate in observe-only mode), so digest
+#                       pinning is enabled only when the policy moves to Enforce.
+#
+# WHY background: false
+#   Signature verification needs the admission-time identity context. Background
+#   scans of already-running pods (which were admitted before this policy, and
+#   carry no fresh OIDC context) would produce false negatives, so we disable it.
+#
+# WHY failurePolicy: Ignore (in Audit)
+#   A transient Sigstore/Fulcio/Rekor or ECR outage must never block the cluster
+#   while we are still observing. scripts/setup-admission-control.ps1 -Enforce
+#   flips this to Fail at the same time it flips __POLICY_ACTION__ to Enforce.
+#
+# WHY mutateDigest is action-dependent (__DIGEST_PIN__)
+#   In Enforce, on successful verification Kyverno rewrites the image tag to the
+#   immutable @sha256: digest in the pod spec, pinning exactly the bytes that were
+#   verified (ArgoCD Applications ignoreDifferences on the container image, so this
+#   rewrite does not cause perpetual OutOfSync). In Audit, Kyverno forbids
+#   mutation, so both mutateDigest and verifyDigest are false and the policy only
+#   records whether a valid signature is present.
+#
+# PRIVATE ECR ACCESS:
+#   Kyverno must pull the cosign .sig/.att artifacts from the private ECR repo.
+#   The admission/background controllers run with the IRSA role created by
+#   infra/terraform/modules/kyverno (ECR read), with the node role's ECR
+#   ReadOnly as an automatic IMDS fallback.
+#
+# VERIFY / TEST:
+#   kubectl get clusterpolicy guardops-verify-image-signatures
+#   kubectl get polr -A                       # PolicyReports (pass/fail per pod)
+#   # Negative test (Audit → reported, Enforce → rejected):
+#   kubectl run rogue --image=nginx:latest -n staging
+
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: guardops-verify-image-signatures
+  labels:
+    app.kubernetes.io/managed-by: guardops
+    guardops.io/phase: "11"
+    guardops.io/policy-type: supply-chain
+  annotations:
+    policies.kyverno.io/title: Verify GuardOps Image Signatures (keyless)
+    policies.kyverno.io/category: Supply Chain Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Requires every guardops-app image in default/staging to carry a valid
+      cosign keyless signature produced by the GuardOps CI workflow identity.
+spec:
+  validationFailureAction: __POLICY_ACTION__
+  background: false
+  webhookTimeoutSeconds: 30
+  failurePolicy: Ignore
+  rules:
+    - name: verify-ecr-keyless-signature
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - default
+                - staging
+      verifyImages:
+        - imageReferences:
+            - "*.dkr.ecr.*.amazonaws.com/guardops-app*"
+          mutateDigest: __DIGEST_PIN__
+          verifyDigest: __DIGEST_PIN__
+          required: true
+          attestors:
+            - count: 1
+              entries:
+                - keyless:
+                    subject: "__CI_SUBJECT__"
+                    issuer: "__CI_ISSUER__"
+                    rekor:
+                      url: https://rekor.sigstore.dev

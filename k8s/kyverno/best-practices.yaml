@@ -1,0 +1,304 @@
+# k8s/kyverno/best-practices.yaml
+#
+# GuardOps — Phase 11 — Best-practice admission policies (Kyverno)
+#
+# A pod-security + image-hygiene pack applied alongside the signature/SBOM
+# policies. Scoped to the application namespaces (default, staging) where only
+# guardops-app runs. Kyverno auto-generates the equivalent rules for the Pod
+# controllers (Deployment/ReplicaSet/Job/…) via its autogen feature, so matching
+# `Pod` covers controller-created pods too.
+#
+# __POLICY_ACTION__ is substituted with Audit or Enforce by the setup script.
+# These checks were verified against the live guardops-app pod spec, so all are
+# safe to Enforce — EXCEPT read-only root filesystem, which the app does not yet
+# satisfy (deployment.yaml sets readOnlyRootFilesystem: false). That one policy
+# is pinned to Audit so flipping the pack to Enforce never blocks the app.
+#
+# VERIFY / TEST:
+#   kubectl get clusterpolicy -l guardops.io/phase=11
+#   kubectl get polr -A
+#   kubectl run rogue --image=nginx:latest -n staging   # trips several rules
+
+# ── Image hygiene: no :latest, ECR registry only ──────────────────────────────
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: guardops-image-hygiene
+  labels:
+    app.kubernetes.io/managed-by: guardops
+    guardops.io/phase: "11"
+    guardops.io/policy-type: best-practice
+  annotations:
+    policies.kyverno.io/title: Image Hygiene (no :latest, ECR only)
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+spec:
+  validationFailureAction: __POLICY_ACTION__
+  failurePolicy: Ignore
+  background: true
+  rules:
+    - name: require-tag-disallow-latest
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - default
+                - staging
+      validate:
+        message: "Images must be tagged (or digest-pinned) and must not use ':latest'."
+        pattern:
+          spec:
+            =(ephemeralContainers):
+              - image: "!*:latest"
+            =(initContainers):
+              - image: "!*:latest"
+            containers:
+              - image: "!*:latest"
+    - name: restrict-to-ecr-registry
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - default
+                - staging
+      validate:
+        message: "Images in default/staging must be pulled from the GuardOps ECR registry."
+        pattern:
+          spec:
+            =(ephemeralContainers):
+              - image: "*.dkr.ecr.*.amazonaws.com/*"
+            =(initContainers):
+              - image: "*.dkr.ecr.*.amazonaws.com/*"
+            containers:
+              - image: "*.dkr.ecr.*.amazonaws.com/*"
+---
+# ── Pod security: nonroot, drop caps, no privesc/privileged/host namespaces ────
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: guardops-pod-security
+  labels:
+    app.kubernetes.io/managed-by: guardops
+    guardops.io/phase: "11"
+    guardops.io/policy-type: best-practice
+  annotations:
+    policies.kyverno.io/title: Pod Security (nonroot, no privilege, drop ALL caps)
+    policies.kyverno.io/category: Pod Security Standards
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+spec:
+  validationFailureAction: __POLICY_ACTION__
+  failurePolicy: Ignore
+  background: true
+  rules:
+    - name: require-run-as-nonroot
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - default
+                - staging
+      validate:
+        message: >-
+          Running as root is not allowed. Set spec.securityContext.runAsNonRoot
+          to true, or set it on every container.
+        anyPattern:
+          - spec:
+              securityContext:
+                runAsNonRoot: true
+              =(ephemeralContainers):
+                - =(securityContext):
+                    =(runAsNonRoot): true
+              =(initContainers):
+                - =(securityContext):
+                    =(runAsNonRoot): true
+              containers:
+                - =(securityContext):
+                    =(runAsNonRoot): true
+          - spec:
+              =(ephemeralContainers):
+                - securityContext:
+                    runAsNonRoot: true
+              =(initContainers):
+                - securityContext:
+                    runAsNonRoot: true
+              containers:
+                - securityContext:
+                    runAsNonRoot: true
+    - name: require-drop-all-capabilities
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - default
+                - staging
+      validate:
+        message: "Containers must drop ALL Linux capabilities."
+        pattern:
+          spec:
+            =(ephemeralContainers):
+              - securityContext:
+                  capabilities:
+                    drop:
+                      - ALL
+            =(initContainers):
+              - securityContext:
+                  capabilities:
+                    drop:
+                      - ALL
+            containers:
+              - securityContext:
+                  capabilities:
+                    drop:
+                      - ALL
+    - name: disallow-privilege-escalation
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - default
+                - staging
+      validate:
+        message: "allowPrivilegeEscalation must be set to false on every container."
+        pattern:
+          spec:
+            =(ephemeralContainers):
+              - securityContext:
+                  allowPrivilegeEscalation: false
+            =(initContainers):
+              - securityContext:
+                  allowPrivilegeEscalation: false
+            containers:
+              - securityContext:
+                  allowPrivilegeEscalation: false
+    - name: disallow-privileged-containers
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - default
+                - staging
+      validate:
+        message: "Privileged containers are disallowed."
+        pattern:
+          spec:
+            =(ephemeralContainers):
+              - =(securityContext):
+                  =(privileged): "false"
+            =(initContainers):
+              - =(securityContext):
+                  =(privileged): "false"
+            containers:
+              - =(securityContext):
+                  =(privileged): "false"
+    - name: disallow-host-namespaces
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - default
+                - staging
+      validate:
+        message: "Host namespaces (hostNetwork/hostPID/hostIPC) are disallowed."
+        pattern:
+          spec:
+            =(hostNetwork): "false"
+            =(hostPID): "false"
+            =(hostIPC): "false"
+---
+# ── Resource governance: requests + limits required ───────────────────────────
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: guardops-require-resources
+  labels:
+    app.kubernetes.io/managed-by: guardops
+    guardops.io/phase: "11"
+    guardops.io/policy-type: best-practice
+  annotations:
+    policies.kyverno.io/title: Require CPU/Memory Requests and Limits
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+spec:
+  validationFailureAction: __POLICY_ACTION__
+  failurePolicy: Ignore
+  background: true
+  rules:
+    - name: require-requests-and-limits
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - default
+                - staging
+      validate:
+        message: "Every container must declare CPU/memory requests and limits."
+        pattern:
+          spec:
+            containers:
+              - resources:
+                  requests:
+                    memory: "?*"
+                    cpu: "?*"
+                  limits:
+                    memory: "?*"
+                    cpu: "?*"
+---
+# ── Read-only root filesystem — AUDIT ONLY ────────────────────────────────────
+#
+# Intentionally NOT using __POLICY_ACTION__: the guardops-app container currently
+# runs with readOnlyRootFilesystem: false (deployment.yaml), so enforcing this
+# would block the app. Shipped as a hardcoded Audit advisory until the chart is
+# updated to a read-only rootfs + writable emptyDir. See the Phase 11 runbook.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: guardops-require-readonly-rootfs
+  labels:
+    app.kubernetes.io/managed-by: guardops
+    guardops.io/phase: "11"
+    guardops.io/policy-type: best-practice
+  annotations:
+    policies.kyverno.io/title: Require Read-Only Root Filesystem (advisory)
+    policies.kyverno.io/category: Pod Security Standards
+    policies.kyverno.io/severity: low
+    policies.kyverno.io/subject: Pod
+spec:
+  validationFailureAction: Audit
+  failurePolicy: Ignore
+  background: true
+  rules:
+    - name: require-readonly-root-filesystem
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - default
+                - staging
+      validate:
+        message: "Containers should run with a read-only root filesystem."
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  readOnlyRootFilesystem: true

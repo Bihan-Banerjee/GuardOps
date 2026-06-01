@@ -10,18 +10,5 @@ output "eks_node_role_arn" {
   value       = aws_iam_role.eks_node.arn
 }
 
-output "ci_user_name" {
-  description = "IAM username for GitHub Actions."
-  value       = aws_iam_user.ci.name
-}
-
-output "ci_user_access_key_id" {
-  description = "Access key ID for CI user. Set as AWS_ACCESS_KEY_ID in GitHub Secrets."
-  value       = aws_iam_access_key.ci.id
-}
-
-output "ci_user_secret_access_key" {
-  description = "Secret access key for CI user. Set as AWS_SECRET_ACCESS_KEY in GitHub Secrets."
-  value       = aws_iam_access_key.ci.secret
-  sensitive   = true  # won't print in logs; use: terraform output -raw ci_user_secret_access_key
-}
+# ci_user_* outputs removed in Phase 6/11 — the static CI user was replaced by
+# GitHub OIDC (modules/iam_oidc). CI auth no longer uses AWS_ACCESS_KEY_ID/SECRET.

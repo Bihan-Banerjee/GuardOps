@@ -1,6 +1,6 @@
 ﻿# scripts/morning-start.ps1
 #
-# GuardOps Phase 10 -- Full Morning Startup
+# GuardOps Phase 11 -- Full Morning Startup
 #
 # Handles every phase from scratch in a single run:
 #   Phase 1-3  : Terraform AWS infra (VPC, IAM, EKS, ECR, S3)
@@ -11,6 +11,8 @@
 #   Phase 9    : App deploy to prod + staging namespaces
 #   Phase 10   : OIDC provider, ALB IAM role, subnet tag repair,
 #                cert-manager ClusterIssuers, ALB DNS wiring, ArgoCD setup
+#   Phase 11   : Kyverno admission control -- apply image-signature +
+#                best-practice ClusterPolicies (gated by enable_kyverno)
 #
 # Key behaviours:
 #   - Fully idempotent -- safe to re-run on an already-running cluster
@@ -125,6 +127,37 @@ function Wait-Pods {
     Write-Warn "$Name not Ready after ${Timeout}s -- continuing anyway"
 }
 
+function Import-EksOidcProvider {
+    # Phase 11: the cluster IRSA OIDC provider is now Terraform-managed
+    # (module.eks.aws_iam_openid_connect_provider.eks). If a prior run created it
+    # imperatively (the Phase 10 ALB IRSA path below, or eksctl), it exists in AWS
+    # but not in Terraform state, so the full apply would fail with
+    # EntityAlreadyExists. Import it first. No-op when already in state (the normal
+    # cold-start path, where the Phase 1 apply created and recorded it).
+    param([string]$AccountId)
+
+    $issuer = ""
+    try { $issuer = (aws eks describe-cluster --name $ClusterName --region $Region `
+        --query "cluster.identity.oidc.issuer" --output text 2>$null) } catch { }
+    if (-not $issuer -or $issuer -eq "None") { return }
+
+    $url = ($issuer -replace "https://", "").Trim()
+    $arn = "arn:aws:iam::${AccountId}:oidc-provider/${url}"
+
+    # 2>&1 + try/catch: a not-in-state address makes terraform write to stderr,
+    # which PowerShell 5.1 turns into a terminating error under ErrorAction Stop.
+    try { terraform state show "module.eks.aws_iam_openid_connect_provider.eks" 2>&1 | Out-Null } catch { }
+    if ($LASTEXITCODE -eq 0) { return }   # already managed -- nothing to do
+
+    try { aws iam get-open-id-connect-provider --open-id-connect-provider-arn $arn 2>&1 | Out-Null } catch { }
+    if ($LASTEXITCODE -eq 0) {
+        Write-Info "Importing pre-existing EKS OIDC provider into Terraform state..."
+        try { terraform import "module.eks.aws_iam_openid_connect_provider.eks" $arn 2>&1 | Out-Null } catch { }
+        if ($LASTEXITCODE -eq 0) { Write-Ok "EKS OIDC provider imported" }
+        else { Write-Warn "EKS OIDC provider import failed -- run it manually if apply errors" }
+    }
+}
+
 function Import-IfMissing {
     param([string]$Addr, [string]$AwsId, [string]$Desc)
     Write-Info "Checking state for $Desc..."
@@ -149,6 +182,78 @@ function Import-IfMissing {
     
     if ($LASTEXITCODE -eq 0) { Write-Ok "Imported $Desc" }
     else                     { Write-Warn "Import of $Desc skipped (may not exist yet)" }
+}
+
+function Import-GithubOidc {
+    # Phase 6/11: re-attach the GitHub Actions OIDC provider + CI role + inline
+    # policy that night-shutdown.ps1 detaches from state before destroy (so CI —
+    # build, scan, ECR push, cosign signing — keeps working while the cluster is
+    # down). The GitHub OIDC provider is an account-level singleton; recreating it
+    # nightly leaves a window where CI fails with "No OpenIDConnect provider
+    # found". They still exist in AWS; ARNs/names are stable so AWS_ROLE_ARN is
+    # unaffected. Without this the apply would fail with EntityAlreadyExists.
+    # Idempotent via Import-IfMissing (skips whatever is already in state).
+    param([string]$AccountId)
+
+    Import-IfMissing "module.iam_oidc.aws_iam_openid_connect_provider.github" `
+        "arn:aws:iam::${AccountId}:oidc-provider/token.actions.githubusercontent.com" `
+        "GitHub OIDC provider (preserved across shutdown)"
+    Import-IfMissing "module.iam_oidc.aws_iam_role.github_actions" `
+        "guardops-github-actions-role" `
+        "GitHub Actions CI role (preserved across shutdown)"
+    Import-IfMissing "module.iam_oidc.aws_iam_role_policy.ci_policy" `
+        "guardops-github-actions-role:guardops-ci-policy" `
+        "GitHub Actions CI policy (preserved across shutdown)"
+}
+
+function Ensure-HelmRepos {
+    # The Terraform helm provider downloads charts through the shared helm CLI
+    # repository cache (HELM_REPOSITORY_CACHE, here under %TEMP%\helm). On a fresh
+    # machine or after %TEMP% is cleared, that cache has no *-index.yaml files and
+    # the full apply fails with:
+    #   "could not download chart: no cached repo found (try 'helm repo update')".
+    # Pre-add every repo the terraform modules pull charts from, then update ALL
+    # configured repos (also refreshes a stale ingress-nginx index from local k3d).
+    if (-not (Get-Command helm -ErrorAction SilentlyContinue)) {
+        Write-Warn "helm not found -- skipping repo cache warm-up (charts may fail to download)"
+        return
+    }
+    Write-Info "Warming helm chart repository cache (for the terraform helm provider)..."
+    $repos = [ordered]@{
+        "eks-charts"           = "https://aws.github.io/eks-charts"          # aws-load-balancer-controller
+        "jetstack"             = "https://charts.jetstack.io"                # cert-manager
+        "argo"                 = "https://argoproj.github.io/argo-helm"      # argo-cd
+        "falcosecurity"        = "https://falcosecurity.github.io/charts"    # falco
+        "grafana"              = "https://grafana.github.io/helm-charts"     # loki, promtail
+        "kyverno"              = "https://kyverno.github.io/kyverno/"        # kyverno (Phase 11)
+        "prometheus-community" = "https://prometheus-community.github.io/helm-charts"
+    }
+    foreach ($name in $repos.Keys) {
+        try { helm repo add $name $repos[$name] 2>&1 | Out-Null } catch { }
+    }
+    try { helm repo update 2>&1 | Out-Null } catch { }
+    Write-Ok "Helm chart repositories cached"
+}
+
+function Import-KyvernoRelease {
+    # If a 'kyverno' helm release exists in the cluster but is not in Terraform
+    # state (a prior interrupted apply, or setup-admission-control.ps1's standalone
+    # install), the full apply fails with "cannot re-use a name that is still in
+    # use". Adopt it so terraform manages it. Only relevant when enable_kyverno=true.
+    if ((Read-TfVar "enable_kyverno") -ne "true") { return }
+
+    # 2>&1 + try/catch: a not-in-state address makes terraform write to stderr,
+    # which PowerShell 5.1 turns into a terminating error under ErrorAction Stop.
+    try { terraform state show "module.kyverno[0].helm_release.kyverno" 2>&1 | Out-Null } catch { }
+    if ($LASTEXITCODE -eq 0) { return }   # already managed
+
+    try { helm status kyverno -n kyverno 2>&1 | Out-Null } catch { }
+    if ($LASTEXITCODE -eq 0) {
+        Write-Info "Adopting existing 'kyverno' helm release into Terraform state..."
+        try { terraform import "module.kyverno[0].helm_release.kyverno" "kyverno/kyverno" 2>&1 | Out-Null } catch { }
+        if ($LASTEXITCODE -eq 0) { Write-Ok "Kyverno helm release imported" }
+        else { Write-Warn "Kyverno import failed -- if apply still errors, run: helm uninstall kyverno -n kyverno" }
+    }
 }
 
 function Import-Route53Zone {
@@ -660,7 +765,7 @@ function Invoke-TerraformApply {
 # -- Banner --------------------------------------------------------------------
 Write-Host ""
 Write-Host "  +--------------------------------------------------+" -ForegroundColor Cyan
-Write-Host "  |   GuardOps Phase 10 -- Morning Startup           |" -ForegroundColor Cyan
+Write-Host "  |   GuardOps Phase 11 -- Morning Startup           |" -ForegroundColor Cyan
 Write-Host "  |   Est. time  : ~30-40 min (cold start)           |" -ForegroundColor White
 Write-Host "  |   Est. cost  : ~`$5.28/day while EKS runs        |" -ForegroundColor Yellow
 Write-Host "  |   Shutdown   : .\scripts\night-shutdown.ps1      |" -ForegroundColor Red
@@ -675,7 +780,7 @@ $script:AlbRoleUpdated = $false
 
 # -- Pre-flight ----------------------------------------------------------------
 $Step++
-Write-Step $Step "11" "Pre-flight checks"
+Write-Step $Step "12" "Pre-flight checks"
 
 try {
     $identity = aws sts get-caller-identity --output json 2>$null | ConvertFrom-Json
@@ -706,7 +811,7 @@ $domainName    = Read-TfVar "domain_name"
 # -- Terraform -----------------------------------------------------------------
 if (-not $SkipTerraform) {
     $Step++
-    Write-Step $Step "11" "Terraform -- AWS infrastructure"
+    Write-Step $Step "12" "Terraform -- AWS infrastructure"
     Set-Location $TerraformDir
 
     $eksExists = Test-EKSExists
@@ -727,6 +832,10 @@ if (-not $SkipTerraform) {
             Import-IfMissing "module.iam.aws_iam_role.eks_cluster" "guardops-prod-eks-cluster-role" "EKS cluster IAM role"
             Import-IfMissing "module.iam.aws_iam_role.eks_node"    "guardops-prod-eks-node-role"    "EKS node IAM role"
             Import-IfMissing "module.s3.aws_s3_bucket.reports"     "guardops-reports-$acct"         "S3 reports bucket"
+
+            # Adopt the GitHub OIDC provider + CI role preserved by night-shutdown
+            # BEFORE the Phase 1 apply recreates module.iam_oidc (avoids 409s).
+            Import-GithubOidc -AccountId $acct
 
             # 4. Phase 1 apply: infra only, no Helm/Kubernetes providers
             terraform apply `
@@ -757,6 +866,10 @@ if (-not $SkipTerraform) {
         terraform init -reconfigure 2>&1 | Out-Null
         Ensure-Namespaces
 
+        # Phase 11: adopt a pre-existing cluster OIDC provider into Terraform state
+        # (no-op on the normal path where Phase 1 just created it).
+        Import-EksOidcProvider -AccountId $acct
+
         # Phase 10 pre-requisites: OIDC provider + ALB IAM role + subnet tags
         # Must run BEFORE the full apply which deploys the ALB controller via Helm.
         if ($dnsTlsEnabled -eq "true") {
@@ -767,8 +880,15 @@ if (-not $SkipTerraform) {
 
         Repair-TerraformState
         Start-Sleep -Seconds 5
+        Ensure-HelmRepos
+        Import-KyvernoRelease
         Write-Info "Running Phase 2 full apply..."
         $applyExit = Invoke-TerraformApply
+        if ($applyExit -ne 0) {
+            Write-Warn "terraform apply failed -- retrying once in 20s (transient helm/webhook rollout races are common on a busy node)..."
+            Start-Sleep -Seconds 20
+            $applyExit = Invoke-TerraformApply
+        }
         if ($applyExit -ne 0) { Write-Fail "terraform apply Phase 2 failed"; exit 1 }
         Write-Ok "Full apply complete"
 
@@ -776,6 +896,14 @@ if (-not $SkipTerraform) {
         Write-Info "EKS already running -- full apply"
         terraform init -reconfigure 2>&1 | Out-Null
         Ensure-Namespaces
+
+        # Phase 11: adopt a pre-existing cluster OIDC provider into Terraform state
+        # so the full apply never fails with EntityAlreadyExists.
+        Import-EksOidcProvider -AccountId $acct
+
+        # Adopt the GitHub OIDC provider + CI role preserved by night-shutdown
+        # (idempotent — already in state on a normal warm start).
+        Import-GithubOidc -AccountId $acct
 
         # Phase 10 pre-requisites: OIDC provider + ALB IAM role + subnet tags
         # On warm start: verify trust policy is current, repair subnets if needed.
@@ -787,7 +915,14 @@ if (-not $SkipTerraform) {
 
         Repair-TerraformState
         Start-Sleep -Seconds 5
+        Ensure-HelmRepos
+        Import-KyvernoRelease
         $applyExit = Invoke-TerraformApply
+        if ($applyExit -ne 0) {
+            Write-Warn "terraform apply failed -- retrying once in 20s (transient helm/webhook rollout races are common on a busy node)..."
+            Start-Sleep -Seconds 20
+            $applyExit = Invoke-TerraformApply
+        }
         if ($applyExit -ne 0) { Write-Fail "terraform apply failed"; exit 1 }
         Write-Ok "terraform apply complete"
     }
@@ -803,7 +938,7 @@ if (-not $SkipTerraform) {
 
 # -- kubectl -------------------------------------------------------------------
 $Step++
-Write-Step $Step "11" "Configure kubectl + wait for nodes"
+Write-Step $Step "12" "Configure kubectl + wait for nodes"
 
 aws eks update-kubeconfig --region $Region --name $ClusterName
 if ($LASTEXITCODE -ne 0) { Write-Fail "kubectl config failed"; exit 1 }
@@ -829,7 +964,7 @@ if (-not $stagingNs) {
 
 # -- Observability -------------------------------------------------------------
 $Step++
-Write-Step $Step "11" "Observability stack (Prometheus + Grafana + Loki)"
+Write-Step $Step "12" "Observability stack (Prometheus + Grafana + Loki)"
 
 $grafPods = $null
 try {
@@ -858,7 +993,7 @@ if ($grafSecret) {
 
 # -- Runtime security ----------------------------------------------------------
 $Step++
-Write-Step $Step "11" "Runtime security (Falco + Loki + Promtail)"
+Write-Step $Step "12" "Runtime security (Falco + Loki + Promtail)"
 
 $falcoPods = $null
 try {
@@ -887,7 +1022,7 @@ if (-not $simExists) {
 
 # -- Self-healing --------------------------------------------------------------
 $Step++
-Write-Step $Step "11" "Self-healing (Alertmanager webhook)"
+Write-Step $Step "12" "Self-healing (Alertmanager webhook)"
 
 $webhookRunning = $null
 try {
@@ -904,7 +1039,7 @@ if ($webhookRunning) {
 
 # -- Phase 10: TLS -------------------------------------------------------------
 $Step++
-Write-Step $Step "11" "Phase 10 -- TLS (cert-manager + ALB controller + ClusterIssuers)"
+Write-Step $Step "12" "Phase 10 -- TLS (cert-manager + ALB controller + ClusterIssuers)"
 
 if ($dnsTlsEnabled -eq "true") {
 
@@ -972,7 +1107,7 @@ if ($dnsTlsEnabled -eq "true") {
 
 # -- Phase 10: ArgoCD ----------------------------------------------------------
 $Step++
-Write-Step $Step "11" "Phase 10 -- ArgoCD GitOps"
+Write-Step $Step "12" "Phase 10 -- ArgoCD GitOps"
 
 $argoCdUrl   = ""
 $argoCdPass  = ""
@@ -1043,10 +1178,49 @@ if ($argoCdEnabled -eq "true") {
     Write-Info "Add:  enable_argocd = true  to infra/terraform/terraform.tfvars"
 }
 
+# -- Phase 11: Admission Control (Kyverno) -------------------------------------
+$Step++
+Write-Step $Step "12" "Phase 11 -- Admission Control (Kyverno verifyImages)"
+
+$kyvernoEnabled = Read-TfVar "enable_kyverno"
+if ($kyvernoEnabled -eq "true") {
+    # Kyverno itself is installed by Terraform (module.kyverno). Here we wait for
+    # it to be Ready, then apply the ClusterPolicies from k8s/kyverno/ with the CI
+    # identity + policy action substituted in. networkpolicy* files are reference
+    # only (see k8s/kyverno/networkpolicy-egress.yaml) and are skipped.
+    Wait-Pods -NS "kyverno" -Label "app.kubernetes.io/component=admission-controller" -Timeout 300 -Name "Kyverno admission controller" | Out-Null
+
+    $policyAction = Read-TfVar "kyverno_policy_action"
+    if (-not $policyAction) { $policyAction = "Audit" }
+
+    $ciIssuer  = "https://token.actions.githubusercontent.com"
+    $ciSubject = "https://github.com/Bihan-Banerjee/GuardOps/.github/workflows/ci.yaml@refs/heads/*"
+    # Kyverno forbids mutateDigest in Audit, so pin the digest only under Enforce.
+    $digestPin = if ($policyAction -eq "Enforce") { "true" } else { "false" }
+
+    Write-Info "Applying Kyverno ClusterPolicies (action=$policyAction)..."
+    foreach ($f in (Get-ChildItem "$RepoRoot\k8s\kyverno\*.yaml" | Where-Object { $_.Name -notlike "networkpolicy*" })) {
+        $body = (Get-Content $f.FullName -Raw).
+            Replace("__CI_ISSUER__",     $ciIssuer).
+            Replace("__CI_SUBJECT__",    $ciSubject).
+            Replace("__POLICY_ACTION__", $policyAction).
+            Replace("__DIGEST_PIN__",    $digestPin)
+        try { $body | kubectl apply -f - 2>&1 | Out-Null } catch { }
+        if ($LASTEXITCODE -eq 0) { Write-Ok "  $($f.Name)" }
+        else { Write-Warn "  $($f.Name) failed -- check: kubectl get clusterpolicy" }
+    }
+    Write-Ok "Kyverno ClusterPolicies applied (action=$policyAction)"
+    Write-Info "Verify:  kubectl get clusterpolicy ; kubectl get polr -A"
+    Write-Info "Enforce: .\scripts\setup-admission-control.ps1 -Enforce"
+} else {
+    Write-Info "enable_kyverno not true in terraform.tfvars -- skipping admission control"
+    Write-Info "Add:  enable_kyverno = true  to infra/terraform/terraform.tfvars"
+}
+
 # -- Deploy app ----------------------------------------------------------------
 if (-not $SkipDeploy) {
     $Step++
-    Write-Step $Step "11" "Deploy app (prod + staging)"
+    Write-Step $Step "12" "Deploy app (prod + staging)"
 
     Set-Location "$RepoRoot\test-project"
 
@@ -1158,7 +1332,7 @@ if (-not $SkipDeploy) {
 # -- Port-forwards -------------------------------------------------------------
 if (-not $SkipPortForwards) {
     $Step++
-    Write-Step $Step "11" "Opening port-forwards"
+    Write-Step $Step "12" "Opening port-forwards"
 
     $forwards = @(
         @{ Svc="svc/kube-prometheus-stack-grafana";      Port="3000:80";   NS="monitoring" },
@@ -1184,7 +1358,7 @@ if (-not $SkipPortForwards) {
 
 # -- Summary -------------------------------------------------------------------
 $Step++
-Write-Step $Step "11" "Summary"
+Write-Step $Step "12" "Summary"
 
 Write-Host ""
 Write-Host "  +--------------------------------------------------+" -ForegroundColor Green

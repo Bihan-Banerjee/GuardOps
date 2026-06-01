@@ -1,6 +1,6 @@
 # scripts/night-shutdown.ps1
 #
-# GuardOps Phase 10 -- Nightly Shutdown
+# GuardOps Phase 11 -- Nightly Shutdown
 #
 # Safely destroys all billable AWS resources while preserving ECR images,
 # S3 reports, and DynamoDB state so the next morning-start.ps1 can restore
@@ -12,7 +12,8 @@
 #      ENIs in the VPC subnets when terraform destroy runs, AWS will refuse
 #      to delete the subnets and the whole destroy will fail.
 #   2. Wait for ALBs to disappear from AWS before uninstalling Helm.
-#   3. Uninstall all Helm releases (expanded for Phase 10 components).
+#   3. Delete Kyverno ClusterPolicies + uninstall all Helm releases (Kyverno
+#      first so its admission webhooks are gone before teardown).
 #   4. Delete PVCs to release EBS volumes before terraform destroy.
 #   5. Scale node group to 0 (speeds up destroy -- nodes drain faster).
 #   6. terraform destroy -- removes EKS, VPC, NAT gateways, IAM, Route53.
@@ -23,6 +24,9 @@
 # What is NOT destroyed (intentional):
 #   - ECR images          : avoids Docker rebuild on every cold start
 #   - S3 reports bucket   : test result history
+#   - GitHub OIDC provider + CI role : keeps CI (build/scan/push/sign) working
+#                           while the cluster is down (detached from state, re-
+#                           imported by morning-start.ps1)
 #   - DynamoDB table      : Terraform state lock
 #   - IAM OIDC provider   : morning-start.ps1 will create a new one for
 #                           the new cluster if the OIDC URL changed
@@ -163,7 +167,10 @@ Write-ShutdownStep "2" "8" "Uninstall Helm releases"
 # cert-manager must come AFTER guardops-app (which has the Certificate resource).
 # aws-load-balancer-controller comes last in kube-system (after Ingress is gone).
 $HelmReleases = @(
-    # App workloads first
+    # Kyverno FIRST -- remove the admission webhooks before tearing down workloads
+    # so a failurePolicy:Fail verify policy can't interfere with deletes/finalizers.
+    @{ Name = "kyverno";                     Namespace = "kyverno"      },
+    # App workloads next
     @{ Name = "guardops-app";                Namespace = "default"      },
     # NOTE: staging releases (guardops-app-staging and any blue/green slot
     # releases) are uninstalled dynamically below — see the staging sweep.
@@ -181,6 +188,11 @@ $HelmReleases = @(
 )
 
 if ($clusterOk) {
+    # Phase 11: remove Kyverno ClusterPolicies first so the admission/mutating
+    # webhooks are deregistered before we start tearing workloads down.
+    Write-Host "    Removing Kyverno ClusterPolicies (clears admission webhooks)..." -ForegroundColor Gray
+    try { kubectl delete clusterpolicy -l app.kubernetes.io/managed-by=guardops --ignore-not-found 2>$null | Out-Null } catch { }
+
     # Blue-green deploys create extra slot releases in the staging namespace
     # (guardops-app-staging-blue / -green) that aren't in the static list above.
     # Enumerate and uninstall every release in 'staging' first so no app
@@ -283,6 +295,21 @@ if ($dnsTlsEnabled -eq "true") {
     try { terraform state rm "module.dns_tls[0].aws_route53_zone.guardops" 2>&1 | Out-Null } catch { }
 }
 
+# Phase 6/11: preserve the GitHub Actions OIDC provider + CI role + inline policy
+# across the nightly destroy so CI (build, scan, ECR push, cosign signing) keeps
+# working while the cluster is down. The GitHub OIDC provider is an account-level
+# singleton -- destroying it nightly is what causes the CI error
+# "No OpenIDConnect provider found ... token.actions.githubusercontent.com".
+# morning-start.ps1 re-imports these on the next apply (Import-GithubOidc).
+Write-Host "    Preserving GitHub OIDC provider + CI role (detaching from state)..." -ForegroundColor Gray
+foreach ($addr in @(
+    "module.iam_oidc.aws_iam_role_policy.ci_policy",
+    "module.iam_oidc.aws_iam_role.github_actions",
+    "module.iam_oidc.aws_iam_openid_connect_provider.github"
+)) {
+    try { terraform state rm $addr 2>&1 | Out-Null } catch { }
+}
+
 # Drop cluster-resident resources from state before destroy. Step 2 already
 # `helm uninstall`-ed the releases and the rest vanish with the EKS cluster, but
 # Terraform's helm/kubernetes providers lose their cluster connection once EKS is
@@ -296,6 +323,7 @@ foreach ($addr in @(
     "module.dns_tls[0].helm_release.cert_manager",
     "module.alertmanager_webhook[0]",
     "module.argocd[0]",
+    "module.kyverno[0].helm_release.kyverno",
     "module.falco[0]"
 )) {
     try { terraform state rm $addr 2>&1 | Out-Null } catch { }
