@@ -81,6 +81,14 @@ Format: [Semantic Versioning](https://semver.org)
 - `morning-start.ps1`: the new import/repo helpers now use the repo's
   `try { … 2>&1 | Out-Null } catch { }` pattern so a not-in-state `terraform
   state show` no longer becomes a terminating error under `ErrorAction Stop`.
+- `night-shutdown.ps1`: preserve the ECR repos + S3 reports bucket by detaching
+  them from state before `terraform destroy` (like the Route53 zone). Both are
+  non-empty (more so now CI writes SBOMs to S3 + signatures to ECR), so `destroy`
+  was erroring with `BucketNotEmpty` / `RepositoryNotEmpty` and aborting the
+  teardown before its final steps. `force_destroy`/`force_delete` stay false so
+  data is never deleted; `morning-start.ps1` re-adopts the repo + bucket on the
+  next apply (only those two 409 on create — the S3 sub-resources and ECR
+  lifecycle policy are idempotent config applies).
 
 ### Notes
 - Policies ship in **Audit** by default — verify the PolicyReports, then flip to

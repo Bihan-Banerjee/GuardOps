@@ -310,6 +310,17 @@ foreach ($addr in @(
     try { terraform state rm $addr 2>&1 | Out-Null } catch { }
 }
 
+# Phase 11: preserve ECR images and the S3 reports bucket across the nightly
+# destroy (detach from state, like the Route53 zone). Both are non-empty, so
+# terraform destroy would otherwise fail with RepositoryNotEmpty / BucketNotEmpty
+# and abort the teardown before its final steps. force_destroy/force_delete stay
+# false so the data itself is never deleted; detaching just keeps `destroy` from
+# trying. morning-start.ps1 re-adopts the repo + bucket on the next apply.
+Write-Host "    Preserving ECR repos + S3 reports bucket (detaching from state)..." -ForegroundColor Gray
+foreach ($addr in @("module.ecr", "module.s3")) {
+    try { terraform state rm $addr 2>&1 | Out-Null } catch { }
+}
+
 # Drop cluster-resident resources from state before destroy. Step 2 already
 # `helm uninstall`-ed the releases and the rest vanish with the EKS cluster, but
 # Terraform's helm/kubernetes providers lose their cluster connection once EKS is
