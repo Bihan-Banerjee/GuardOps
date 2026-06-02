@@ -14,6 +14,7 @@ from backend.security.bandit_runner import run_bandit
 from backend.security.trivy_runner import run_trivy_image, run_trivy_filesystem
 from backend.security.sonarqube_runner import run_sonarqube, check_quality_gate
 from backend.security.report_generator import generate_report
+from backend.metadata.factory import persist_report_safe
 
 
 SEVERITY_STYLE = {
@@ -124,6 +125,9 @@ def scan_command(image, path, fail_on, skip_semgrep, skip_bandit, skip_trivy, sk
             fail_on_severity=fail_on,
         )
 
+    # ── Persist to scan-metadata DB (Phase 12, non-fatal) ─────────────────────
+    persist_report_safe(report, config, environment="", git_sha=_git_short_sha(), source="scan")
+
     # ── Final summary table ───────────────────────────────────────────────────
     blank()
     _print_summary_table(scan_results)
@@ -153,6 +157,16 @@ def scan_command(image, path, fail_on, skip_semgrep, skip_bandit, skip_trivy, sk
             ],
             style="green",
         )
+
+
+def _git_short_sha() -> str:
+    """Short git SHA recorded with each scan run, or '' outside a git repo.
+    Reuses the same command `guardops deploy` uses for image tags."""
+    try:
+        from cli.utils.system import get_command_output
+        return get_command_output(["git", "rev-parse", "--short", "HEAD"]).strip()
+    except Exception:
+        return ""
 
 
 def _print_tool_result(result: ScanResult) -> None:

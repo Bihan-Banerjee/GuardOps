@@ -3,6 +3,37 @@
 All notable changes are documented here.
 Format: [Semantic Versioning](https://semver.org)
 
+## [0.12.0] — 2026-06-02
+
+### Added
+- **Scan metadata database (Phase 12): scans now have a memory.** Every
+  `guardops scan` and the scan step of `guardops deploy` is persisted to a local
+  SQLite database (stdlib `sqlite3`, zero new dependencies) instead of being
+  written once to `security/reports/` and forgotten.
+- `backend/metadata/`: a `MetadataStore` abstraction with a SQLite implementation
+  (`scan_runs`, `findings`, `tool_runs` tables, schema auto-created on first use)
+  so a networked backend (Postgres) can be added for the v1.0.0 dashboard without
+  changing any command. `persist_report_safe()` records a report and is strictly
+  non-fatal — a DB error only logs a warning, never breaks a scan or deploy.
+- CLI query/analysis actions:
+  - `guardops history` — list past scan runs (project/env/image filters, `--json-output`).
+  - `guardops findings` — query stored findings by severity threshold, tool, CVE, or image.
+  - `guardops trends` — per-day severity counts over time.
+  - `guardops diff` — NEW vs FIXED findings between two runs; exits 1 when a new
+    CRITICAL/HIGH is introduced (a CI regression gate).
+  - `guardops db` — `init`, `prune` (`--keep-days`/`--keep-last` or the config
+    retention policy), and `export` (full DB → JSON, the bridge for the dashboard).
+- `metadata` section in `.guardops.yaml` (`enabled`, `backend`, `path`,
+  `retention_days`, `retention_keep_last`) with safe defaults; helpers
+  `is_metadata_enabled()` / `resolve_metadata_db_path()` in `cli/utils/config.py`.
+- ~46 new tests: store round-trip + filters + prune + non-fatal guarantee, plus
+  the five commands via Click's `CliRunner`.
+
+### Changed
+- `cli/commands/scan_cmd.py` and `deploy_cmd.py` persist each report after it is
+  generated (deploy records environment + git SHA, and records blocked runs too).
+- `.gitignore`: ignore `security/metadata/` (the SQLite DB is never committed).
+
 ## [0.11.0] — 2026-06-01
 
 ### Added

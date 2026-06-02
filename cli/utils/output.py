@@ -15,11 +15,24 @@ Rich Markup language:
   These tags work inside any console.print() call.
 """
 
+import sys
+
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.rule import Rule
 from rich import box
+
+# On a legacy (non-UTF-8) Windows console, stdout/stderr default to cp1252 and
+# Rich raises UnicodeEncodeError on glyphs like ℹ ✓ ⚠ → . Reconfigure the streams
+# to UTF-8 so output renders correctly and never crashes a command. Wrapped in
+# try/except because some streams (already-wrapped pipes, pytest capture) don't
+# support reconfigure — there it's a harmless no-op.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+    except Exception:
+        pass
 
 # stderr=False means output goes to stdout (normal output stream).
 # stderr=True would send to stderr — useful for logs so they don't

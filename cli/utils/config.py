@@ -201,6 +201,30 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # Never put the actual token here — only the env var name.
         "token_env_var":    "ARGOCD_TOKEN",
     },
+    # ── Phase 12: Scan Metadata Database ──────────────────────────────────────
+    #
+    # Persists every scan run + its findings so the CLI can answer "what changed
+    # since last build?" (guardops history / findings / trends / diff) and feed
+    # the future guardops.live dashboard.
+    #
+    # Writes are ALWAYS non-fatal: if the DB can't be written, the scan/deploy
+    # prints a warning and continues. Set enabled=false to turn persistence off.
+    #
+    # backend: only "sqlite" is supported in v0.12.0 (zero infra, local file).
+    #   The MetadataStore abstraction lets a networked "postgres" backend slot in
+    #   later for the dashboard without changing any command.
+    # path:    SQLite file, relative to the project root (cwd). Git-ignored.
+    # retention_days / retention_keep_last: used by `guardops db prune`
+    #   (0 disables that mode; both 0 = keep forever).
+    #
+    "metadata": {
+        "enabled": True,
+        "backend": "sqlite",
+        "path": "security/metadata/guardops.db",
+        "connection": "",          # reserved for networked backends (e.g. Postgres DSN)
+        "retention_days": 90,
+        "retention_keep_last": 0,
+    },
 }
 
 
@@ -235,7 +259,10 @@ def load_config() -> dict[str, Any]:
         sys.exit(1)
 
     try:
-        with open(config_path, "r") as f:
+        # utf-8-sig transparently strips a UTF-8 BOM if present, so a BOM-prefixed
+        # .guardops.yaml (e.g. saved by some Windows editors) doesn't corrupt the
+        # first key (turning "project" into "﻿project").
+        with open(config_path, "r", encoding="utf-8-sig") as f:
             config = yaml.safe_load(f)
     except yaml.YAMLError as e:
         error(f"{CONFIG_FILENAME} contains invalid YAML: {e}")
@@ -258,7 +285,9 @@ def save_config(config: dict[str, Any]) -> None:
     """
     config_path = get_config_path()
 
-    with open(config_path, "w") as f:
+    # Write UTF-8 (no BOM) so unicode values round-trip and load_config reads them
+    # back cleanly regardless of the platform's default encoding.
+    with open(config_path, "w", encoding="utf-8") as f:
         yaml.dump(
             config,
             f,
@@ -272,6 +301,27 @@ def save_config(config: dict[str, Any]) -> None:
 def get_project_name(config: dict) -> str:
     """Safely retrieves project name from config."""
     return config.get("project", {}).get("name", "unknown")
+
+
+# ── Phase 12: Scan-metadata helpers ────────────────────────────────────────────
+
+def is_metadata_enabled(config: dict) -> bool:
+    """True if scan-metadata persistence is on (default True).
+
+    Note: even when enabled, a write failure is non-fatal — see
+    backend.metadata.factory.persist_report_safe.
+    """
+    return bool(config.get("metadata", {}).get("enabled", True))
+
+
+def resolve_metadata_db_path(config: dict) -> str:
+    """Absolute path to the SQLite metadata DB (relative paths resolved under cwd).
+
+    Thin wrapper over backend.metadata.factory.resolve_db_path so command code can
+    stay in the cli layer. Imported lazily to keep config import-time light.
+    """
+    from backend.metadata.factory import resolve_db_path
+    return resolve_db_path(config)
 
 
 def merge_with_defaults(user_config: dict) -> dict:

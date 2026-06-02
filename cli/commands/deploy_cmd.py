@@ -79,6 +79,7 @@ from backend.security.trivy_runner import run_trivy_image, run_trivy_filesystem
 from backend.security.sonarqube_runner import run_sonarqube
 from backend.security.report_generator import generate_report
 from backend.security.zap_runner import run_zap_baseline, ZapScanResult
+from backend.metadata.factory import persist_report_safe
 
 
 @click.command("deploy")
@@ -248,6 +249,10 @@ def deploy_command(env, slot, use_gitops, gitops_branch,
             output_dir=report_dir,
             fail_on_severity=effective_fail_on,
         )
+
+        # ── Persist to scan-metadata DB (Phase 12, non-fatal) ─────────────────
+        # Recorded before the blocked gate below so blocked deploys are captured too.
+        persist_report_safe(report, config, environment=env, git_sha=sha_tag, source="deploy")
 
         _print_scan_summary(scan_results, report)
 

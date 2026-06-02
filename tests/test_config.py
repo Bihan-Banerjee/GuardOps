@@ -39,6 +39,21 @@ def test_config_not_found_exits(tmp_path, monkeypatch):
     assert exc_info.value.code == 1  # Should exit with code 1, not 0
 
 
+def test_load_config_strips_utf8_bom(tmp_path, monkeypatch):
+    """A BOM-prefixed .guardops.yaml must still parse the first key correctly.
+
+    Some Windows editors save UTF-8 with a BOM; without utf-8-sig the leading
+    bytes would turn "project" into "﻿project" and break get_project_name.
+    """
+    monkeypatch.chdir(tmp_path)
+    # encoding="utf-8-sig" writes the BOM in front of the content.
+    (tmp_path / CONFIG_FILENAME).write_text(
+        "project:\n  name: bom-demo\n", encoding="utf-8-sig"
+    )
+    config = load_config()
+    assert config["project"]["name"] == "bom-demo"
+
+
 def test_save_and_load_roundtrip(tmp_path, monkeypatch):
     """Saving a config and loading it back should produce identical data."""
     monkeypatch.chdir(tmp_path)
