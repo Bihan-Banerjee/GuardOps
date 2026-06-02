@@ -120,7 +120,12 @@ $TempValuesFile = [System.IO.Path]::GetTempFileName() + ".yaml"
 
 $falcoHeader = @"
 driver:
-  kind: ebpf
+  # modern_ebpf (CO-RE) instead of legacy 'ebpf': the legacy probe allocates per-CPU
+  # PERF ring buffers and fails with "unable to mmap the perf-buffer ... Cannot allocate
+  # memory" on a memory-tight single t3.large. modern_ebpf uses BPF ring buffers (cgroup-
+  # accounted, no perf/memlock path), needs no driver-loader, and is the recommended
+  # driver on the EKS 6.x kernel.
+  kind: modern_ebpf
 
 falco:
   json_output: true
@@ -136,10 +141,10 @@ serviceMonitor:
 
 resources:
   requests:
-    memory: 64Mi
+    memory: 128Mi
     cpu: 50m
   limits:
-    memory: 256Mi
+    memory: 512Mi
     cpu: 200m
 
 customRules:
