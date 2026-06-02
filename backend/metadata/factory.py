@@ -34,14 +34,25 @@ def resolve_db_path(config: dict) -> str:
 
 
 def get_store(config: dict) -> MetadataStore:
-    """Return the configured MetadataStore. Only 'sqlite' is wired in v0.12.0;
-    any other backend yields a NullMetadataStore so callers stay non-fatal."""
+    """Return the configured MetadataStore.
+
+    'sqlite' (default) is the local CLI/CI backend. 's3' is the read-only durable
+    backend the dashboard uses (Phase 13) — it reads the export object published by
+    `guardops db export --to-s3`. Any other backend yields a NullMetadataStore so
+    callers stay non-fatal."""
     meta = config.get("metadata", {}) or {}
     backend = (meta.get("backend") or "sqlite").lower()
     if backend == "sqlite":
         return SqliteMetadataStore(resolve_db_path(config))
+    if backend == "s3":
+        # Lazy import: only the dashboard sets backend=s3, so the CLI never pays for it.
+        from backend.metadata.s3_store import S3MetadataStore
+        try:
+            return S3MetadataStore.from_config(config)
+        except Exception as e:  # e.g. no bucket configured — stay non-fatal
+            return NullMetadataStore(f"s3 metadata backend unavailable: {e}")
     return NullMetadataStore(
-        f"metadata backend '{backend}' is not supported in this version (only 'sqlite')"
+        f"metadata backend '{backend}' is not supported (use 'sqlite' or 's3')"
     )
 
 

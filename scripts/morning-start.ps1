@@ -44,6 +44,12 @@ $ErrorActionPreference = "Stop"
 # image is absent and the pod stays in ImagePullBackOff.
 $script:WebhookImageReady = $false
 
+# Phase 13: dashboard build/deploy state, read by the summary section.
+$script:DashboardImageReady = $false
+$script:DashboardDeployed   = $false
+$script:DashboardUser       = "admin"
+$script:DashboardPassword   = ""
+
 # -- Configuration -------------------------------------------------------------
 $Region       = "ap-south-1"
 # Repo root = parent of the scripts/ directory this file lives in.
@@ -408,6 +414,58 @@ function Ensure-WebhookImage {
     }
 
     Set-Location $prevLocation
+}
+
+function Ensure-DashboardImage {
+    # Phase 13: build/push the dashboard image (Dockerfile.dashboard) to ECR when
+    # the :dashboard-latest tag is missing. Mirrors Ensure-WebhookImage. The image
+    # is FROM guardops-app:latest, so that base must already exist in ECR.
+    # Returns the full image reference for manifest substitution.
+    $acctId    = (aws sts get-caller-identity --query Account --output text 2>$null).Trim()
+    $ecrBase   = "$acctId.dkr.ecr.$Region.amazonaws.com"
+    $repo      = "guardops-app"
+    $tag       = "dashboard-latest"
+    $fullImage = "$ecrBase/${repo}:${tag}"
+
+    Write-Info "Checking ECR for ${repo}:${tag}..."
+    $imageFound = $false
+    try {
+        aws ecr describe-images --repository-name $repo `
+            --image-ids imageTag=$tag --region $Region 2>$null | Out-Null
+        $imageFound = ($LASTEXITCODE -eq 0)
+    } catch { $imageFound = $false }
+
+    if ($imageFound) {
+        Write-Ok "ECR image ${repo}:${tag} already exists -- skipping build"
+        $script:DashboardImageReady = $true
+        return $fullImage
+    }
+
+    Write-Info "Image not found in ECR -- building and pushing $fullImage"
+    $dockerOk = $false
+    try { docker info 2>$null | Out-Null; $dockerOk = ($LASTEXITCODE -eq 0) } catch { $dockerOk = $false }
+    if (-not $dockerOk) {
+        Write-Warn "Docker daemon not running -- dashboard pod will stay in ImagePullBackOff until pushed"
+        return $fullImage
+    }
+
+    cmd /c "aws ecr get-login-password --region $Region 2>nul | docker login --username AWS --password-stdin $ecrBase"
+    if ($LASTEXITCODE -ne 0) { Write-Warn "docker login failed -- skipping dashboard image build"; return $fullImage }
+
+    $prevLocation = Get-Location
+    Set-Location $RepoRoot
+    Write-Info "Building $fullImage (this may take a few minutes)..."
+    docker build -f Dockerfile.dashboard -t $fullImage .
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn "Docker build failed -- check Dockerfile.dashboard"
+        Set-Location $prevLocation
+        return $fullImage
+    }
+    docker push $fullImage
+    if ($LASTEXITCODE -eq 0) { Write-Ok "Pushed $fullImage"; $script:DashboardImageReady = $true }
+    else { Write-Warn "docker push failed -- pod may stay in ImagePullBackOff" }
+    Set-Location $prevLocation
+    return $fullImage
 }
 
 function Ensure-Namespaces {
@@ -1364,6 +1422,71 @@ if (-not $SkipDeploy) {
     }
 }
 
+# -- Phase 13: Web dashboard ---------------------------------------------------
+if (-not $SkipDeploy) {
+    $Step++
+    Write-Step $Step "12" "Phase 13 -- Web dashboard (app.guardops.live)"
+
+    $dashboardImage = Ensure-DashboardImage
+
+    # Findings source: the guardops-reports S3 bucket (the export bridge).
+    $dashBucket = $env:GUARDOPS_S3_BUCKET
+    if (-not $dashBucket) {
+        try {
+            $dashBucket = (aws s3api list-buckets `
+                --query "Buckets[?starts_with(Name,'guardops-reports')].Name | [0]" `
+                --output text 2>$null).Trim()
+        } catch { }
+    }
+    if (-not $dashBucket -or $dashBucket -eq "None") {
+        $dashBucket = ""
+        Write-Warn "No guardops-reports bucket found -- dashboard starts with empty findings"
+        Write-Info "  Publish data later with: guardops db export --to-s3 --bucket <bucket>"
+    } else {
+        Write-Ok "Findings bucket: $dashBucket"
+    }
+
+    # Render + apply the workload manifests (placeholders substituted).
+    foreach ($rel in @("k8s\dashboard\configmap.yaml", "k8s\dashboard\deployment.yaml")) {
+        $text = (Get-Content "$RepoRoot\$rel" -Raw).
+            Replace("__ECR_IMAGE__",  $dashboardImage).
+            Replace("__S3_BUCKET__",  $dashBucket).
+            Replace("__AWS_REGION__", $Region)
+        $tmp = New-TemporaryFile
+        Set-Content -Path $tmp -Value $text -Encoding utf8
+        kubectl apply -f $tmp 2>$null | Out-Null
+        Remove-Item $tmp -Force
+    }
+    kubectl apply -f "$RepoRoot\k8s\dashboard\service.yaml" 2>$null | Out-Null
+
+    # Auth Secret: reuse GUARDOPS_DASHBOARD_* env if set, else generate a password.
+    if ($env:GUARDOPS_DASHBOARD_USER)     { $script:DashboardUser     = $env:GUARDOPS_DASHBOARD_USER }
+    if ($env:GUARDOPS_DASHBOARD_PASSWORD) { $script:DashboardPassword = $env:GUARDOPS_DASHBOARD_PASSWORD }
+    if (-not $script:DashboardPassword) {
+        $script:DashboardPassword = -join ((48..57) + (65..90) + (97..122) |
+            Get-Random -Count 20 | ForEach-Object { [char]$_ })
+    }
+    $secretYaml = kubectl create secret generic guardops-dashboard-secret `
+        --namespace default `
+        --from-literal=GUARDOPS_DASHBOARD_USER=$($script:DashboardUser) `
+        --from-literal=GUARDOPS_DASHBOARD_PASSWORD=$($script:DashboardPassword) `
+        --dry-run=client -o yaml
+    $secretYaml | kubectl apply -f - 2>$null | Out-Null
+    kubectl rollout restart deployment/guardops-dashboard -n default 2>$null | Out-Null
+
+    # Ingress joins the shared ALB group -- only when the TLS/ALB stack is enabled.
+    if ($dnsTlsEnabled -eq "true") {
+        kubectl apply -f "$RepoRoot\k8s\dashboard\ingress.yaml" 2>$null | Out-Null
+        Write-Ok "Dashboard Ingress applied (app.$domainName, shared ALB group 'guardops')"
+    } else {
+        Write-Info "enable_dns_tls not true -- skipping dashboard Ingress (use the port-forward)"
+    }
+
+    Wait-Pods -NS "default" -Label "app.kubernetes.io/name=guardops-dashboard" -Timeout 120 -Name "Dashboard" | Out-Null
+    $script:DashboardDeployed = $true
+    Write-Ok "Dashboard deployed (login user: $($script:DashboardUser))"
+}
+
 # -- Port-forwards -------------------------------------------------------------
 if (-not $SkipPortForwards) {
     $Step++
@@ -1376,6 +1499,11 @@ if (-not $SkipPortForwards) {
         @{ Svc="svc/kube-prometheus-stack-alertmanager"; Port="9093:9093"; NS="monitoring" },
         @{ Svc="svc/guardops-alertmanager-webhook";      Port="9095:9095"; NS="monitoring" }
     )
+
+    # Phase 13: expose the dashboard locally too (works even without dns-tls).
+    if ($script:DashboardDeployed) {
+        $forwards += @{ Svc="svc/guardops-dashboard"; Port="8081:80"; NS="default" }
+    }
 
     foreach ($fwd in $forwards) {
         $cmd = "kubectl port-forward $($fwd.Svc) $($fwd.Port) -n $($fwd.NS)"
@@ -1410,6 +1538,14 @@ Write-Host "    Webhook      : http://localhost:9095/healthz"
 if ($dnsTlsEnabled -eq "true" -and $domainName) {
     Write-Host "    App (prod)   : https://$domainName"
     Write-Host "    App (staging): https://staging.$domainName"
+}
+if ($script:DashboardDeployed) {
+    if ($dnsTlsEnabled -eq "true" -and $domainName) {
+        Write-Host "    Dashboard    : https://app.$domainName  (or http://localhost:8081)"
+    } else {
+        Write-Host "    Dashboard    : http://localhost:8081"
+    }
+    Write-Host "    Dashboard auth : $($script:DashboardUser) / $($script:DashboardPassword)" -ForegroundColor Yellow
 }
 if ($argoCdEnabled -eq "true") {
     Write-Host "    ArgoCD       : $argoCdUrl"

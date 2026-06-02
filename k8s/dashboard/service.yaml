@@ -1,0 +1,17 @@
+# k8s/dashboard/service.yaml — Phase 13
+apiVersion: v1
+kind: Service
+metadata:
+  name: guardops-dashboard
+  namespace: default
+  labels:
+    app.kubernetes.io/name: guardops-dashboard
+    app.kubernetes.io/managed-by: guardops
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: guardops-dashboard
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

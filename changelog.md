@@ -3,6 +3,60 @@
 All notable changes are documented here.
 Format: [Semantic Versioning](https://semver.org)
 
+## [0.13.0] — 2026-06-02
+
+Phase 13 — the last feature phase before the v1.0.0 stabilization pass (full
+bug-testing, QoL, ruff/mypy). Two features; the dashboard frontend SPA is a later
+deliverable (it consumes this release's API).
+
+### Added
+- **Interactive deploy chooser.** Running `guardops deploy` with no flags in a
+  terminal now offers a **Default / Custom / Cancel** chooser so users don't have
+  to remember the eleven deploy flags. Custom walks through env, build, scanners,
+  fail-on, DAST, blue-green slot, GitOps, and replicas; it then prints the
+  **equivalent command** so the flags are learnable. `-i/--interactive` forces the
+  chooser; `-y/--yes`, a non-TTY stream, or CI bypass it (automation unaffected).
+  New `cli/commands/_deploy_wizard.py`; `deploy_cmd` refactored so the flag path
+  and wizard path share one `_execute_deploy()`.
+- **Web dashboard API (`backend/dashboard/`, FastAPI).** A frontend-agnostic JSON
+  API visualizing every prior phase: scan findings/runs/trends/diff/summary
+  (durable), plus live observability metrics (Prometheus), runtime Falco alerts
+  (Loki), pod quarantine (kubectl), and ArgoCD sync. Read-only routes under
+  `/api/v1/*` with `/healthz` + `/readyz`. Live sources degrade to
+  `{"available": false, "reason": ...}` when the cluster is down rather than 5xx.
+- **`guardops dashboard`** — runs the API locally via uvicorn (optional `dashboard`
+  extra: `pip install 'guardops[dashboard]'`). In-cluster target: `backend.dashboard.app:app`.
+- **S3 export bridge for durable findings.** New read-only `S3MetadataStore`
+  (`backend/metadata/s3_store.py`) hydrates an in-memory SQLite from the
+  `export_json()` dump and **delegates all reads to `SqliteMetadataStore`** (no SQL
+  re-implemented). `guardops db export --to-s3` publishes the dump to
+  `s3://<bucket>/<prefix>/<project>/latest.json`. Survives the nightly
+  `terraform destroy` at ~$0 (no always-on DB). `get_store` gains an `s3` backend.
+- **Shared-credential auth** (`backend/dashboard/auth.py`): bearer token or HTTP
+  Basic, from env/K8s Secret; enforced only when a credential is configured.
+- **Deployment artifacts:** `Dockerfile.dashboard`, `k8s/dashboard/`
+  (ConfigMap, Secret template, Deployment + minimal RBAC, Service, TLS Ingress for
+  `app.guardops.live`), an `app.guardops.live` Route53 record in `modules/dns-tls`,
+  and `scripts/setup-dashboard.ps1` (build → push → apply).
+- **Lifecycle integration:** `morning-start.ps1` now builds/pushes `dashboard-latest`
+  (new `Ensure-DashboardImage`), deploys the dashboard, auto-discovers the reports
+  bucket, generates an auth password, opens the `:8081` port-forward, and prints the
+  URL + credentials in the summary. `night-shutdown.ps1` removes the dashboard's
+  non-Helm objects (the Ingress is already drained with the rest in Step 1). The
+  prod app Ingress and the dashboard Ingress share **one ALB** via the
+  `alb.ingress.kubernetes.io/group.name: guardops` IngressGroup, so the single
+  `alb_dns_name` alias covers both `guardops.live` and `app.guardops.live` (the
+  wildcard `*.guardops.live` ACM cert already covers the subdomain).
+- Config: `metadata.s3_*` and a `dashboard` section in `DEFAULT_CONFIG`; `dashboard`
+  optional-dependency group in `pyproject.toml`; dashboard test deps in `requirements-dev.txt`.
+- ~40 new tests: deploy wizard (gate truth-table, custom/cancel, equivalent command),
+  S3 store round-trip + filters + read-only, `db export --to-s3`, and the dashboard
+  API + auth via FastAPI `TestClient`.
+
+### Changed
+- `cli/commands/deploy_cmd.py`: deploy body extracted to `_execute_deploy(opts, config)`;
+  added `--interactive/-i` and `--yes/-y`. No change to existing flag behavior.
+
 ## [0.12.0] — 2026-06-02
 
 ### Added

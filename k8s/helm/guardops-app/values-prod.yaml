@@ -67,6 +67,10 @@ ingress:
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
     alb.ingress.kubernetes.io/ssl-redirect: "443"
+    # Phase 13: share ONE ALB with the dashboard Ingress (app.guardops.live) via an
+    # IngressGroup, so the single Route53 alb_dns_name covers both hosts. Without a
+    # shared group each Ingress would provision its own ALB at a different DNS name.
+    alb.ingress.kubernetes.io/group.name: guardops
     # ACM certificate for guardops.live + *.guardops.live (ap-south-1).
     alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:ap-south-1:236796665744:certificate/9068b1dc-6273-45ac-9076-051e1397e326"
 

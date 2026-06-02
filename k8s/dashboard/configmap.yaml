@@ -1,0 +1,29 @@
+# k8s/dashboard/configmap.yaml — Phase 13
+#
+# Non-secret configuration for the GuardOps dashboard pod. Secrets (basic-auth
+# credentials, ArgoCD token) live in the separate Secret — see secret.example.yaml.
+#
+# Placeholders (__S3_BUCKET__, __AWS_REGION__) are substituted by
+# scripts/setup-dashboard.ps1 at apply time. The in-cluster service DNS names below
+# are the defaults from the kube-prometheus-stack / Loki / ArgoCD installs; override
+# if your release names differ.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: guardops-dashboard-config
+  namespace: default
+  labels:
+    app.kubernetes.io/name: guardops-dashboard
+    app.kubernetes.io/managed-by: guardops
+data:
+  # Findings come from the S3 export bridge (guardops db export --to-s3).
+  GUARDOPS_METADATA_BACKEND: "s3"
+  GUARDOPS_S3_BUCKET: "__S3_BUCKET__"
+  GUARDOPS_S3_PREFIX: "metadata"
+  GUARDOPS_AWS_REGION: "__AWS_REGION__"
+  # Live data sources (in-cluster service DNS).
+  GUARDOPS_PROMETHEUS_URL: "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"
+  GUARDOPS_LOKI_URL: "http://loki.monitoring.svc.cluster.local:3100"
+  GUARDOPS_ARGOCD_URL: "https://argocd.guardops.live"
+  # Browser-friendly auth: basic prompts for user/password (set in the Secret).
+  GUARDOPS_DASHBOARD_AUTH_MODE: "basic"

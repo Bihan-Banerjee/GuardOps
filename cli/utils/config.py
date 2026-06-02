@@ -210,20 +210,49 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # Writes are ALWAYS non-fatal: if the DB can't be written, the scan/deploy
     # prints a warning and continues. Set enabled=false to turn persistence off.
     #
-    # backend: only "sqlite" is supported in v0.12.0 (zero infra, local file).
-    #   The MetadataStore abstraction lets a networked "postgres" backend slot in
-    #   later for the dashboard without changing any command.
+    # backend: "sqlite" (default — zero infra, local file) or "s3" (read-only,
+    #   used by the dashboard to read the export bridge). The MetadataStore
+    #   abstraction lets other backends slot in without changing any command.
     # path:    SQLite file, relative to the project root (cwd). Git-ignored.
     # retention_days / retention_keep_last: used by `guardops db prune`
     #   (0 disables that mode; both 0 = keep forever).
     #
     "metadata": {
         "enabled": True,
-        "backend": "sqlite",
+        "backend": "sqlite",       # "sqlite" (local CLI/CI) | "s3" (read-only, dashboard)
         "path": "security/metadata/guardops.db",
         "connection": "",          # reserved for networked backends (e.g. Postgres DSN)
         "retention_days": 90,
         "retention_keep_last": 0,
+        # ── Phase 13: S3 export bridge (durable source for the web dashboard) ──
+        # `guardops db export --to-s3` publishes the DB dump to
+        #   s3://<s3_bucket>/<s3_prefix>/<project>/latest.json
+        # and the dashboard reads it with backend="s3". Survives the nightly
+        # `terraform destroy` at ~$0/month — no always-on database.
+        "s3_bucket": "",           # reuse the existing guardops-reports bucket, or a dedicated one
+        "s3_prefix": "metadata",
+        "region": "",              # AWS region for the bucket (empty = boto3 default chain)
+        "s3_ttl_seconds": 60,      # dashboard cache TTL before re-fetching the export
+    },
+    # ── Phase 13: Web dashboard ───────────────────────────────────────────────
+    #
+    # The dashboard is a FastAPI service (guardops dashboard, or the in-cluster
+    # Deployment) that visualizes scan findings + live observability/runtime data.
+    # Findings come from the metadata store above (backend="s3" in-cluster).
+    #
+    # Auth is a shared credential read from the environment, never stored here:
+    #   token mode → GUARDOPS_DASHBOARD_TOKEN  (Authorization: Bearer <token>)
+    #   basic mode → GUARDOPS_DASHBOARD_USER + GUARDOPS_DASHBOARD_PASSWORD
+    # Live data source URLs default to the in-cluster service DNS names and can be
+    # overridden per-deployment via env vars (see backend/dashboard/settings.py).
+    #
+    "dashboard": {
+        "enabled": False,
+        "subdomain": "app.guardops.live",
+        "host": "0.0.0.0",
+        "port": 8081,
+        "auth_mode": "token",      # "token" | "basic" | "none"
+        "cors_origins": [],        # allowed origins for the future SPA (empty = same-origin)
     },
 }
 

@@ -6,3 +6,7 @@ ruff>=0.1.0
 mypy>=1.7.0
 semgrep>=1.60.0
 bandit>=1.7.7
+# Phase 13 — dashboard backend (so the dashboard API + auth tests run in CI)
+fastapi>=0.111,<0.116
+uvicorn[standard]>=0.30
+httpx>=0.27
