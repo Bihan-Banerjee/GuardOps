@@ -390,7 +390,14 @@ module "kyverno" {
   oidc_provider_url = module.eks.oidc_provider_url
   eks_dependency    = module.eks
 
-  depends_on = [module.eks]
+  # Kyverno must install AFTER the AWS Load Balancer Controller (in module.dns_tls,
+  # wait=true) is fully rolled out. That controller registers a failurePolicy=Fail
+  # mutating webhook on ALL Service objects; if Kyverno creates its Services while
+  # the controller pods aren't Ready yet, the webhook call fails with "no endpoints
+  # available for service aws-load-balancer-webhook-service" and Kyverno's atomic
+  # install rolls back. cert-manager avoids the same race the same way (see
+  # modules/dns-tls/main.tf). Safe when dns_tls is disabled (count=0 → no-op dep).
+  depends_on = [module.eks, module.dns_tls]
 }
 
 output "kyverno_status" {

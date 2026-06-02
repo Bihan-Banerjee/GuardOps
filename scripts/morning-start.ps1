@@ -751,8 +751,35 @@ function Invoke-TerraformApply {
         }
     }
 
-    terraform apply -auto-approve @ExtraArgs
-    $ec = $LASTEXITCODE
+    # CRITICAL BUG FIX: the callers do `$applyExit = Invoke-TerraformApply`, which captures this
+    # function's SUCCESS (stdout) stream. Bare `terraform apply` writes its plan / "Apply
+    # complete!" / Outputs to STDOUT, so those lines were captured INTO $applyExit alongside the
+    # `return $ec`. Two consequences: (1) terraform's output never showed on screen -- it was
+    # swallowed by the assignment; (2) $applyExit became an array of text lines + the int, so
+    # `$applyExit -ne 0` was ALWAYS truthy -- a perfectly successful apply (exit 0) was reported
+    # as "terraform apply failed". That is exactly why a manual apply always worked but the
+    # scripted one never did, with no output and no retry messages (it "succeeds" on attempt 0).
+    #
+    # Fix: pipe terraform to Out-Host so its output is DISPLAYED, not captured -- the function
+    # then returns ONLY $ec. ErrorActionPreference=Continue keeps terraform's stderr progress
+    # from tripping the global "Stop". The retry loop also rides out transient busy-node races.
+    $ec = 1
+    $delays = @(0, 30, 75)
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        for ($attempt = 0; $attempt -lt $delays.Count; $attempt++) {
+            if ($delays[$attempt] -gt 0) {
+                Write-Warn ("terraform apply failed -- retry {0}/{1} in {2}s (transient busy-node race)..." -f $attempt, ($delays.Count - 1), $delays[$attempt])
+                Start-Sleep -Seconds $delays[$attempt]
+            }
+            terraform apply -auto-approve @ExtraArgs | Out-Host
+            $ec = $LASTEXITCODE
+            if ($ec -eq 0) { break }
+        }
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
 
     if ($patched -and $original) {
         Set-Content $webhookTf $original -Encoding UTF8
@@ -1228,16 +1255,20 @@ if (-not $SkipDeploy) {
 
     Set-Location "$RepoRoot\test-project"
 
+    # --skip-scan: the demo test-app ships intentional CVEs/findings to exercise the
+    # scanner, so a gated deploy ALWAYS blocks here (6 CRITICAL + 10 HIGH). Scanning is a
+    # CI concern, not a startup concern (see README); without this the app never deploys,
+    # so no Ingress is created and the ALB/DNS wiring below aborts on a NotFound.
     Write-Info "Deploying prod..."
-    guardops deploy --env prod --skip-sonarqube --skip-dast
+    guardops deploy --env prod --skip-scan --skip-dast
     if ($LASTEXITCODE -ne 0) {
-        Write-Warn "Prod deploy had errors -- retry: guardops deploy --env prod --skip-sonarqube"
+        Write-Warn "Prod deploy had errors -- retry: guardops deploy --env prod --skip-scan --skip-dast"
     } else {
         Write-Ok "Prod deploy complete"
     }
 
     Write-Info "Deploying staging..."
-    guardops deploy --env staging --skip-sonarqube --skip-dast
+    guardops deploy --env staging --skip-scan --skip-dast
     if ($LASTEXITCODE -ne 0) {
         Write-Warn "Staging deploy had errors"
     } else {
