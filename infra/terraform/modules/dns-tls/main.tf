@@ -46,11 +46,11 @@
 # rather than node IAM role — least-privilege best practice.
 
 resource "helm_release" "aws_load_balancer_controller" {
-  name             = "aws-load-balancer-controller"
-  repository       = "https://aws.github.io/eks-charts"
-  chart            = "aws-load-balancer-controller"
-  version          = "1.7.2"
-  namespace        = "kube-system"
+  name       = "aws-load-balancer-controller"
+  repository = "https://aws.github.io/eks-charts"
+  chart      = "aws-load-balancer-controller"
+  version    = "1.7.2"
+  namespace  = "kube-system"
 
   set {
     name  = "clusterName"
@@ -197,6 +197,22 @@ resource "aws_route53_record" "argocd" {
 
   zone_id = aws_route53_zone.guardops.zone_id
   name    = "argocd.${var.domain_name}"
+  type    = "A"
+
+  alias {
+    name                   = var.alb_dns_name
+    zone_id                = var.alb_hosted_zone_id
+    evaluate_target_health = true
+  }
+}
+
+# Phase 13: web dashboard subdomain (app.guardops.live). Same ALB alias as the
+# other records; cert-manager issues its TLS cert from the dashboard Ingress.
+resource "aws_route53_record" "dashboard" {
+  count = local.alb_ready ? 1 : 0
+
+  zone_id = aws_route53_zone.guardops.zone_id
+  name    = "app.${var.domain_name}"
   type    = "A"
 
   alias {

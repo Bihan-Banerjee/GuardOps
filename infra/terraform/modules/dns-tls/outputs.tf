@@ -25,6 +25,11 @@ output "argocd_domain" {
   value       = "argocd.${var.domain_name}"
 }
 
+output "dashboard_domain" {
+  description = "Web dashboard subdomain (Phase 13). Set as dashboard.subdomain in .guardops.yaml."
+  value       = "app.${var.domain_name}"
+}
+
 output "cert_manager_namespace" {
   description = "Namespace where cert-manager is installed."
   value       = helm_release.cert_manager.namespace

@@ -1,0 +1,41 @@
+# Dockerfile.dashboard — Phase 13
+#
+# Packages the GuardOps web dashboard API (backend/dashboard) as a container.
+# Mirrors Dockerfile.webhook: it layers the dashboard's extra runtime deps on top
+# of the already-built app image, so it inherits the hardened multi-stage venv
+# (non-root UID 10001, no pip/wheel in the final layer).
+#
+# Unlike the webhook (backend only), the dashboard imports a few cli.utils.* helpers
+# (config + output), so both backend/ and cli/ are copied in.
+#
+# Build + push (see scripts/setup-dashboard.ps1, which automates this):
+#   $ECR = "236796665744.dkr.ecr.ap-south-1.amazonaws.com/guardops-app"
+#   docker build -t "${ECR}:dashboard-latest" -f Dockerfile.dashboard .
+#   docker push "${ECR}:dashboard-latest"
+
+FROM 236796665744.dkr.ecr.ap-south-1.amazonaws.com/guardops-app:latest
+
+USER root
+
+# kubectl powers the /api/v1/quarantine route (read-only get/list via the pod's
+# ServiceAccount). v1.28 to match Dockerfile.webhook (v1.29 dropped --short).
+RUN apt-get update -qq && apt-get install -y -qq curl ca-certificates && \
+    curl -LO "https://dl.k8s.io/release/v1.28.0/bin/linux/amd64/kubectl" && \
+    chmod +x kubectl && mv kubectl /usr/local/bin/kubectl && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# fastapi + uvicorn are the only Python extras the dashboard needs; requests, boto3,
+# click, rich and pyyaml are already in the app image's venv (core CLI deps).
+RUN /venv/bin/python -m pip install --quiet \
+    fastapi==0.111.0 \
+    "uvicorn[standard]==0.30.1"
+
+COPY backend/ /app/backend/
+COPY cli/ /app/cli/
+
+WORKDIR /app
+USER 10001
+EXPOSE 8081
+
+CMD ["/venv/bin/python", "-m", "uvicorn", "backend.dashboard.app:app", \
+     "--host", "0.0.0.0", "--port", "8081", "--workers", "1", "--log-level", "info"]

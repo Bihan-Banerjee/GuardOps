@@ -124,6 +124,18 @@ if ($clusterOk) {
         }
     }
 
+    # Phase 13: the dashboard Ingress was deleted above (draining its ALB rule).
+    # Remove the rest of its non-Helm objects, including cluster-scoped RBAC that
+    # `helm uninstall` does not touch. All are recreated by morning-start.ps1.
+    try {
+        kubectl delete deployment/guardops-dashboard service/guardops-dashboard `
+            configmap/guardops-dashboard-config secret/guardops-dashboard-secret `
+            -n default --ignore-not-found 2>$null | Out-Null
+        kubectl delete clusterrole/guardops-dashboard-reader `
+            clusterrolebinding/guardops-dashboard-reader --ignore-not-found 2>$null | Out-Null
+        Write-Host "    Cleaned up dashboard resources (Phase 13)" -ForegroundColor Gray
+    } catch { }
+
     if ($ingressCount -gt 0) {
         # Poll until the ALB is fully deleted from AWS.
         # Skipping this wait is the most common cause of terraform destroy failures:

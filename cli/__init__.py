@@ -4,4 +4,4 @@
 
 # We define the version here so it's importable from anywhere:
 # from cli import __version__
-__version__ = "0.12.0"
+__version__ = "0.13.0"

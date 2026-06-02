@@ -80,6 +80,12 @@ from backend.security.sonarqube_runner import run_sonarqube
 from backend.security.report_generator import generate_report
 from backend.security.zap_runner import run_zap_baseline, ZapScanResult
 from backend.metadata.factory import persist_report_safe
+# ── Phase 13: interactive default-vs-custom chooser ───────────────────────────
+from cli.commands._deploy_wizard import (
+    DeployOptions,
+    should_offer_wizard,
+    run_deploy_wizard,
+)
 
 
 @click.command("deploy")
@@ -118,15 +124,26 @@ from backend.metadata.factory import persist_report_safe
               help="Minimum severity that blocks deployment (pre-deploy scans)")
 @click.option("--replicas", default=None, type=int,
               help="Number of pod replicas (overrides values.yaml)")
-def deploy_command(env, slot, use_gitops, gitops_branch,
+@click.option("--interactive", "-i", "interactive", is_flag=True, default=False,
+              help="Force the interactive setup chooser (default vs custom), even with flags given.")
+@click.option("--yes", "-y", "assume_yes", is_flag=True, default=False,
+              help="Skip the interactive chooser; use defaults/flags as given (scripts/automation).")
+@click.pass_context
+def deploy_command(ctx, env, slot, use_gitops, gitops_branch,
                    skip_scan, skip_build, skip_sonarqube,
-                   skip_trivy, skip_dast, fail_on, replicas):
+                   skip_trivy, skip_dast, fail_on, replicas,
+                   interactive, assume_yes):
     """
     Build, scan, and deploy the application.
 
     \b
+    Run with no flags in a terminal to get an interactive setup chooser
+    (Default vs Custom). Pass any flag, --yes, or run in CI to skip it.
+
+    \b
     Examples:
-      guardops deploy                            # local k3d
+      guardops deploy                            # interactive chooser (or defaults in CI)
+      guardops deploy -i                         # force the interactive chooser
       guardops deploy --env staging              # staging namespace on EKS
       guardops deploy --env prod                 # production on EKS
       guardops deploy --env prod --gitops        # GitOps mode: commit + ArgoCD sync
@@ -135,8 +152,47 @@ def deploy_command(env, slot, use_gitops, gitops_branch,
       guardops deploy --skip-scan                # dev only, skips all scans
       guardops deploy --skip-dast                # dev only, skips ZAP
     """
-    start_time = time.time()
     config = load_config()
+
+    opts = DeployOptions(
+        env=env, slot=slot, use_gitops=use_gitops, gitops_branch=gitops_branch,
+        skip_scan=skip_scan, skip_build=skip_build, skip_sonarqube=skip_sonarqube,
+        skip_trivy=skip_trivy, skip_dast=skip_dast, fail_on=fail_on, replicas=replicas,
+    )
+
+    # Phase 13: offer the default/custom chooser on a bare interactive `deploy`.
+    # Any explicit flag, --yes, a non-TTY stream, or CI bypasses it (see
+    # should_offer_wizard) so automation and morning-start.ps1 are unaffected.
+    if should_offer_wizard(ctx, interactive, assume_yes):
+        resolved = run_deploy_wizard(config, opts)
+        if resolved is None:
+            info("Deploy cancelled — nothing was built or deployed.")
+            sys.exit(0)
+        opts = resolved
+
+    _execute_deploy(opts, config)
+
+
+def _execute_deploy(opts: DeployOptions, config: dict) -> None:
+    """
+    Run the full build -> scan -> push -> deploy -> DAST pipeline for the resolved options.
+
+    Both the flag path and the interactive wizard path funnel through here, so there
+    is exactly one deploy implementation. The resolved options are unpacked into locals
+    with the same names the original flag-based body used, keeping that body unchanged.
+    """
+    start_time = time.time()
+    env            = opts.env
+    slot           = opts.slot
+    use_gitops     = opts.use_gitops
+    gitops_branch  = opts.gitops_branch
+    skip_scan      = opts.skip_scan
+    skip_build     = opts.skip_build
+    skip_sonarqube = opts.skip_sonarqube
+    skip_trivy     = opts.skip_trivy
+    skip_dast      = opts.skip_dast
+    fail_on        = opts.fail_on
+    replicas       = opts.replicas
 
     # ── Validate --gitops is only used with cloud envs ────────────────────────
     if use_gitops and env == "local":
@@ -213,11 +269,10 @@ def deploy_command(env, slot, use_gitops, gitops_branch,
     # ── Step 2: Security Scans ───────────────────────────────────────────────
     console.rule("[bold]Step 2 / 5 — Security Scans (SAST)[/bold]")
 
+    scan_results: list = []
     if skip_scan:
         warn("Skipping security scans (--skip-scan). NEVER use this in production.")
-        scan_results = []
     else:
-        scan_results = []
         source_path = env_config.get("docker", {}).get("context", ".")
 
         effective_fail_on = fail_on

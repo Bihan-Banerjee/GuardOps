@@ -1,0 +1,43 @@
+# k8s/dashboard/ingress.yaml — Phase 13
+#
+# Exposes the dashboard at https://app.guardops.live on the SAME ALB as the prod
+# app, via the shared IngressGroup "guardops" (see values-prod.yaml). One ALB
+# fronts both hosts: guardops.live -> guardops-app, app.guardops.live -> dashboard.
+# That is why the single Route53 alb_dns_name alias works for both subdomains.
+#
+# TLS is terminated at the ALB using the wildcard ACM cert (*.guardops.live), which
+# already covers app.guardops.live — the same cert ARN the prod app Ingress uses.
+#
+# Auth is enforced at the API layer (basic-auth via the Secret — a browser gets a
+# native login prompt). The dashboard Service listens on :80 -> pod :8081.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: guardops-dashboard
+  namespace: default
+  labels:
+    app.kubernetes.io/name: guardops-dashboard
+    app.kubernetes.io/managed-by: guardops
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+    # Same shared ALB group as the prod app Ingress.
+    alb.ingress.kubernetes.io/group.name: guardops
+    # Wildcard ACM cert (*.guardops.live) — covers app.guardops.live.
+    alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:ap-south-1:236796665744:certificate/9068b1dc-6273-45ac-9076-051e1397e326"
+spec:
+  ingressClassName: alb
+  rules:
+    - host: app.guardops.live
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: guardops-dashboard
+                port:
+                  number: 80

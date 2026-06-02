@@ -40,6 +40,7 @@ from cli.commands.findings_cmd   import findings_command         # Phase 12
 from cli.commands.trends_cmd     import trends_command           # Phase 12
 from cli.commands.diff_cmd       import diff_command             # Phase 12
 from cli.commands.db_cmd         import db_group                 # Phase 12
+from cli.commands.dashboard_cmd  import dashboard_command        # Phase 13
 
 
 @click.group()
@@ -76,6 +77,8 @@ def cli():
       guardops trends                            Severity counts over time
       guardops diff                              New vs fixed findings between two runs
       guardops db prune                          Apply the scan-DB retention policy
+      guardops db export --to-s3                 Publish findings to S3 for the dashboard
+      guardops dashboard                         Serve the web dashboard API locally
     """
     pass
 
@@ -97,3 +100,4 @@ cli.add_command(findings_command,       name="findings")         # Phase 12
 cli.add_command(trends_command,         name="trends")           # Phase 12
 cli.add_command(diff_command,           name="diff")             # Phase 12
 cli.add_command(db_group,               name="db")               # Phase 12
+cli.add_command(dashboard_command,      name="dashboard")        # Phase 13

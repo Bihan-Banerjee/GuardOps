@@ -90,3 +90,38 @@ def test_db_export_stdout(runner, tmp_path, make_report, make_finding):
     assert result.exit_code == 0
     data = json.loads(result.output)
     assert "runs" in data and len(data["runs"]) == 1
+
+
+def test_db_export_to_s3(runner, tmp_path, make_report, make_finding):
+    db = str(tmp_path / "guardops.db")
+    SqliteMetadataStore(db).persist_report(
+        make_report(findings=[make_finding(severity="HIGH")])
+    )
+    config = {
+        "project": {"name": "demo"},
+        "metadata": {"path": db, "s3_bucket": "bkt", "s3_prefix": "metadata"},
+    }
+    captured = {}
+
+    class _Fake:
+        def put_object(self, Bucket, Key, Body, **kw):
+            captured.update(bucket=Bucket, key=Key, body=Body)
+            return {}
+
+    with _patch_config(config), \
+         patch("backend.metadata.s3_store._s3_client", return_value=_Fake()):
+        result = runner.invoke(db_group, ["export", "--to-s3"])
+    assert result.exit_code == 0
+    assert captured["bucket"] == "bkt"
+    assert captured["key"] == "metadata/demo/latest.json"
+    assert len(json.loads(captured["body"])["runs"]) == 1
+
+
+def test_db_export_to_s3_no_bucket_fails(runner, tmp_path, make_report):
+    db = str(tmp_path / "guardops.db")
+    SqliteMetadataStore(db).persist_report(make_report())
+    config = {"project": {"name": "demo"}, "metadata": {"path": db}}  # no s3_bucket
+    with _patch_config(config):
+        result = runner.invoke(db_group, ["export", "--to-s3"])
+    assert result.exit_code == 1
+    assert "No S3 bucket" in result.output
