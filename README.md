@@ -43,7 +43,7 @@ Phase 10 adds GitOps: after the Helm deploy, `--gitops` writes `values-override-
 
 ---
 
-## Current Status — v0.11.0
+## Current Status — v0.12.0
 
 | Phase | Version | Status | What was built |
 |-------|---------|--------|----------------|
@@ -58,7 +58,8 @@ Phase 10 adds GitOps: after the Helm deploy, `--gitops` writes `values-override-
 | 8 — Self-Healing | v0.8.0 | ✅ Done | Alertmanager webhook handler, automatic NetworkPolicy quarantine on CRITICAL Falco alert, `guardops quarantine-status`, Terraform alertmanager-webhook module |
 | 9 — Multi-Environment | v0.9.0 | ✅ Done | Staging + prod namespace separation, blue-green deploy strategy, `guardops switch --slot`, environment-scoped config helpers, `staging-<sha>` ECR tags, `--env` on quarantine-status |
 | 10 — Full Production | v0.10.0 | ✅ Done | Real domain(in progress) + TLS via cert-manager + Let's Encrypt + Route53, ArgoCD GitOps (override-file pattern), `guardops deploy --gitops`, `guardops sync-status` CLI, 7-job CI pipeline, automated morning-start.ps1 (OIDC repair, subnet tag repair, state identity repair, webhook image build, ALB DNS wiring), night-shutdown.ps1 (Ingress drain + ALB wait), production runbooks |
-| 11 — Supply Chain + Admission Control | v0.11.0 | ✅ **Current** | Syft SBOM (CycloneDX + SPDX), Cosign **keyless** image signing + SBOM/provenance attestations (Sigstore: Fulcio + Rekor), Kyverno admission control — keyless signature verification (`mutateDigest`) + required SBOM attestation + best-practice policy pack (Audit→Enforce), IRSA for Kyverno→ECR, `guardops verify-image` / `guardops sbom`, `scripts/setup-admission-control.ps1`, cosign-aware ECR lifecycle |
+| 11 — Supply Chain + Admission Control | v0.11.0 | ✅ Done | Syft SBOM (CycloneDX + SPDX), Cosign **keyless** image signing + SBOM/provenance attestations (Sigstore: Fulcio + Rekor), Kyverno admission control — keyless signature verification (`mutateDigest`) + required SBOM attestation + best-practice policy pack (Audit→Enforce), IRSA for Kyverno→ECR, `guardops verify-image` / `guardops sbom`, `scripts/setup-admission-control.ps1`, cosign-aware ECR lifecycle |
+| 12 — Scan Metadata Database | v0.12.0 | ✅ **Current** | SQLite scan-metadata store (`scan_runs`/`findings`/`tool_runs`) behind a `MetadataStore` abstraction (Postgres-ready for the dashboard), non-fatal persistence wired into `scan` + `deploy`, and `guardops history` / `findings` / `trends` / `diff` (CI regression gate) / `db` (init·prune·export) |
 
 ---
 
@@ -66,8 +67,7 @@ Phase 10 adds GitOps: after the Helm deploy, `--gitops` writes `values-override-
 
 | Phase | Target | What it adds |
 |-------|--------|-------------|
-| 12 — Scan Database | v0.12.0 | Persistent vulnerability metadata store |
-| 13 — Dashboard | v1.11.0 | Web UI for pipeline status and findings |
+| 13 — Stable Release | v1.0.0 | First stable release: web dashboard on guardops.live, pre-startup CLI customization options, full testing + security audit |
 
 ---
 
@@ -1650,7 +1650,8 @@ Expected during the window between the direct Helm deploy (immediate) and the Gi
 | v0.8.0 | Published | Self-healing: Alertmanager webhook handler, automatic pod quarantine via NetworkPolicy, auto-release on alert resolved, `guardops quarantine-status` CLI, Terraform alertmanager-webhook module, Dockerfile.webhook, PrometheusRule + AlertmanagerConfig wiring |
 | v0.9.0 | Published | Multi-environment: staging + prod namespace separation, `guardops deploy --env staging`, blue-green deploy with `--slot blue/green`, `guardops switch` traffic cutover, environment-scoped config helpers, `staging-<sha>` ECR image tags, `--env` flag on quarantine-status, Helm chart v0.4.0 with blueGreen values |
 | v0.10.0 | Published | Full production: real domain(in progress) + TLS (cert-manager v1.14.4 + Let's Encrypt + Route53), ArgoCD v6.7.3 GitOps (override-file pattern, auto-sync staging, manual-sync prod, `ignoreDifferences` on image field), `guardops deploy --gitops` + `--gitops-branch`, `guardops sync-status` (ArgoCD REST API snapshot + blocking wait), CI Job 7 sync-gate, 7-job pipeline, `morning-start.ps1` full automation (EKS provider bootstrap stub, 409-conflict import, OIDC trust rotation, subnet tag repair, state identity repair, webhook image build, Ingress annotation patch, ALB DNS wiring), `night-shutdown.ps1` (Ingress drain + ALB drain + ordered Helm uninstall + alb_dns_name clear), `GUARDOPS_CONTEXT_10.md`, production runbooks (deploy-prod, rollback, incident-response), 341 tests |
-| v0.11.0 | **Current** | Supply chain: Syft SBOM (CycloneDX + SPDX, S3 + artifact), Cosign **keyless** signing by digest + SBOM/SLSA-provenance attestations (Sigstore Fulcio + Rekor, no new secrets), Kyverno admission control — `verifyImages` keyless signature check with `mutateDigest` + required SBOM attestation + best-practice pack (no `:latest`, ECR-only, runAsNonRoot, drop ALL caps, no privesc/privileged/host-ns, resource limits; read-only-rootfs Audit-only), IRSA `modules/kyverno` for Kyverno→ECR + cluster OIDC provider in `modules/eks`, cosign-aware ECR lifecycle, `guardops verify-image` / `guardops sbom`, `setup-admission-control.ps1` (Audit→Enforce), Phase 11 steps in morning-start/night-shutdown |
+| v0.11.0 | Published | Supply chain: Syft SBOM (CycloneDX + SPDX, S3 + artifact), Cosign **keyless** signing by digest + SBOM/SLSA-provenance attestations (Sigstore Fulcio + Rekor, no new secrets), Kyverno admission control — `verifyImages` keyless signature check with `mutateDigest` + required SBOM attestation + best-practice pack (no `:latest`, ECR-only, runAsNonRoot, drop ALL caps, no privesc/privileged/host-ns, resource limits; read-only-rootfs Audit-only), IRSA `modules/kyverno` for Kyverno→ECR + cluster OIDC provider in `modules/eks`, cosign-aware ECR lifecycle, `guardops verify-image` / `guardops sbom`, `setup-admission-control.ps1` (Audit→Enforce), Phase 11 steps in morning-start/night-shutdown |
+| v0.12.0 | **Current** | Scan metadata database (Phase 12): persistent SQLite store of scan runs + findings behind a `MetadataStore` abstraction (Postgres-ready for the v1.0.0 dashboard), strictly non-fatal persistence wired into `scan` + `deploy`, and five CLI actions — `guardops history`, `findings`, `trends`, `diff` (new-vs-fixed regression gate, exits 1 on new CRITICAL/HIGH), and `db` (init/prune/export); zero new dependencies (stdlib `sqlite3`); 387 tests |
 
 ---
 
@@ -1658,11 +1659,10 @@ Expected during the window between the direct Helm deploy (immediate) and the Gi
 
 | Version | Status | Description |
 |---------|--------|-------------|
-| v0.12.0 | Planned | Scan metadata database |
-| v1.1.0 | Planned | Web dashboard |
-| v1.2.0 | Planned | Vulnerability waivers |
-| v1.3.0 | Planned | LLM-assisted triage |
-| v1.4.0 | Planned | Risk-based scoring (scoped) |
+| v1.0.0 | Planned | **First stable release** — web dashboard on [guardops.live](https://guardops.live), pre-startup CLI customization options (interactive setup before commands run), and a thorough testing + security audit pass |
+| v1.1.0 | Planned | Vulnerability waivers |
+| v1.2.0 | Planned | LLM-assisted triage |
+| v1.3.0 | Planned | Risk-based scoring (scoped) |
 
 ---
 

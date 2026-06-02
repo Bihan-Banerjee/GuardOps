@@ -17,6 +17,7 @@ build/
 # GuardOps runtime files
 .guardops-state.json
 security/reports/
+security/metadata/          # Phase 12 scan-metadata SQLite DB
 *.log
 
 # Testing
