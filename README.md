@@ -383,10 +383,28 @@ Job 7: sync-gate           <-- active when ARGOCD_TOKEN set [Phase 10]
 
 ---
 
+## Documentation
+
+| Guide | What it covers |
+|-------|----------------|
+| [INSTALL.md](INSTALL.md) | Install (pip / source), prerequisites, the `[dashboard]` extra |
+| [QUICKSTART.md](QUICKSTART.md) | Deploy your first app to local k3d in ~5 minutes |
+| [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | Common issues — incl. "the dashboard URL is blank" |
+| [docs/API.md](docs/API.md) | The dashboard `/api/v1` HTTP API |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Module map and how the pieces fit |
+| [TESTING.md](TESTING.md) | Test layers, the coverage gate, the CLI permutation matrix |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup, tests, PR checklist |
+| [RELEASE.md](RELEASE.md) | Versioning + how a release is cut |
+
+---
+
 ## Install
 
 ```bash
 pip install guardops
+
+# optional — the web dashboard API backend (FastAPI + uvicorn)
+pip install 'guardops[dashboard]'
 ```
 
 **Requirements:**
@@ -396,11 +414,31 @@ pip install guardops
 - Helm 3.x
 - k3d (local deploys) or AWS credentials (prod deploys)
 
+Run **`guardops doctor`** to check that everything above is installed and your project
+is configured — it reports everything missing at once, with install hints. See
+[INSTALL.md](INSTALL.md) for source installs and platform notes.
+
+### Cluster lifecycle & the always-on dashboard
+
+To stay near-zero cost, the EKS cluster is **created in the morning and destroyed at
+night** (`scripts/morning-start.ps1` / `scripts/night-shutdown.ps1`). That means the
+live dashboard API (`app.guardops.live`) only answers while the cluster is up.
+
+So the public dashboard SPA never goes dark: each run publishes a **static snapshot**
+to S3 (`guardops dashboard snapshot --to-s3`), and when the live API is unreachable the
+SPA falls back to it — rendering last-known data from any device with a clear
+"live backend offline" banner. Set `VITE_SNAPSHOT_URL` (and Terraform
+`enable_public_snapshot = true`) to wire it up. See
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#the-dashboard-loads-but-shows-no-data).
+
 ---
 
 ## Quick Start
 
 ```bash
+# Check required tools + config first
+guardops doctor
+
 # Scaffold config in your project directory
 guardops init
 
