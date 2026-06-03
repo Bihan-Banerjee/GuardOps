@@ -1452,12 +1452,14 @@ if (-not $SkipDeploy) {
             Replace("__ECR_IMAGE__",  $dashboardImage).
             Replace("__S3_BUCKET__",  $dashBucket).
             Replace("__AWS_REGION__", $Region)
+        # Write UTF-8 WITHOUT a BOM. Set-Content -Encoding utf8 on Windows PowerShell
+        # 5.1 prepends a BOM that kubectl rejects: "control characters are not allowed".
         $tmp = New-TemporaryFile
-        Set-Content -Path $tmp -Value $text -Encoding utf8
-        kubectl apply -f $tmp 2>$null | Out-Null
+        [System.IO.File]::WriteAllText($tmp.FullName, $text, (New-Object System.Text.UTF8Encoding($false)))
+        kubectl apply -f $tmp.FullName | Out-Null
         Remove-Item $tmp -Force
     }
-    kubectl apply -f "$RepoRoot\k8s\dashboard\service.yaml" 2>$null | Out-Null
+    kubectl apply -f "$RepoRoot\k8s\dashboard\service.yaml" | Out-Null
 
     # Auth Secret: reuse GUARDOPS_DASHBOARD_* env if set, else generate a password.
     if ($env:GUARDOPS_DASHBOARD_USER)     { $script:DashboardUser     = $env:GUARDOPS_DASHBOARD_USER }

@@ -68,9 +68,11 @@ function Apply-Rendered([string] $path) {
     $text = $text.Replace("__ECR_IMAGE__", $image)
     $text = $text.Replace("__S3_BUCKET__", $S3Bucket)
     $text = $text.Replace("__AWS_REGION__", $Region)
+    # Write UTF-8 WITHOUT a BOM. Set-Content -Encoding utf8 on Windows PowerShell 5.1
+    # prepends a BOM that kubectl rejects: "control characters are not allowed".
     $tmp = New-TemporaryFile
-    Set-Content -Path $tmp -Value $text -Encoding utf8
-    kubectl apply -f $tmp
+    [System.IO.File]::WriteAllText($tmp.FullName, $text, (New-Object System.Text.UTF8Encoding($false)))
+    kubectl apply -f $tmp.FullName
     Remove-Item $tmp -Force
 }
 
