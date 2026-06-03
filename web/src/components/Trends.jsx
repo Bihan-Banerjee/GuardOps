@@ -93,7 +93,7 @@ export default function Trends() {
   }, [inView])
 
   return (
-    <section id="trends" className="relative bg-[#030303] py-24 px-4">
+    <section id="trends" className="relative bg-[#030303]/82 py-24 px-4">
       <div className="max-w-7xl mx-auto">
         <SectionHeader>SECURITY TRENDS</SectionHeader>
 
@@ -120,12 +120,12 @@ export default function Trends() {
           className="opacity-0 bg-zinc-900/40 border border-zinc-800 rounded-xl p-6"
         >
           {loading && points.length === 0 ? (
-            <div className="flex items-center justify-center h-[300px] gap-3 text-zinc-600 font-mono text-sm">
+            <div className="flex items-center justify-center h-[300px] gap-3 text-zinc-300 font-mono text-sm">
               <Activity className="w-4 h-4 animate-spin" />
               Loading trends...
             </div>
           ) : points.length === 0 ? (
-            <div className="flex items-center justify-center h-[300px] text-zinc-600 font-mono text-sm">
+            <div className="flex items-center justify-center h-[300px] text-zinc-300 font-mono text-sm">
               No scan data for this period
             </div>
           ) : (

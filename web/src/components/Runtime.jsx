@@ -38,10 +38,10 @@ function OfflineBanner({ reason }) {
     <div className="border border-zinc-800 rounded-xl bg-zinc-900/30 p-8 text-center">
       <WifiOff className="w-8 h-8 text-zinc-700 mx-auto mb-3" strokeWidth={1} />
       <p className="font-mono text-sm font-bold text-zinc-500 mb-1">CLUSTER OFFLINE</p>
-      <p className="font-mono text-xs text-zinc-600 break-all line-clamp-2">
+      <p className="font-mono text-xs text-zinc-300 break-all line-clamp-2">
         {reason ? reason.split('\n')[0].slice(0, 100) : 'Data source unavailable'}
       </p>
-      <p className="font-mono text-xs text-zinc-700 mt-2">
+      <p className="font-mono text-xs text-zinc-300 mt-2">
         Nightly shutdown active — cluster resumes mornings
       </p>
     </div>
@@ -58,7 +58,7 @@ const SEV_STYLES = {
 function AlertFeed({ alerts }) {
   if (!alerts?.length) {
     return (
-      <div className="py-8 text-center text-zinc-600 font-mono text-sm">
+      <div className="py-8 text-center text-zinc-300 font-mono text-sm">
         No alerts in this window
       </div>
     )
@@ -114,7 +114,7 @@ export default function Runtime() {
   const counts = alertsData?.counts ?? {}
 
   return (
-    <section id="runtime" className="relative bg-[#030303] py-24 px-4">
+    <section id="runtime" className="relative bg-[#030303]/82 py-24 px-4">
       <div className="max-w-7xl mx-auto">
         <SectionHeader>RUNTIME SECURITY</SectionHeader>
 
@@ -141,7 +141,7 @@ export default function Runtime() {
 
             <div className="bg-zinc-900/40 border border-zinc-800 rounded-xl p-5">
               {!alertsData ? (
-                <div className="py-8 flex items-center justify-center gap-2 text-zinc-600 font-mono text-sm">
+                <div className="py-8 flex items-center justify-center gap-2 text-zinc-300 font-mono text-sm">
                   <Activity className="w-4 h-4 animate-spin" /> Querying Loki...
                 </div>
               ) : !alertsData.available ? (
@@ -161,7 +161,7 @@ export default function Runtime() {
 
             <div className="bg-zinc-900/40 border border-zinc-800 rounded-xl p-5">
               {!quarantineData ? (
-                <div className="py-8 flex items-center justify-center gap-2 text-zinc-600 font-mono text-sm">
+                <div className="py-8 flex items-center justify-center gap-2 text-zinc-300 font-mono text-sm">
                   <Activity className="w-4 h-4 animate-spin" /> Checking cluster...
                 </div>
               ) : !quarantineData.available ? (
@@ -172,7 +172,7 @@ export default function Runtime() {
                     <Shield className="w-5 h-5 text-terminal" strokeWidth={1.5} />
                   </div>
                   <p className="font-mono text-sm text-terminal/70">No pods quarantined</p>
-                  <p className="font-mono text-xs text-zinc-600 mt-1">Self-healing policy active</p>
+                  <p className="font-mono text-xs text-zinc-300 mt-1">Self-healing policy active</p>
                 </div>
               ) : (
                 <div className="space-y-3">

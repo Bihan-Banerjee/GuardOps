@@ -37,7 +37,7 @@ function OfflineBanner({ reason }) {
   return (
     <div className="flex flex-col items-center justify-center py-8 gap-2">
       <WifiOff className="w-6 h-6 text-zinc-700" strokeWidth={1} />
-      <p className="font-mono text-xs text-zinc-600 text-center break-all line-clamp-3">
+      <p className="font-mono text-xs text-zinc-300 text-center break-all line-clamp-3">
         {reason ? reason.split('\n')[0].slice(0, 120) : 'Metrics unavailable'}
       </p>
     </div>
@@ -120,7 +120,7 @@ export default function Metrics() {
   const healthStatus = syncData?.health_status
 
   return (
-    <section id="metrics" className="relative bg-[#030303] py-24 px-4">
+    <section id="metrics" className="relative bg-[#030303]/82 py-24 px-4">
       <div className="max-w-7xl mx-auto">
         <SectionHeader>LIVE METRICS</SectionHeader>
 
@@ -133,7 +133,7 @@ export default function Metrics() {
               Application
             </h3>
             {!appData ? (
-              <div className="py-4 flex items-center gap-2 text-zinc-600 font-mono text-xs">
+              <div className="py-4 flex items-center gap-2 text-zinc-300 font-mono text-xs">
                 <Activity className="w-3 h-3 animate-spin" /> Querying Prometheus...
               </div>
             ) : !appData.available ? (
@@ -163,7 +163,7 @@ export default function Metrics() {
               Resources
             </h3>
             {!resourceData ? (
-              <div className="py-4 flex items-center gap-2 text-zinc-600 font-mono text-xs">
+              <div className="py-4 flex items-center gap-2 text-zinc-300 font-mono text-xs">
                 <Activity className="w-3 h-3 animate-spin" /> Querying cluster...
               </div>
             ) : !resourceData.available ? (
@@ -195,7 +195,7 @@ export default function Metrics() {
                   </div>
                 )}
                 {cpuEntries.length === 0 && memEntries.length === 0 && (
-                  <p className="text-xs font-mono text-zinc-600">No pod data available</p>
+                  <p className="text-xs font-mono text-zinc-300">No pod data available</p>
                 )}
               </div>
             )}
@@ -208,7 +208,7 @@ export default function Metrics() {
               GitOps Sync
             </h3>
             {!syncData ? (
-              <div className="py-4 flex items-center gap-2 text-zinc-600 font-mono text-xs">
+              <div className="py-4 flex items-center gap-2 text-zinc-300 font-mono text-xs">
                 <Activity className="w-3 h-3 animate-spin" /> Querying ArgoCD...
               </div>
             ) : !syncData.available ? (

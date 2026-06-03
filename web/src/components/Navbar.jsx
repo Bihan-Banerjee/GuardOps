@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
-import { Shield, Activity, Wifi, WifiOff } from 'lucide-react'
+import { Activity } from 'lucide-react'
 import { fetchMeta } from '../api.js'
+import Logo from './Logo.jsx'
 
 const NAV_LINKS = [
-  { label: 'Overview', id: 'overview' },
   { label: 'Trends', id: 'trends' },
   { label: 'Runs', id: 'runs' },
   { label: 'Findings', id: 'findings' },
@@ -49,7 +49,7 @@ export default function Navbar() {
         <div className="flex items-center justify-between h-16">
           {/* Logo */}
           <div className="flex items-center gap-3">
-            <Shield className="w-6 h-6 text-terminal" strokeWidth={1.5} />
+            <Logo className="w-8 h-8 rounded-md" />
             <span className="font-mono font-black text-lg tracking-widest glitch-text">
               <span className="text-terminal">GUARD</span>
               <span className="text-zinc-200">OPS</span>
@@ -60,14 +60,16 @@ export default function Navbar() {
           </div>
 
           {/* Desktop nav */}
-          <div className="hidden md:flex items-center gap-1">
+          <div className="hidden md:flex items-center gap-0.5">
             {NAV_LINKS.map(link => (
               <button
                 key={link.id}
                 onClick={() => scrollTo(link.id)}
-                className="px-3 py-1.5 text-xs font-mono text-zinc-400 hover:text-terminal transition-colors rounded hover:bg-terminal/5"
+                className="px-4 py-2 text-sm font-mono font-medium text-zinc-200 hover:text-terminal transition-all duration-150 rounded relative group"
               >
                 {link.label}
+                {/* animated underline on hover */}
+                <span className="absolute bottom-1 left-4 right-4 h-px bg-terminal scale-x-0 group-hover:scale-x-100 transition-transform duration-200 origin-left" />
               </button>
             ))}
           </div>
@@ -113,7 +115,7 @@ export default function Navbar() {
               <button
                 key={link.id}
                 onClick={() => { scrollTo(link.id); setMenuOpen(false) }}
-                className="block w-full text-left px-3 py-2 text-sm font-mono text-zinc-400 hover:text-terminal hover:bg-terminal/5 rounded"
+                className="block w-full text-left px-3 py-2 text-sm font-mono font-medium text-zinc-200 hover:text-terminal hover:bg-terminal/5 rounded"
               >
                 {'>'} {link.label}
               </button>

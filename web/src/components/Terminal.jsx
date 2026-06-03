@@ -76,7 +76,7 @@ const Terminal = forwardRef(function Terminal({ lines = [], className = '' }, re
       {/* Output area */}
       <div
         ref={containerRef}
-        className="p-4 font-mono text-sm min-h-[160px] max-h-[280px] overflow-y-auto space-y-1"
+        className="p-4 font-mono text-sm min-h-[200px] max-h-[420px] overflow-y-auto space-y-1"
         style={{ scrollBehavior: 'smooth' }}
       >
         {displayedLines.map((line, i) => (

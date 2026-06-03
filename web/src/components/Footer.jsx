@@ -2,7 +2,7 @@ import { Shield, Github, ExternalLink } from 'lucide-react'
 
 export default function Footer() {
   return (
-    <footer className="relative bg-[#030303] border-t border-zinc-900 py-12 px-4">
+    <footer className="relative bg-[#030303]/82 border-t border-zinc-900 py-12 px-4">
       <div className="max-w-7xl mx-auto">
         <div className="flex flex-col md:flex-row items-center justify-between gap-6">
           {/* Brand */}

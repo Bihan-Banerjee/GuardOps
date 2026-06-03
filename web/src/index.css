@@ -16,9 +16,15 @@ html {
 
 body {
   background: var(--bg-primary);
-  color: #e4e4e7;
+  color: #f4f4f5;        /* brighter base text for better contrast */
   overflow-x: hidden;
   font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+  cursor: none;          /* hide native cursor — CustomCursor.jsx takes over */
+}
+
+/* Ensure the custom cursor style is applied everywhere */
+a, button, [role="button"], input, select, textarea, label {
+  cursor: none;
 }
 
 /* Scrollbar styling */

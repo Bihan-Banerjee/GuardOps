@@ -156,11 +156,11 @@ function RunRow({ run, idx }) {
         <tr>
           <td colSpan={10} className="bg-zinc-950/50">
             {loadingFindings ? (
-              <div className="py-4 pl-8 text-xs font-mono text-zinc-600 flex items-center gap-2">
+              <div className="py-4 pl-8 text-xs font-mono text-zinc-300 flex items-center gap-2">
                 <Activity className="w-3 h-3 animate-spin" /> Loading findings...
               </div>
             ) : findings?.length === 0 ? (
-              <div className="py-4 pl-8 text-xs font-mono text-zinc-600">No findings for this run.</div>
+              <div className="py-4 pl-8 text-xs font-mono text-zinc-300">No findings for this run.</div>
             ) : (
               <table className="w-full">
                 <thead>
@@ -206,7 +206,7 @@ export default function Runs() {
   }, [inView])
 
   return (
-    <section id="runs" className="relative bg-[#030303] py-24 px-4">
+    <section id="runs" className="relative bg-[#030303]/82 py-24 px-4">
       <div className="max-w-7xl mx-auto">
         <SectionHeader>SCAN RUNS</SectionHeader>
 
@@ -236,12 +236,12 @@ export default function Runs() {
           </div>
 
           {loading && runs.length === 0 && (
-            <div className="py-16 text-center text-zinc-600 font-mono text-sm flex items-center justify-center gap-2">
+            <div className="py-16 text-center text-zinc-300 font-mono text-sm flex items-center justify-center gap-2">
               <Activity className="w-4 h-4 animate-spin" /> Loading scan history...
             </div>
           )}
           {!loading && runs.length === 0 && (
-            <div className="py-16 text-center text-zinc-600 font-mono text-sm">
+            <div className="py-16 text-center text-zinc-300 font-mono text-sm">
               No scan runs found. Run{' '}
               <code className="text-terminal/70">guardops deploy</code> to create your first scan.
             </div>

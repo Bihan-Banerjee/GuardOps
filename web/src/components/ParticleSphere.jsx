@@ -82,58 +82,69 @@ export default function ParticleSphere() {
       scene.add(lineSegments)
     }
 
-    // Scroll tracking
+    // Scroll tracking — track total scrollable range so the zoom can be
+    // paced across the whole page rather than just the first viewport
     let scrollY = 0
+    let maxScroll = 1
+    const updateMaxScroll = () => {
+      maxScroll = Math.max(document.documentElement.scrollHeight - window.innerHeight, 1)
+    }
     const handleScroll = () => { scrollY = window.scrollY }
     window.addEventListener('scroll', handleScroll, { passive: true })
+    updateMaxScroll()
 
     // Resize
     const handleResize = () => {
       camera.aspect = window.innerWidth / window.innerHeight
       camera.updateProjectionMatrix()
       renderer.setSize(window.innerWidth, window.innerHeight)
+      updateMaxScroll()
     }
     window.addEventListener('resize', handleResize)
 
     // Animation loop
     let rafId
     let opacity = 0
+    // Max opacity in hero = 0.55; in lower sections drops to 0.28 so it stays
+    // visible through semi-transparent section backgrounds without overwhelming text
+    const MAX_OPACITY = isMobile ? 0.45 : 0.55
+    const BG_OPACITY  = isMobile ? 0.22 : 0.28
+
     const animate = () => {
       rafId = requestAnimationFrame(animate)
 
       // Fade in on load
-      if (opacity < 0.75) {
-        opacity = Math.min(0.75, opacity + 0.008)
-        pointMat.opacity = opacity
-        if (lineSegments) lineSegments.material.opacity = opacity * 0.11
+      if (opacity < MAX_OPACITY) {
+        opacity = Math.min(MAX_OPACITY, opacity + 0.007)
       }
 
-      // Auto-rotation
-      points.rotation.x += 0.0008
-      points.rotation.y += 0.0015
+      // Blend between hero opacity and background opacity based on scroll
+      const heroHeight = window.innerHeight
+      const scrollFraction = Math.min(scrollY / (heroHeight * 1.2), 1)
+      const targetOpacity = MAX_OPACITY - scrollFraction * (MAX_OPACITY - BG_OPACITY)
+      const currentOpacity = Math.min(opacity, targetOpacity)
+      pointMat.opacity = currentOpacity
+      if (lineSegments) lineSegments.material.opacity = currentOpacity * 0.13
+
+      // Auto-rotation — slightly faster when deep in page for visual interest
+      const rotSpeed = 1 + scrollFraction * 0.5
+      points.rotation.x += 0.0008 * rotSpeed
+      points.rotation.y += 0.0015 * rotSpeed
       if (lineSegments) {
         lineSegments.rotation.x = points.rotation.x
         lineSegments.rotation.y = points.rotation.y
       }
 
-      // Scroll-driven camera zoom — only active in first 2 viewports
-      const heroHeight = window.innerHeight
-      const scrollFraction = Math.min(scrollY / heroHeight, 1)
-      const targetZ = 4 - scrollFraction * 1.6  // zoom from 4 → 2.4, never inside sphere
+      // Scroll-driven camera zoom — paced across the WHOLE page so the
+      // globe reaches its max size near the bottom, not by mid-page.
+      // Re-read maxScroll occasionally in case content height changed.
+      updateMaxScroll()
+      const pageFraction = Math.min(scrollY / maxScroll, 1)
+      const targetZ = 4 - pageFraction * 1.6  // zoom from 4 → 2.4 over full page
       camera.position.z += (targetZ - camera.position.z) * 0.05
 
-      // Fade out sphere after hero to improve performance in lower sections
-      const fadeStart = window.innerHeight * 0.8
-      const fadeEnd = window.innerHeight * 1.4
-      if (scrollY > fadeStart) {
-        const fadeFraction = Math.min((scrollY - fadeStart) / (fadeEnd - fadeStart), 1)
-        const targetOpacity = opacity * (1 - fadeFraction)
-        pointMat.opacity = targetOpacity
-        if (lineSegments) lineSegments.material.opacity = targetOpacity * 0.11
-      }
-
-      // Tilt camera slightly based on scroll
-      camera.position.y += (-scrollY * 0.0002 - camera.position.y) * 0.05
+      // Gentle upward drift, bounded to the page fraction
+      camera.position.y += (-pageFraction * 0.7 - camera.position.y) * 0.05
 
       renderer.render(scene, camera)
     }
