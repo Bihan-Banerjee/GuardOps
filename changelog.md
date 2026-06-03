@@ -3,6 +3,50 @@
 All notable changes are documented here.
 Format: [Semantic Versioning](https://semver.org)
 
+## [1.0.0] — Unreleased
+
+Phase 14 — the first stable release: completes the web dashboard, hardens the tool for
+external users, and makes the public site work 24/7 at near-zero cost. The package
+version bump + PyPI tag are cut separately — see [RELEASE.md](RELEASE.md).
+
+### Added
+- **Web dashboard SPA** (`web/`, Vite + React + Three.js) on guardops.live.
+- **Always-on dashboard snapshot.** `guardops dashboard snapshot [--to-s3]` publishes a
+  static, path-keyed snapshot of the API; the SPA falls back to it when the live API is
+  unreachable (the cluster is torn down nightly), rendering last-known data from any
+  device with an offline banner. Live-source payloads are redacted before publish.
+  Opt-in public S3 via Terraform `enable_public_snapshot`, scoped to `dashboard/*` only.
+- **`guardops doctor`** — first-run preflight checking required tools + config.
+- **`guardops admission --mode audit|enforce [--dry-run]`** — cross-platform, testable
+  Kyverno policy apply (Audit default), wired into `morning-start.ps1`.
+- **Cross-platform CI** — pytest on Linux/macOS/Windows, a web Vitest job, and a
+  `--cov-fail-under` coverage gate.
+- **Docs set** — INSTALL, QUICKSTART, CONTRIBUTING, TROUBLESHOOTING, RELEASE, TESTING,
+  docs/API, docs/ARCHITECTURE, **docs/SELF_HOSTING**, and a release-e2e runbook.
+
+### Changed
+- **ArgoCD Terraform module fixed + enabled** — installs only the Helm release (no
+  `kubernetes_manifest` plan-time bootstrap failure); the UI moved to an ALB Ingress
+  (`k8s/argocd/ingress.yaml`) on the shared group, replacing the nginx default.
+- **Falco marked experimental / simulated** on the single-node cluster; memory limit
+  raised 256Mi→1Gi with shrunk eBPF buffers. `runtime-status` warns accordingly.
+- **Security toggles on by default** in `.guardops.yaml` (SonarQube, OWASP ZAP DAST,
+  runtime gate).
+- **FastAPI 0.115 → 0.136 / Starlette 1.2** to clear the Starlette CVEs.
+- Lifecycle scripts publish the snapshot (morning-start + pre-teardown), apply the
+  ArgoCD ingress, drive Kyverno via `guardops admission`, and night-shutdown drains the
+  argocd ALB.
+
+### Fixed
+- **CI HIGH-severity gates** — Dockerfile `apt-get upgrade` clears fixable base-image
+  CVEs (Trivy); the intentional public-S3 finding is suppressed (Semgrep).
+- **Dependency CVEs** — floored `urllib3>=2.7.0`, `idna>=3.15` (plus the Starlette bump).
+- **Snapshot info-leak** — internal endpoints/hostnames redacted from the public snapshot.
+- Runtime `pod_name` field consistency; a Windows-only CLI hint made cross-platform.
+
+### Security
+- Public snapshot redaction; dependency CVE remediation; opt-in, prefix-scoped public S3.
+
 ## [0.13.0] — 2026-06-02
 
 Phase 13 — the last feature phase before the v1.0.0 stabilization pass (full

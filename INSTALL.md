@@ -58,4 +58,5 @@ exactly which you're missing.
 ## Next steps
 
 - [QUICKSTART.md](QUICKSTART.md) — deploy your first app
+- [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) — host the dashboard yourself, cheaply, without a cluster
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — if something doesn't work
