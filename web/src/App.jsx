@@ -1,4 +1,5 @@
 import ParticleSphere from './components/ParticleSphere.jsx'
+import CustomCursor from './components/CustomCursor.jsx'
 import Navbar from './components/Navbar.jsx'
 import Hero from './components/Hero.jsx'
 import Overview from './components/Overview.jsx'
@@ -14,6 +15,9 @@ export default function App() {
     <>
       {/* Fixed Three.js canvas — behind everything */}
       <ParticleSphere />
+
+      {/* Custom magnifying glass cursor */}
+      <CustomCursor />
 
       {/* Sticky navigation */}
       <Navbar />
