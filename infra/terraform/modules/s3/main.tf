@@ -31,14 +31,58 @@ resource "aws_s3_bucket" "reports" {
   }
 }
 
-# Block all public access — reports must never be publicly readable
+# Block public access. ACL-based public access is always blocked. The two
+# policy-related flags are relaxed ONLY when enable_public_snapshot is true, so a
+# bucket policy can expose the dashboard/* prefix (and nothing else) for the SPA's
+# offline snapshot fallback. Default (false) keeps the historical "all blocked".
 resource "aws_s3_bucket_public_access_block" "reports" {
   bucket = aws_s3_bucket.reports.id
 
   block_public_acls       = true
-  block_public_policy     = true
   ignore_public_acls      = true
-  restrict_public_buckets = true
+  block_public_policy     = var.enable_public_snapshot ? false : true
+  restrict_public_buckets = var.enable_public_snapshot ? false : true
+}
+
+# Public read for the snapshot object only — scoped to dashboard/*. reports/ and
+# metadata/ remain private. See variable "enable_public_snapshot".
+data "aws_iam_policy_document" "public_snapshot" {
+  count = var.enable_public_snapshot ? 1 : 0
+
+  statement {
+    sid       = "PublicReadDashboardSnapshot"
+    effect    = "Allow"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.reports.arn}/dashboard/*"]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "public_snapshot" {
+  count  = var.enable_public_snapshot ? 1 : 0
+  bucket = aws_s3_bucket.reports.id
+  policy = data.aws_iam_policy_document.public_snapshot[0].json
+
+  # The policy can't be applied until the access block stops restricting it.
+  depends_on = [aws_s3_bucket_public_access_block.reports]
+}
+
+# The SPA fetches the snapshot cross-origin (from dashboard.guardops.live), so the
+# browser needs the bucket to return CORS headers on the GET.
+resource "aws_s3_bucket_cors_configuration" "public_snapshot" {
+  count  = var.enable_public_snapshot ? 1 : 0
+  bucket = aws_s3_bucket.reports.id
+
+  cors_rule {
+    allowed_methods = ["GET", "HEAD"]
+    allowed_origins = var.snapshot_cors_origins
+    allowed_headers = ["*"]
+    max_age_seconds = 300
+  }
 }
 
 # AES256 encryption at rest — free, unlike KMS (~$1/month)

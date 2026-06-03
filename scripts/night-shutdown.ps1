@@ -101,6 +101,44 @@ if (-not $clusterOk) {
     Write-Host "  >> Proceeding to terraform destroy..." -ForegroundColor Yellow
 }
 
+# ── Step 0: Publish the dashboard snapshot before teardown (v1.0.0) ───────────
+# The EKS cluster is about to be destroyed, so the live API (app.guardops.live)
+# will go dark until tomorrow's morning-start. Capture last-known findings/runs/
+# trends to a public S3 object now, so dashboard.guardops.live keeps rendering
+# data from any device overnight (web/src/api.js falls back to it). Best-effort:
+# this must never block the shutdown.
+$snapBucket = $env:GUARDOPS_S3_BUCKET
+if ($snapBucket) {
+    Write-Host ""
+    Write-Host "  [0/8] Publish dashboard snapshot to S3 (offline fallback)" -ForegroundColor Cyan
+    Write-Host "  $('-' * 48)" -ForegroundColor DarkGray
+    # Read durable data from the same S3 export the live dashboard serves (not the
+    # local SQLite DB), so the public snapshot matches what users see online. A
+    # missing export degrades to an empty snapshot — never an error.
+    $prevBackend = $env:GUARDOPS_METADATA_BACKEND
+    $env:GUARDOPS_METADATA_BACKEND = "s3"
+    try {
+        Push-Location $RepoRoot
+        guardops dashboard snapshot --to-s3 --bucket $snapBucket 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "    OK  Snapshot published (dashboard/snapshot.json)" -ForegroundColor Green
+        } else {
+            Write-Host "    !! Snapshot publish failed -- continuing shutdown" -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "    !! Snapshot publish error: $_ -- continuing" -ForegroundColor Yellow
+    } finally {
+        Pop-Location
+        if ($null -eq $prevBackend) {
+            Remove-Item Env:\GUARDOPS_METADATA_BACKEND -ErrorAction SilentlyContinue
+        } else {
+            $env:GUARDOPS_METADATA_BACKEND = $prevBackend
+        }
+    }
+} else {
+    Write-Host "  >> GUARDOPS_S3_BUCKET not set -- skipping dashboard snapshot" -ForegroundColor DarkGray
+}
+
 # ── Step 1/8: Delete Ingress + wait for ALB deletion ─────────────────────────
 Write-ShutdownStep "1" "8" "Delete Ingress objects -- drain ALBs from AWS"
 

@@ -24,6 +24,7 @@ import click
 from cli import __version__
 
 from cli.commands.init_cmd       import init_command
+from cli.commands.doctor_cmd     import doctor_command        # v1.0.0
 from cli.commands.deploy_cmd     import deploy_command
 from cli.commands.status_cmd     import status_command
 from cli.commands.logs_cmd       import logs_command
@@ -54,6 +55,7 @@ def cli():
 
     \b
     Quick start:
+      guardops doctor                            Check required tools + config
       guardops init                              Set up a new project
       guardops deploy                            Build, scan, and deploy (local)
       guardops deploy --env staging              Deploy to staging namespace
@@ -84,6 +86,7 @@ def cli():
 
 
 cli.add_command(init_command,           name="init")
+cli.add_command(doctor_command,         name="doctor")          # v1.0.0
 cli.add_command(deploy_command,         name="deploy")
 cli.add_command(status_command,         name="status")
 cli.add_command(logs_command,           name="logs")

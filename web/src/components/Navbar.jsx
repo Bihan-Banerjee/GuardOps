@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Activity } from 'lucide-react'
 import { fetchMeta } from '../api.js'
+import { useOffline } from '../hooks/useOffline.js'
 import Logo from './Logo.jsx'
 
 const NAV_LINKS = [
@@ -18,9 +19,13 @@ function scrollTo(id) {
 
 export default function Navbar() {
   const [scrolled, setScrolled] = useState(false)
-  const [connected, setConnected] = useState(null) // null=checking, true=ok, false=offline
-  const [version, setVersion] = useState('v0.13.0')
+  const [loaded, setLoaded] = useState(false) // first meta fetch resolved (live or snapshot)
+  const [version, setVersion] = useState('v1.0.0')
   const [menuOpen, setMenuOpen] = useState(false)
+  const { offline } = useOffline()
+
+  // Derived badge state: null=checking, 'live'=live API, 'snapshot'=cached fallback.
+  const status = !loaded ? null : offline ? 'snapshot' : 'live'
 
   useEffect(() => {
     const handleScroll = () => setScrolled(window.scrollY > 60)
@@ -29,12 +34,14 @@ export default function Navbar() {
   }, [])
 
   useEffect(() => {
+    // apiFetch now resolves from the snapshot when the live API is down, so this
+    // only rejects when there's no snapshot either — either way the badge state
+    // comes from the shared offline signal, not from catch().
     fetchMeta()
       .then(data => {
-        setConnected(true)
         if (data?.version) setVersion('v' + data.version)
       })
-      .catch(() => setConnected(false))
+      .finally(() => setLoaded(true))
   }, [])
 
   return (
@@ -82,19 +89,19 @@ export default function Navbar() {
           {/* Status + mobile menu */}
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
-              {connected === null && (
+              {status === null && (
                 <Activity className="w-3 h-3 text-zinc-500 animate-pulse" />
               )}
-              {connected === true && (
+              {status === 'live' && (
                 <>
                   <span className="w-2 h-2 rounded-full bg-terminal animate-pulse-slow" />
                   <span className="hidden sm:inline text-xs font-mono text-terminal/70">CONNECTED</span>
                 </>
               )}
-              {connected === false && (
+              {status === 'snapshot' && (
                 <>
-                  <span className="w-2 h-2 rounded-full bg-red-500" />
-                  <span className="hidden sm:inline text-xs font-mono text-red-500/70">OFFLINE</span>
+                  <span className="w-2 h-2 rounded-full bg-amber-500" />
+                  <span className="hidden sm:inline text-xs font-mono text-amber-500/80">SNAPSHOT</span>
                 </>
               )}
             </div>

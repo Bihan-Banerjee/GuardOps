@@ -22,3 +22,8 @@ output "ecr_repository_urls" {
   description = "Map of image name to full ECR repository URL."
   value       = module.ecr.repository_urls
 }
+
+output "dashboard_snapshot_url" {
+  description = "Public URL of the dashboard snapshot (set as VITE_SNAPSHOT_URL). Empty unless enable_public_snapshot=true."
+  value       = module.s3.dashboard_snapshot_url
+}

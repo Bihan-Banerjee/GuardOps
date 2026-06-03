@@ -180,6 +180,9 @@ module "s3" {
   environment    = var.environment
   aws_region     = var.aws_region
   aws_account_id = var.aws_account_id
+
+  # v1.0.0: expose only dashboard/* for the public SPA snapshot fallback.
+  enable_public_snapshot = var.enable_public_snapshot
 }
 
 # ── Phase 4B+ (costs money) ────────────────────────────────────────────────────

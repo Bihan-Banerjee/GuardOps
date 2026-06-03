@@ -1,6 +1,7 @@
 import ParticleSphere from './components/ParticleSphere.jsx'
 import CustomCursor from './components/CustomCursor.jsx'
 import Navbar from './components/Navbar.jsx'
+import OfflineBanner from './components/OfflineBanner.jsx'
 import Hero from './components/Hero.jsx'
 import Trends from './components/Trends.jsx'
 import Runs from './components/Runs.jsx'
@@ -20,6 +21,9 @@ export default function App() {
 
       {/* Sticky navigation */}
       <Navbar />
+
+      {/* Shown only when the live API is down and we're serving the snapshot */}
+      <OfflineBanner />
 
       {/* Page content — solid backgrounds prevent sphere bleed-through */}
       <main>
