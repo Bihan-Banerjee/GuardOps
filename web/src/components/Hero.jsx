@@ -4,11 +4,42 @@ import Terminal from './Terminal.jsx'
 import { ChevronDown } from 'lucide-react'
 
 // ─── Binary pixel art (5×5 grid) for OPS hover ───────────────────────────────
-// '1' = bright green  '0' = very dim green
+// High-resolution 7×9 bitmaps. '1' = bright green stroke, '0' = dim fill.
+// Smaller characters at higher grid resolution give cleaner letter shapes.
 const BINARY_PATTERNS = {
-  O: ['01110', '10001', '10001', '10001', '01110'],
-  P: ['11110', '10001', '11110', '10000', '10000'],
-  S: ['01111', '10000', '01110', '00001', '11110'],
+  O: [
+    '0011100',
+    '0100010',
+    '1000001',
+    '1000001',
+    '1000001',
+    '1000001',
+    '1000001',
+    '0100010',
+    '0011100',
+  ],
+  P: [
+    '1111100',
+    '1000010',
+    '1000010',
+    '1000010',
+    '1111100',
+    '1000000',
+    '1000000',
+    '1000000',
+    '1000000',
+  ],
+  S: [
+    '0111110',
+    '1000001',
+    '1000000',
+    '1000000',
+    '0111110',
+    '0000001',
+    '0000001',
+    '1000001',
+    '0111110',
+  ],
 }
 
 const TERMINAL_LINES = [
@@ -99,7 +130,7 @@ function OpsLetter({ char, sizeClass, groupHovered }) {
   return (
     <span
       className={`hero-letter relative inline-block opacity-0 select-none ${sizeClass}`}
-      style={{ fontVariantNumeric: 'tabular-nums', padding: '0 0.1em' }}
+      style={{ fontVariantNumeric: 'tabular-nums' }}
     >
       {/* Invisible placeholder keeps bounding box stable during swap */}
       <span style={{ visibility: 'hidden', userSelect: 'none', pointerEvents: 'none' }}>
@@ -124,7 +155,7 @@ function OpsLetter({ char, sizeClass, groupHovered }) {
         {char}
       </span>
 
-      {/* Binary pixel art (5×5 grid sized to fill the letter bounding box) */}
+      {/* Binary pixel art — 7×9 grid of small chars for higher-res letters */}
       <span
         aria-hidden="true"
         style={{
@@ -136,23 +167,24 @@ function OpsLetter({ char, sizeClass, groupHovered }) {
           justifyContent: 'center',
           transition: 'opacity 0.22s ease, transform 0.22s ease',
           opacity: groupHovered ? 1 : 0,
-          transform: groupHovered ? 'scale(1)' : 'scale(1.12)',
+          transform: groupHovered ? 'scale(1)' : 'scale(1.1)',
           pointerEvents: 'none',
-          // font-size 0.2em → 5 rows × 0.2em × lineHeight 1 = 1em total ≈ letter height
+          // 0.1em font × 9 rows ≈ 0.9em tall ≈ letter cap height
           fontFamily: '"JetBrains Mono", monospace',
-          fontSize: '0.2em',
-          lineHeight: 1,
+          fontSize: '0.1em',
+          fontWeight: 700,
+          lineHeight: 1.05,
         }}
       >
         {pattern.map((row, r) => (
-          <span key={r} style={{ display: 'flex', gap: '0.04em' }}>
+          <span key={r} style={{ display: 'flex', gap: '0.06em' }}>
             {row.split('').map((bit, c) => (
               <span
                 key={c}
                 style={{
                   color: '#00ff41',
-                  opacity: bit === '1' ? 1 : 0.1,
-                  textShadow: bit === '1' ? '0 0 6px rgba(0,255,65,0.8)' : 'none',
+                  opacity: bit === '1' ? 1 : 0.12,
+                  textShadow: bit === '1' ? '0 0 5px rgba(0,255,65,0.9)' : 'none',
                   transition: 'opacity 0.12s',
                 }}
               >
@@ -172,7 +204,13 @@ function OpsGroup({ sizeClass }) {
   const [hovered, setHovered] = useState(false)
   return (
     <span
-      style={{ display: 'inline-flex', alignItems: 'baseline', gap: '0.22em' }}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'baseline',
+        // Tight in normal view (matches GUARD); spaced only when binary art shows
+        gap: hovered ? '0.28em' : '0',
+        transition: 'gap 0.25s ease',
+      }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
