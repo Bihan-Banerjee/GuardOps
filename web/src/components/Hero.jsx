@@ -99,7 +99,7 @@ function OpsLetter({ char, sizeClass, groupHovered }) {
   return (
     <span
       className={`hero-letter relative inline-block opacity-0 select-none ${sizeClass}`}
-      style={{ fontVariantNumeric: 'tabular-nums' }}
+      style={{ fontVariantNumeric: 'tabular-nums', padding: '0 0.1em' }}
     >
       {/* Invisible placeholder keeps bounding box stable during swap */}
       <span style={{ visibility: 'hidden', userSelect: 'none', pointerEvents: 'none' }}>
@@ -172,7 +172,7 @@ function OpsGroup({ sizeClass }) {
   const [hovered, setHovered] = useState(false)
   return (
     <span
-      style={{ display: 'inline-flex', alignItems: 'baseline', gap: '0.08em' }}
+      style={{ display: 'inline-flex', alignItems: 'baseline', gap: '0.22em' }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
