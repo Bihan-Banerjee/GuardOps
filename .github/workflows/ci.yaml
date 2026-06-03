@@ -96,10 +96,21 @@ env:
 
 jobs:
 
-  # ── Job 1: Build and Test ───────────────────────────────────────────────────
+  # ── Job 1: Build and Test (cross-platform) ──────────────────────────────────
+  # The CLI ships to Linux/macOS/Windows users, so the test suite runs on all
+  # three to catch path/subprocess assumptions. Lint + type-check are platform-
+  # independent, so they run once (Linux). `shell: bash` keeps every step portable
+  # (GitHub's Windows runners ship Git Bash) so the line continuations below work.
   build-test:
-    name: Build & Test
-    runs-on: ubuntu-latest
+    name: Build & Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - uses: actions/checkout@v4
@@ -116,9 +127,11 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Lint with ruff
+        if: matrix.os == 'ubuntu-latest'
         run: ruff check cli/ backend/
 
       - name: Type check with mypy
+        if: matrix.os == 'ubuntu-latest'
         run: mypy cli/ backend/ --ignore-missing-imports
 
       - name: Run tests with coverage
@@ -127,13 +140,44 @@ jobs:
             --cov=cli --cov=backend \
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml \
+            --cov-fail-under=55 \
             --tb=short
 
       - name: Upload coverage report
+        if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
           path: coverage.xml
+
+  # ── Job 1b: Web dashboard (lint-free unit tests + build) ────────────────────
+  # The SPA's live→snapshot fallback (the "URL works 24/7" fix) is covered by
+  # Vitest; the build step guards the Three.js/Recharts bundle from regressions.
+  web-test:
+    name: Web Dashboard (test + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Unit tests (Vitest)
+        run: npm test
+
+      - name: Production build
+        run: npm run build
 
   # ── Job 2: SAST ──────────────────────────────────────────────────────────────
   sast:
