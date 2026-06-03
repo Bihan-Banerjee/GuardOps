@@ -210,7 +210,7 @@ export default function Findings() {
         </div>
 
         {/* Results count */}
-        <div className="mb-4 text-xs font-mono text-zinc-600">
+        <div className="mb-4 text-xs font-mono text-zinc-300">
           {loading ? (
             <span className="flex items-center gap-2"><Activity className="w-3 h-3 animate-spin" /> Searching...</span>
           ) : (
@@ -221,7 +221,7 @@ export default function Findings() {
         {/* Cards */}
         <div ref={ref} className="opacity-0 space-y-3">
           {findings.length === 0 && !loading && (
-            <div className="py-16 text-center text-zinc-600 font-mono text-sm border border-zinc-800 rounded-xl">
+            <div className="py-16 text-center text-zinc-300 font-mono text-sm border border-zinc-800 rounded-xl">
               No findings match the current filters.
             </div>
           )}

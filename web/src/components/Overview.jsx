@@ -140,7 +140,7 @@ export default function Overview() {
 
         {loading && !data && (
           <div className="text-center py-20">
-            <div className="inline-flex items-center gap-3 text-zinc-600 font-mono text-sm">
+            <div className="inline-flex items-center gap-3 text-zinc-300 font-mono text-sm">
               <Activity className="w-4 h-4 animate-spin" />
               Loading scan data...
             </div>
