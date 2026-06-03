@@ -60,14 +60,16 @@ export default function Navbar() {
           </div>
 
           {/* Desktop nav */}
-          <div className="hidden md:flex items-center gap-1">
+          <div className="hidden md:flex items-center gap-0.5">
             {NAV_LINKS.map(link => (
               <button
                 key={link.id}
                 onClick={() => scrollTo(link.id)}
-                className="px-3 py-1.5 text-xs font-mono text-zinc-400 hover:text-terminal transition-colors rounded hover:bg-terminal/5"
+                className="px-4 py-2 text-sm font-mono font-medium text-zinc-200 hover:text-terminal transition-all duration-150 rounded relative group"
               >
                 {link.label}
+                {/* animated underline on hover */}
+                <span className="absolute bottom-1 left-4 right-4 h-px bg-terminal scale-x-0 group-hover:scale-x-100 transition-transform duration-200 origin-left" />
               </button>
             ))}
           </div>
@@ -113,7 +115,7 @@ export default function Navbar() {
               <button
                 key={link.id}
                 onClick={() => { scrollTo(link.id); setMenuOpen(false) }}
-                className="block w-full text-left px-3 py-2 text-sm font-mono text-zinc-400 hover:text-terminal hover:bg-terminal/5 rounded"
+                className="block w-full text-left px-3 py-2 text-sm font-mono font-medium text-zinc-200 hover:text-terminal hover:bg-terminal/5 rounded"
               >
                 {'>'} {link.label}
               </button>

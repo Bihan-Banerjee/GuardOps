@@ -172,7 +172,7 @@ function OpsGroup({ sizeClass }) {
   const [hovered, setHovered] = useState(false)
   return (
     <span
-      style={{ display: 'inline' }}
+      style={{ display: 'inline-flex', alignItems: 'baseline', gap: '0.08em' }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
@@ -218,14 +218,6 @@ export default function Hero() {
     }, 950)
 
     tl.add({
-      targets: '.hero-tagline',
-      opacity: [0, 1],
-      translateY: ['8px', '0px'],
-      easing: 'easeOutCubic',
-      duration: 400,
-    }, 200)
-
-    tl.add({
       targets: '.hero-terminal',
       translateY: ['30px', '0px'],
       opacity: [0, 1],
@@ -261,14 +253,6 @@ export default function Hero() {
       <div className="absolute inset-0 grid-bg opacity-30 pointer-events-none" />
 
       <div className="relative z-10 flex flex-col items-center text-center px-4 w-full max-w-5xl mx-auto">
-
-        {/* Version badge */}
-        <div className="hero-tagline opacity-0 mb-6">
-          <span className="inline-flex items-center gap-2 border border-terminal/30 bg-terminal/5 rounded-full px-4 py-1.5 text-xs font-mono text-terminal/80">
-            <span className="w-1.5 h-1.5 rounded-full bg-terminal animate-pulse" />
-            DevSecOps Pipeline CLI · v0.13.0
-          </span>
-        </div>
 
         {/* Main title */}
         <h1
