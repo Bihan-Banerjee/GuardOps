@@ -6,7 +6,7 @@ React SPA, and the Terraform/Kubernetes infrastructure they run on.
 ```
 cli/                 Click CLI — `guardops <command>`
   main.py            root group; registers every subcommand
-  commands/          one file per command (deploy, scan, status, dashboard, doctor, …)
+  commands/          one file per command (deploy, scan, status, dashboard, doctor, admission, …)
   utils/             config (.guardops.yaml), output (Rich), system (subprocess wrappers)
 
 backend/             non-CLI libraries the commands call
@@ -52,6 +52,8 @@ SPA (dashboard.guardops.live) ── live ──→ renders
 
 The cluster is ephemeral (created/destroyed daily). The S3 export and the static
 snapshot survive teardown, so durable findings persist with **no always-on database**.
+The same FastAPI backend can also be self-hosted off-cluster (Fly.io / Render / Cloud
+Run) reading from the S3 export — see [SELF_HOSTING.md](SELF_HOSTING.md).
 
 ## Key design rules
 
