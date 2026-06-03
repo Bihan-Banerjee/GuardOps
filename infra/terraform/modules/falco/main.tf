@@ -35,11 +35,11 @@ resource "helm_release" "falco" {
   name       = "falco"
   repository = "https://falcosecurity.github.io/charts"
   chart      = "falco"
-  version    = "4.3.0"    # pin — Falco chart updates can change driver defaults
+  version    = "4.3.0" # pin — Falco chart updates can change driver defaults
 
   namespace        = var.monitoring_namespace
-  create_namespace = false   # `monitoring` ns already exists from kube-prometheus-stack
-  timeout          = 600     # Falco init can be slow on first pod pull
+  create_namespace = false # `monitoring` ns already exists from kube-prometheus-stack
+  timeout          = 600   # Falco init can be slow on first pod pull
 
   # ── Driver: modern eBPF ─────────────────────────────────────────────────────
   # No kernel module compilation, works on EKS AL2023 without node taints.
@@ -102,24 +102,41 @@ resource "helm_release" "falco" {
   }
 
   # ── Resources ────────────────────────────────────────────────────────────────
+  # modern_ebpf allocates a per-CPU ring buffer (default 8MB each) on top of
+  # Falco's ~150-300MB userspace RSS, so 256Mi OOMKills the pod into
+  # CrashLoopBackOff. 1Gi gives headroom; kept in sync with the manual install
+  # path (scripts/setup-runtime-security.ps1).
   set {
     name  = "resources.requests.memory"
-    value = "64Mi"
-  }
-
-  set {
-    name  = "resources.requests.cpu"
-    value = "50m"
-  }
-
-  set {
-    name  = "resources.limits.memory"
     value = "256Mi"
   }
 
   set {
+    name  = "resources.requests.cpu"
+    value = "100m"
+  }
+
+  set {
+    name  = "resources.limits.memory"
+    value = "1Gi"
+  }
+
+  set {
     name  = "resources.limits.cpu"
-    value = "200m"
+    value = "500m"
+  }
+
+  # Shrink the eBPF ring buffer (default preset 4 ≈ 8MB/CPU) and share one buffer
+  # across more CPUs to cut the driver's memory footprint on small nodes. Verify
+  # the keys against: helm show values falcosecurity/falco --version 4.3.0
+  set {
+    name  = "driver.modernEbpf.bufSizePreset"
+    value = "2"
+  }
+
+  set {
+    name  = "driver.modernEbpf.cpusForEachBuffer"
+    value = "4"
   }
 }
 
