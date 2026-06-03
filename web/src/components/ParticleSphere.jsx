@@ -82,16 +82,23 @@ export default function ParticleSphere() {
       scene.add(lineSegments)
     }
 
-    // Scroll tracking
+    // Scroll tracking — track total scrollable range so the zoom can be
+    // paced across the whole page rather than just the first viewport
     let scrollY = 0
+    let maxScroll = 1
+    const updateMaxScroll = () => {
+      maxScroll = Math.max(document.documentElement.scrollHeight - window.innerHeight, 1)
+    }
     const handleScroll = () => { scrollY = window.scrollY }
     window.addEventListener('scroll', handleScroll, { passive: true })
+    updateMaxScroll()
 
     // Resize
     const handleResize = () => {
       camera.aspect = window.innerWidth / window.innerHeight
       camera.updateProjectionMatrix()
       renderer.setSize(window.innerWidth, window.innerHeight)
+      updateMaxScroll()
     }
     window.addEventListener('resize', handleResize)
 
@@ -128,13 +135,16 @@ export default function ParticleSphere() {
         lineSegments.rotation.y = points.rotation.y
       }
 
-      // Scroll-driven camera zoom — only active in first viewport
-      const scrollFractionZoom = Math.min(scrollY / heroHeight, 1)
-      const targetZ = 4 - scrollFractionZoom * 1.6  // zoom from 4 → 2.4
+      // Scroll-driven camera zoom — paced across the WHOLE page so the
+      // globe reaches its max size near the bottom, not by mid-page.
+      // Re-read maxScroll occasionally in case content height changed.
+      updateMaxScroll()
+      const pageFraction = Math.min(scrollY / maxScroll, 1)
+      const targetZ = 4 - pageFraction * 1.6  // zoom from 4 → 2.4 over full page
       camera.position.z += (targetZ - camera.position.z) * 0.05
 
-      // Tilt camera slightly based on scroll
-      camera.position.y += (-scrollY * 0.0002 - camera.position.y) * 0.05
+      // Gentle upward drift, bounded to the page fraction
+      camera.position.y += (-pageFraction * 0.7 - camera.position.y) * 0.05
 
       renderer.render(scene, camera)
     }

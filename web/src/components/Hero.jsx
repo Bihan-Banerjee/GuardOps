@@ -18,15 +18,15 @@ const BINARY_PATTERNS = {
     '0011100',
   ],
   P: [
-    '1111100',
-    '1000010',
-    '1000010',
-    '1000010',
-    '1111100',
-    '1000000',
-    '1000000',
-    '1000000',
-    '1000000',
+    '111110',
+    '100001',
+    '100001',
+    '100001',
+    '111110',
+    '100000',
+    '100000',
+    '100000',
+    '100000',
   ],
   S: [
     '0111110',
@@ -44,11 +44,9 @@ const BINARY_PATTERNS = {
 const TERMINAL_LINES = [
   { text: '$ guardops --about', color: 'green' },
   { text: '  GuardOps · DevSecOps Pipeline CLI · v0.13.0', color: 'cyan' },
-  { text: '  Wraps your entire secure delivery pipeline —', color: 'white' },
-  { text: '  build, scan, gate, deploy, and monitor — behind', color: 'white' },
-  { text: '  a single command. Five security scanners gate', color: 'white' },
-  { text: '  every release; runtime threats trigger', color: 'white' },
-  { text: '  automatic self-healing.', color: 'white' },
+  { text: '  Your secure delivery pipeline — build, scan,', color: 'white' },
+  { text: '  gate, deploy, monitor — in one command.', color: 'white' },
+  { text: '  Five scanners gate every release; threats self-heal.', color: 'white' },
   { text: ' ', color: 'dim' },
   { text: '$ guardops --features', color: 'green' },
   { text: '  ✓ Semgrep     SAST · code pattern analysis', color: 'green' },
@@ -271,7 +269,7 @@ export default function Hero() {
   return (
     <section
       id="hero"
-      className="relative min-h-screen flex flex-col items-center justify-center overflow-hidden scanlines"
+      className="relative min-h-screen flex flex-col items-center justify-center overflow-hidden scanlines pt-28 sm:pt-32"
     >
       <div
         className="absolute inset-0 pointer-events-none"
