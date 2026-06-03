@@ -42,6 +42,7 @@ from cli.commands.trends_cmd     import trends_command           # Phase 12
 from cli.commands.diff_cmd       import diff_command             # Phase 12
 from cli.commands.db_cmd         import db_group                 # Phase 12
 from cli.commands.dashboard_cmd  import dashboard_command        # Phase 13
+from cli.commands.admission_cmd  import admission_command        # v1.0.0
 
 
 @click.group()
@@ -81,6 +82,7 @@ def cli():
       guardops db prune                          Apply the scan-DB retention policy
       guardops db export --to-s3                 Publish findings to S3 for the dashboard
       guardops dashboard                         Serve the web dashboard API locally
+      guardops admission --mode enforce          Apply Kyverno policies (Audit default)
     """
     pass
 
@@ -104,3 +106,4 @@ cli.add_command(trends_command,         name="trends")           # Phase 12
 cli.add_command(diff_command,           name="diff")             # Phase 12
 cli.add_command(db_group,               name="db")               # Phase 12
 cli.add_command(dashboard_command,      name="dashboard")        # Phase 13
+cli.add_command(admission_command,      name="admission")        # v1.0.0
