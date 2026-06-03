@@ -40,8 +40,8 @@ export default function Logo({ className = '', animate = true }) {
         &gt;_
       </text>
 
-      {/* Glowing cursor node */}
-      <rect x="250" y="200" width="16" height="40" fill="#00FF41">
+      {/* Glowing cursor node — height matches the ">" character cap height */}
+      <rect x="250" y="185" width="18" height="50" fill="#00FF41">
         {animate && (
           <animate
             attributeName="opacity"

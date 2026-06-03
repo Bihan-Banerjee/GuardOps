@@ -293,7 +293,7 @@ export default function Hero() {
 
         {/* Logo + main title */}
         <div className="flex items-center justify-center gap-3 sm:gap-5 md:gap-6 flex-wrap">
-          <Logo className="hero-logo opacity-0 w-16 h-16 sm:w-20 sm:h-20 md:w-24 md:h-24 lg:w-28 lg:h-28 rounded-2xl shrink-0 glow-green" />
+          <Logo className="hero-logo opacity-0 w-[15vw] h-[15vw] sm:w-[13vw] sm:h-[13vw] md:w-[12vw] md:h-[12vw] lg:w-[11rem] lg:h-[11rem] rounded-2xl shrink-0 glow-green" />
           <h1
             aria-label="GUARDOPS"
             className="flex items-baseline justify-center flex-wrap gap-0"
