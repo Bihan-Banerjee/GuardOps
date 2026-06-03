@@ -26,16 +26,26 @@ dependencies = [
     "click>=8.1.7",
     "rich>=13.7,<14.0",
     "pyyaml>=6.0.1",
-    "requests>=2.31",      
+    "requests>=2.31",
     "boto3>=1.34",
     "python-dotenv>=1.0",
+    # Transitive security floors (pulled via requests/boto3) — patched versions:
+    #   urllib3 >=2.7.0  (PYSEC-2026-141, PYSEC-2026-142)
+    #   idna    >=3.15   (CVE-2026-45409)
+    "urllib3>=2.7.0",
+    "idna>=3.15",
 ]
 
 [project.optional-dependencies]
 # Web dashboard backend (Phase 13). Optional so `pip install guardops` stays lean —
 # only needed to run `guardops dashboard` or the in-cluster service.
 dashboard = [
-    "fastapi>=0.111,<0.116",
+    # Pinned near the tested versions for reproducibility. fastapi>=0.116 is
+    # required so starlette can reach a patched release (older fastapi capped
+    # starlette<0.47.0); starlette 1.2.x fixes CVE-2025-54121 / CVE-2025-62727 /
+    # PYSEC-2026-161. Bump these deliberately, re-running the dashboard tests.
+    "fastapi>=0.136,<0.137",
+    "starlette>=1.2,<1.3",
     "uvicorn[standard]>=0.30",
     "httpx>=0.27",
 ]
@@ -45,7 +55,8 @@ dev = [
     "pytest-mock>=3.12",
     "ruff>=0.4",
     # dashboard deps so the dashboard API + auth tests run in the dev/CI env
-    "fastapi>=0.111,<0.116",
+    "fastapi>=0.136,<0.137",
+    "starlette>=1.2,<1.3",
     "uvicorn[standard]>=0.30",
     "httpx>=0.27",
 ]
