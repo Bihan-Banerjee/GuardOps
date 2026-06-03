@@ -232,5 +232,9 @@ resource "aws_route53_record" "dashboard_spa" {
   name    = "dashboard.${var.domain_name}"
   type    = "CNAME"
   ttl     = 300
-  records = ["cname.vercel-dns.com"]
+  # Project-specific CNAME target assigned by Vercel for dashboard.guardops.live.
+  records = ["28045649cdd06b8a.vercel-dns-017.com"]
+  # Adopt the record if it was already created by hand (Vercel/console) instead of
+  # failing the apply with "record set already exists".
+  allow_overwrite = true
 }
