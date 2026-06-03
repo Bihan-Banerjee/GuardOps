@@ -3,13 +3,12 @@ import anime from 'animejs/lib/anime.es.js'
 import Terminal from './Terminal.jsx'
 import { ChevronDown } from 'lucide-react'
 
-// ASCII binary representations of each GUARD letter
-const ASCII_BINARY = {
-  G: '01000111',
-  U: '01010101',
-  A: '01000001',
-  R: '01010010',
-  D: '01000100',
+// ─── Binary pixel art (5×5 grid) for OPS hover ───────────────────────────────
+// '1' = bright green  '0' = very dim green
+const BINARY_PATTERNS = {
+  O: ['01110', '10001', '10001', '10001', '01110'],
+  P: ['11110', '10001', '11110', '10000', '10000'],
+  S: ['01111', '10000', '01110', '00001', '11110'],
 }
 
 const TERMINAL_LINES = [
@@ -28,151 +27,170 @@ const TERMINAL_LINES = [
   { text: '  No new CRITICAL/HIGH findings. Gate: PASS', color: 'green' },
 ]
 
-// ─── Binary Matrix Letter ─────────────────────────────────────────────────────
-// Each letter in "GUARD" shows its 8-bit ASCII encoding underneath.
-// Bits randomly flip at low probability. Periodic glitch swaps the letter
-// for a 0/1 character with chromatic aberration for ~350ms.
+const LETTER_SIZE = 'font-black text-[13vw] sm:text-[11vw] md:text-[10vw] lg:text-[9rem] tracking-[0.03em]'
+
+// ─── MatrixLetter (GUARD) ─────────────────────────────────────────────────────
+// Renders the letter normally; periodic glitch swaps it for 0/1 with
+// chromatic aberration. No binary subtitle (removed per request).
 function MatrixLetter({ char, isAnimating, sizeClass }) {
-  const originalBinary = ASCII_BINARY[char] || '01001101'
-  const [binary, setBinary]           = useState(originalBinary)
-  const [glitchDisplay, setGlitchDisplay] = useState(char)
-  const [glitchColor,   setGlitchColor]   = useState('#00ff41')
-  const [glitchShadow,  setGlitchShadow]  = useState('0 0 40px rgba(0,255,65,0.3)')
-  const [glitchOffset,  setGlitchOffset]  = useState(0)
-  const [isGlitching,   setIsGlitching]   = useState(false)
+  const [display, setDisplay]         = useState(char)
+  const [color,   setColor]           = useState('#00ff41')
+  const [shadow,  setShadow]          = useState('0 0 40px rgba(0,255,65,0.3)')
+  const [offsetX, setOffsetX]         = useState(0)
+  const [glitching, setGlitching]     = useState(false)
   const timerRef = useRef(null)
 
-  // Slowly flip individual bits in the binary string
-  useEffect(() => {
-    if (!isAnimating) return
-    const id = setInterval(() => {
-      setBinary(prev => {
-        if (Math.random() > 0.35) return prev          // 65% chance: no change
-        const arr = prev.split('')
-        const idx = Math.floor(Math.random() * arr.length)
-        arr[idx] = arr[idx] === '0' ? '1' : '0'
-        return arr.join('')
-      })
-    }, 380)
-    return () => clearInterval(id)
-  }, [isAnimating])
-
-  // Drift back toward correct binary occasionally so it doesn't wander too far
-  useEffect(() => {
-    if (!isAnimating) return
-    const id = setInterval(() => {
-      if (Math.random() < 0.12) setBinary(originalBinary)
-    }, 2800)
-    return () => clearInterval(id)
-  }, [isAnimating, originalBinary])
-
-  // Glitch event scheduler
   const scheduleGlitch = useCallback(() => {
-    const wait = 1800 + Math.random() * 5000
     timerRef.current = setTimeout(() => {
-      const totalFrames = 5 + Math.floor(Math.random() * 6)  // 5-10 frames
-      let frame = 0
-      setIsGlitching(true)
-
-      const interval = setInterval(() => {
-        frame++
+      const frames = 5 + Math.floor(Math.random() * 6)
+      let f = 0
+      setGlitching(true)
+      const iv = setInterval(() => {
+        f++
         const r = Math.random()
-
-        if (frame < totalFrames) {
-          setGlitchDisplay(r > 0.5 ? '1' : '0')
-          setGlitchColor(r > 0.55 ? '#ff2244' : '#00ff41')
-          setGlitchShadow('-3px 0 #ff0040, 3px 0 #00ff41, 0 0 12px rgba(255,34,68,0.6)')
-          setGlitchOffset((Math.random() - 0.5) * 10)
+        if (f < frames) {
+          setDisplay(r > 0.5 ? '1' : '0')
+          setColor(r > 0.55 ? '#ff2244' : '#00ff41')
+          setShadow('-3px 0 #ff0040, 3px 0 #00ff41, 0 0 12px rgba(255,34,68,0.6)')
+          setOffsetX((Math.random() - 0.5) * 10)
         } else {
-          clearInterval(interval)
-          setIsGlitching(false)
-          setGlitchDisplay(char)
-          setGlitchColor('#00ff41')
-          setGlitchShadow('0 0 40px rgba(0,255,65,0.3)')
-          setGlitchOffset(0)
+          clearInterval(iv)
+          setGlitching(false)
+          setDisplay(char)
+          setColor('#00ff41')
+          setShadow('0 0 40px rgba(0,255,65,0.3)')
+          setOffsetX(0)
           scheduleGlitch()
         }
       }, 55)
-    }, wait)
+    }, 1800 + Math.random() * 5000)
   }, [char]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!isAnimating) return
-    // Stagger start so letters don't all glitch at once
-    const initDelay = setTimeout(() => scheduleGlitch(), Math.random() * 2000)
-    return () => {
-      clearTimeout(initDelay)
-      clearTimeout(timerRef.current)
-    }
+    const t = setTimeout(() => scheduleGlitch(), Math.random() * 2000)
+    return () => { clearTimeout(t); clearTimeout(timerRef.current) }
   }, [isAnimating, scheduleGlitch])
 
   return (
-    <span className={`hero-letter relative inline-block opacity-0 select-none ${sizeClass}`}>
-      {/* Main letter / glitch character */}
+    <span className={`hero-letter inline-block opacity-0 select-none ${sizeClass}`}>
       <span
         style={{
           display: 'inline-block',
-          color: glitchColor,
-          textShadow: glitchShadow,
-          transform: isGlitching ? `translateX(${glitchOffset}px)` : 'none',
-          transition: isGlitching ? 'none' : 'transform 0.08s ease, color 0.08s ease',
+          color,
+          textShadow: shadow,
+          transform: glitching ? `translateX(${offsetX}px)` : 'none',
+          transition: glitching ? 'none' : 'transform 0.08s ease, color 0.08s ease',
           fontVariantNumeric: 'tabular-nums',
         }}
       >
-        {glitchDisplay}
+        {display}
+      </span>
+    </span>
+  )
+}
+
+// ─── OpsLetter ────────────────────────────────────────────────────────────────
+// White letter (normal). On groupHovered: fades out and binary pixel art fades
+// in — both live in the same bounding box via an invisible placeholder.
+function OpsLetter({ char, sizeClass, groupHovered }) {
+  const pattern = BINARY_PATTERNS[char]
+
+  return (
+    <span
+      className={`hero-letter relative inline-block opacity-0 select-none ${sizeClass}`}
+      style={{ fontVariantNumeric: 'tabular-nums' }}
+    >
+      {/* Invisible placeholder keeps bounding box stable during swap */}
+      <span style={{ visibility: 'hidden', userSelect: 'none', pointerEvents: 'none' }}>
+        {char}
       </span>
 
-      {/* 8-bit ASCII binary encoding — bottom of letter, monospace, glows */}
+      {/* Normal white letter */}
+      <span
+        style={{
+          position: 'absolute',
+          inset: 0,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: '#e4e4e7',
+          transition: 'opacity 0.22s ease, transform 0.22s ease',
+          opacity: groupHovered ? 0 : 1,
+          transform: groupHovered ? 'scale(0.82)' : 'scale(1)',
+          pointerEvents: 'none',
+        }}
+      >
+        {char}
+      </span>
+
+      {/* Binary pixel art (5×5 grid sized to fill the letter bounding box) */}
       <span
         aria-hidden="true"
         style={{
           position: 'absolute',
-          bottom: '0.08em',
-          left: 0,
-          right: 0,
-          textAlign: 'center',
-          fontFamily: '"JetBrains Mono", monospace',
-          fontSize: 'clamp(6px, 0.9vw, 10px)',
-          letterSpacing: '0.5px',
-          color: '#00ff41',
-          opacity: isGlitching ? 0.85 : 0.38,
-          lineHeight: 1,
+          inset: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          transition: 'opacity 0.22s ease, transform 0.22s ease',
+          opacity: groupHovered ? 1 : 0,
+          transform: groupHovered ? 'scale(1)' : 'scale(1.12)',
           pointerEvents: 'none',
-          // Shift individual bits to mimic active glitch
-          filter: isGlitching ? 'blur(0.5px)' : 'none',
-          transition: 'opacity 0.15s',
+          // font-size 0.2em → 5 rows × 0.2em × lineHeight 1 = 1em total ≈ letter height
+          fontFamily: '"JetBrains Mono", monospace',
+          fontSize: '0.2em',
+          lineHeight: 1,
         }}
       >
-        {isGlitching
-          ? binary.split('').map(b => Math.random() > 0.6 ? (b === '0' ? '1' : '0') : b).join('')
-          : binary}
+        {pattern.map((row, r) => (
+          <span key={r} style={{ display: 'flex', gap: '0.04em' }}>
+            {row.split('').map((bit, c) => (
+              <span
+                key={c}
+                style={{
+                  color: '#00ff41',
+                  opacity: bit === '1' ? 1 : 0.1,
+                  textShadow: bit === '1' ? '0 0 6px rgba(0,255,65,0.8)' : 'none',
+                  transition: 'opacity 0.12s',
+                }}
+              >
+                {bit}
+              </span>
+            ))}
+          </span>
+        ))}
       </span>
     </span>
   )
 }
 
-// ─── Plain letter (OPS) ───────────────────────────────────────────────────────
-function PlainLetter({ char, sizeClass, color = '#e4e4e7' }) {
+// ─── OpsGroup ─────────────────────────────────────────────────────────────────
+// Wraps O, P, S — any hover within the group triggers all three to swap.
+function OpsGroup({ sizeClass }) {
+  const [hovered, setHovered] = useState(false)
   return (
     <span
-      className={`hero-letter inline-block opacity-0 select-none ${sizeClass}`}
-      style={{ color }}
+      style={{ display: 'inline' }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
     >
-      {char}
+      {['O', 'P', 'S'].map((ch, i) => (
+        <OpsLetter key={i} char={ch} sizeClass={sizeClass} groupHovered={hovered} />
+      ))}
     </span>
   )
 }
 
-// ─── Hero ─────────────────────────────────────────────────────────────────────
-const LETTER_SIZE = 'font-black text-[13vw] sm:text-[11vw] md:text-[10vw] lg:text-[9rem] tracking-[0.03em]'
-
+// ─── Hero section ─────────────────────────────────────────────────────────────
 function scrollToNext() {
   document.getElementById('overview')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 export default function Hero() {
-  const terminalRef    = useRef(null)
-  const hasAnimated    = useRef(false)
+  const terminalRef  = useRef(null)
+  const hasAnimated  = useRef(false)
   const [lettersReady, setLettersReady] = useState(false)
 
   useEffect(() => {
@@ -181,7 +199,6 @@ export default function Hero() {
 
     const tl = anime.timeline({ autoplay: true })
 
-    // Letter stagger (all 8 letters share the .hero-letter selector)
     tl.add({
       targets: '.hero-letter',
       translateY: ['-50px', '0px'],
@@ -189,10 +206,9 @@ export default function Hero() {
       easing: 'easeOutExpo',
       duration: 700,
       delay: anime.stagger(45),
-      complete: () => setLettersReady(true),   // start binary glitch after reveal
+      complete: () => setLettersReady(true),
     }, 300)
 
-    // Subtitle
     tl.add({
       targets: '.hero-subtitle',
       opacity: [0, 1],
@@ -201,7 +217,6 @@ export default function Hero() {
       duration: 500,
     }, 950)
 
-    // Tag badge
     tl.add({
       targets: '.hero-tagline',
       opacity: [0, 1],
@@ -210,7 +225,6 @@ export default function Hero() {
       duration: 400,
     }, 200)
 
-    // Terminal window
     tl.add({
       targets: '.hero-terminal',
       translateY: ['30px', '0px'],
@@ -219,14 +233,12 @@ export default function Hero() {
       duration: 600,
     }, 1800)
 
-    // Start terminal typing
     tl.add({
       targets: {},
       duration: 1,
       complete: () => terminalRef.current?.startTyping(),
     }, 2300)
 
-    // Scroll indicator
     tl.add({
       targets: '.hero-scroll',
       opacity: [0, 1],
@@ -240,21 +252,17 @@ export default function Hero() {
       id="hero"
       className="relative min-h-screen flex flex-col items-center justify-center overflow-hidden scanlines"
     >
-      {/* Radial green glow behind title */}
       <div
         className="absolute inset-0 pointer-events-none"
         style={{
           background: 'radial-gradient(ellipse 65% 55% at 50% 42%, rgba(0,255,65,0.08) 0%, transparent 70%)',
         }}
       />
-
-      {/* Subtle grid overlay */}
       <div className="absolute inset-0 grid-bg opacity-30 pointer-events-none" />
 
-      {/* Content */}
       <div className="relative z-10 flex flex-col items-center text-center px-4 w-full max-w-5xl mx-auto">
 
-        {/* Badge */}
+        {/* Version badge */}
         <div className="hero-tagline opacity-0 mb-6">
           <span className="inline-flex items-center gap-2 border border-terminal/30 bg-terminal/5 rounded-full px-4 py-1.5 text-xs font-mono text-terminal/80">
             <span className="w-1.5 h-1.5 rounded-full bg-terminal animate-pulse" />
@@ -267,7 +275,6 @@ export default function Hero() {
           aria-label="GUARDOPS"
           className="flex items-baseline justify-center flex-wrap gap-0"
         >
-          {/* GUARD — binary matrix letters */}
           {'GUARD'.split('').map((ch, i) => (
             <MatrixLetter
               key={ch + i}
@@ -276,10 +283,7 @@ export default function Hero() {
               isAnimating={lettersReady}
             />
           ))}
-          {/* OPS — plain white letters */}
-          {'OPS'.split('').map((ch, i) => (
-            <PlainLetter key={ch + i} char={ch} sizeClass={LETTER_SIZE} />
-          ))}
+          <OpsGroup sizeClass={LETTER_SIZE} />
         </h1>
 
         {/* Subtitle */}
@@ -305,7 +309,7 @@ export default function Hero() {
         </div>
       </div>
 
-      {/* Bottom gradient fade into next section */}
+      {/* Gradient fade into next section */}
       <div
         className="absolute bottom-0 left-0 right-0 h-40 pointer-events-none"
         style={{
