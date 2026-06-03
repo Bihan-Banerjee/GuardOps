@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import anime from 'animejs/lib/anime.es.js'
 import Terminal from './Terminal.jsx'
-import { ChevronDown } from 'lucide-react'
 
 // ─── Binary pixel art (5×5 grid) for OPS hover ───────────────────────────────
 // High-resolution 7×9 bitmaps. '1' = bright green stroke, '0' = dim fill.
@@ -43,19 +42,22 @@ const BINARY_PATTERNS = {
 }
 
 const TERMINAL_LINES = [
-  { text: '$ guardops deploy --env prod --gitops --fail-on HIGH', color: 'green' },
-  { text: '  [1/5] Building Docker image...', color: 'dim' },
-  { text: '  [2/5] Running security scanners...', color: 'dim' },
-  { text: '    ✓ Semgrep   — 0 CRITICAL, 2 HIGH', color: 'yellow' },
-  { text: '    ✓ Bandit    — 0 CRITICAL, 1 HIGH', color: 'yellow' },
-  { text: '    ✓ Trivy-fs  — 0 secrets detected', color: 'green' },
-  { text: '    ✓ Trivy-img — 3 CVEs (fixable)', color: 'yellow' },
-  { text: '  [3/5] Security gate: PASSED ✓', color: 'green' },
-  { text: '  [4/5] Pushing to ECR...', color: 'dim' },
-  { text: '  [5/5] Helm upgrade → prod namespace', color: 'dim' },
-  { text: '  ✓ Deploy complete. Revision: 4a8f2c1', color: 'green' },
-  { text: '$ guardops diff --from 41 --to 42', color: 'green' },
-  { text: '  No new CRITICAL/HIGH findings. Gate: PASS', color: 'green' },
+  { text: '$ guardops --about', color: 'green' },
+  { text: '  GuardOps · DevSecOps Pipeline CLI · v0.13.0', color: 'cyan' },
+  { text: '  Wraps your entire secure delivery pipeline —', color: 'white' },
+  { text: '  build, scan, gate, deploy, and monitor — behind', color: 'white' },
+  { text: '  a single command. Five security scanners gate', color: 'white' },
+  { text: '  every release; runtime threats trigger', color: 'white' },
+  { text: '  automatic self-healing.', color: 'white' },
+  { text: ' ', color: 'dim' },
+  { text: '$ guardops --features', color: 'green' },
+  { text: '  ✓ Semgrep     SAST · code pattern analysis', color: 'green' },
+  { text: '  ✓ Bandit      Python security linting', color: 'green' },
+  { text: '  ✓ Trivy       CVE · IaC · secret scanning', color: 'green' },
+  { text: '  ✓ OWASP ZAP   DAST · runtime web testing', color: 'green' },
+  { text: '  ✓ Falco       runtime threat detection', color: 'green' },
+  { text: '  ✓ ArgoCD      GitOps continuous delivery', color: 'green' },
+  { text: '  ✓ Kyverno     admission policy enforcement', color: 'green' },
 ]
 
 const LETTER_SIZE = 'font-black text-[13vw] sm:text-[11vw] md:text-[10vw] lg:text-[9rem] tracking-[0.03em]'
@@ -222,10 +224,6 @@ function OpsGroup({ sizeClass }) {
 }
 
 // ─── Hero section ─────────────────────────────────────────────────────────────
-function scrollToNext() {
-  document.getElementById('overview')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-}
-
 export default function Hero() {
   const terminalRef  = useRef(null)
   const hasAnimated  = useRef(false)
@@ -268,13 +266,6 @@ export default function Hero() {
       duration: 1,
       complete: () => terminalRef.current?.startTyping(),
     }, 2300)
-
-    tl.add({
-      targets: '.hero-scroll',
-      opacity: [0, 1],
-      duration: 600,
-      easing: 'easeInOutSine',
-    }, 3000)
   }, [])
 
   return (
@@ -317,18 +308,6 @@ export default function Hero() {
         <div className="hero-terminal opacity-0 mt-10 w-full max-w-2xl">
           <Terminal ref={terminalRef} lines={TERMINAL_LINES} />
         </div>
-
-        {/* Tool pills */}
-        <div className="hero-subtitle opacity-0 mt-8 flex flex-wrap justify-center gap-2">
-          {['Semgrep', 'Bandit', 'Trivy', 'OWASP ZAP', 'Falco', 'ArgoCD', 'Kyverno'].map(tool => (
-            <span
-              key={tool}
-              className="text-xs font-mono border border-zinc-800 bg-zinc-900/40 text-zinc-500 px-3 py-1 rounded-full hover:border-terminal/40 hover:text-terminal/70 transition-colors"
-            >
-              {tool}
-            </span>
-          ))}
-        </div>
       </div>
 
       {/* Gradient fade into next section */}
@@ -339,15 +318,6 @@ export default function Hero() {
           zIndex: 10,
         }}
       />
-
-      {/* Scroll indicator */}
-      <button
-        className="hero-scroll opacity-0 absolute bottom-8 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-2 text-zinc-600 hover:text-terminal transition-colors"
-        onClick={scrollToNext}
-      >
-        <span className="text-xs font-mono tracking-widest uppercase">Scroll</span>
-        <ChevronDown className="w-4 h-4 animate-bounce" />
-      </button>
     </section>
   )
 }

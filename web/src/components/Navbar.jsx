@@ -3,7 +3,6 @@ import { Shield, Activity, Wifi, WifiOff } from 'lucide-react'
 import { fetchMeta } from '../api.js'
 
 const NAV_LINKS = [
-  { label: 'Overview', id: 'overview' },
   { label: 'Trends', id: 'trends' },
   { label: 'Runs', id: 'runs' },
   { label: 'Findings', id: 'findings' },

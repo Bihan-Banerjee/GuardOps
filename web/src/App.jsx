@@ -2,7 +2,6 @@ import ParticleSphere from './components/ParticleSphere.jsx'
 import CustomCursor from './components/CustomCursor.jsx'
 import Navbar from './components/Navbar.jsx'
 import Hero from './components/Hero.jsx'
-import Overview from './components/Overview.jsx'
 import Trends from './components/Trends.jsx'
 import Runs from './components/Runs.jsx'
 import Findings from './components/Findings.jsx'
@@ -25,7 +24,6 @@ export default function App() {
       {/* Page content — solid backgrounds prevent sphere bleed-through */}
       <main>
         <Hero />
-        <Overview />
         <Trends />
         <Runs />
         <Findings />
