@@ -1209,7 +1209,13 @@ if ($argoCdEnabled -eq "true") {
     kubectl apply -f "$RepoRoot\k8s\argocd\project.yaml"     2>$null
     kubectl apply -f "$RepoRoot\k8s\argocd\app-prod.yaml"    2>$null
     kubectl apply -f "$RepoRoot\k8s\argocd\app-staging.yaml" 2>$null
-    Write-Ok "ArgoCD AppProject + Applications applied"
+    # v1.0.0: the UI Ingress on the shared ALB (replaces the chart's nginx ingress).
+    if ($dnsTlsEnabled -eq "true") {
+        kubectl apply -f "$RepoRoot\k8s\argocd\ingress.yaml" 2>$null
+        Write-Ok "ArgoCD AppProject + Applications + Ingress (argocd.$domainName) applied"
+    } else {
+        Write-Ok "ArgoCD AppProject + Applications applied (Ingress skipped — enable_dns_tls not true)"
+    }
 
     Set-Location $TerraformDir
     $argoCdUrl = terraform output -raw argocd_server_url 2>$null
