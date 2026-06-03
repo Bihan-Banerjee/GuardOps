@@ -93,7 +93,7 @@ export default function Trends() {
   }, [inView])
 
   return (
-    <section id="trends" className="relative bg-[#030303] py-24 px-4">
+    <section id="trends" className="relative bg-[#030303]/82 py-24 px-4">
       <div className="max-w-7xl mx-auto">
         <SectionHeader>SECURITY TRENDS</SectionHeader>
 

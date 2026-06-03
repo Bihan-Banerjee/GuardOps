@@ -206,7 +206,7 @@ export default function Runs() {
   }, [inView])
 
   return (
-    <section id="runs" className="relative bg-[#030303] py-24 px-4">
+    <section id="runs" className="relative bg-[#030303]/82 py-24 px-4">
       <div className="max-w-7xl mx-auto">
         <SectionHeader>SCAN RUNS</SectionHeader>
 

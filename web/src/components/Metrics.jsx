@@ -120,7 +120,7 @@ export default function Metrics() {
   const healthStatus = syncData?.health_status
 
   return (
-    <section id="metrics" className="relative bg-[#030303] py-24 px-4">
+    <section id="metrics" className="relative bg-[#030303]/82 py-24 px-4">
       <div className="max-w-7xl mx-auto">
         <SectionHeader>LIVE METRICS</SectionHeader>
 
