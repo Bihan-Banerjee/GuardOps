@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Shield, Activity, Wifi, WifiOff } from 'lucide-react'
+import { Activity } from 'lucide-react'
 import { fetchMeta } from '../api.js'
+import Logo from './Logo.jsx'
 
 const NAV_LINKS = [
   { label: 'Trends', id: 'trends' },
@@ -48,7 +49,7 @@ export default function Navbar() {
         <div className="flex items-center justify-between h-16">
           {/* Logo */}
           <div className="flex items-center gap-3">
-            <Shield className="w-6 h-6 text-terminal" strokeWidth={1.5} />
+            <Logo className="w-8 h-8 rounded-md" />
             <span className="font-mono font-black text-lg tracking-widest glitch-text">
               <span className="text-terminal">GUARD</span>
               <span className="text-zinc-200">OPS</span>

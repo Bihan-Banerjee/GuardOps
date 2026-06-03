@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import anime from 'animejs/lib/anime.es.js'
 import Terminal from './Terminal.jsx'
+import Logo from './Logo.jsx'
 
 // ─── Binary pixel art (5×5 grid) for OPS hover ───────────────────────────────
 // High-resolution 7×9 bitmaps. '1' = bright green stroke, '0' = dim fill.
@@ -44,8 +45,8 @@ const BINARY_PATTERNS = {
 const TERMINAL_LINES = [
   { text: '$ guardops --about', color: 'green' },
   { text: '  GuardOps · DevSecOps Pipeline CLI · v0.13.0', color: 'cyan' },
-  { text: '  Your secure delivery pipeline — build, scan,', color: 'white' },
-  { text: '  gate, deploy, monitor — in one command.', color: 'white' },
+  { text: '  Your secure delivery pipeline in one command:', color: 'white' },
+  { text: '  build,scan, gate, deploy, monitor', color: 'white' },
   { text: '  Five scanners gate every release; threats self-heal.', color: 'white' },
   { text: ' ', color: 'dim' },
   { text: '$ guardops --features', color: 'green' },
@@ -234,6 +235,15 @@ export default function Hero() {
     const tl = anime.timeline({ autoplay: true })
 
     tl.add({
+      targets: '.hero-logo',
+      scale: [0.4, 1],
+      opacity: [0, 1],
+      rotate: ['-12deg', '0deg'],
+      easing: 'easeOutBack',
+      duration: 700,
+    }, 150)
+
+    tl.add({
       targets: '.hero-letter',
       translateY: ['-50px', '0px'],
       opacity: [0, 1],
@@ -281,21 +291,24 @@ export default function Hero() {
 
       <div className="relative z-10 flex flex-col items-center text-center px-4 w-full max-w-5xl mx-auto">
 
-        {/* Main title */}
-        <h1
-          aria-label="GUARDOPS"
-          className="flex items-baseline justify-center flex-wrap gap-0"
-        >
-          {'GUARD'.split('').map((ch, i) => (
-            <MatrixLetter
-              key={ch + i}
-              char={ch}
-              sizeClass={LETTER_SIZE}
-              isAnimating={lettersReady}
-            />
-          ))}
-          <OpsGroup sizeClass={LETTER_SIZE} />
-        </h1>
+        {/* Logo + main title */}
+        <div className="flex items-center justify-center gap-3 sm:gap-5 md:gap-6 flex-wrap">
+          <Logo className="hero-logo opacity-0 w-16 h-16 sm:w-20 sm:h-20 md:w-24 md:h-24 lg:w-28 lg:h-28 rounded-2xl shrink-0 glow-green" />
+          <h1
+            aria-label="GUARDOPS"
+            className="flex items-baseline justify-center flex-wrap gap-0"
+          >
+            {'GUARD'.split('').map((ch, i) => (
+              <MatrixLetter
+                key={ch + i}
+                char={ch}
+                sizeClass={LETTER_SIZE}
+                isAnimating={lettersReady}
+              />
+            ))}
+            <OpsGroup sizeClass={LETTER_SIZE} />
+          </h1>
+        </div>
 
         {/* Subtitle */}
         <p className="hero-subtitle opacity-0 mt-3 text-base sm:text-lg font-mono text-zinc-400 tracking-widest uppercase">
