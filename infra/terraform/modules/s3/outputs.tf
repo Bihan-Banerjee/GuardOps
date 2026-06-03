@@ -14,3 +14,10 @@ output "reports_bucket_region" {
   description = "Region the bucket was created in."
   value       = aws_s3_bucket.reports.region
 }
+
+# v1.0.0: the public URL the SPA reads when the live API is down. Empty unless
+# enable_public_snapshot is true. Set this as VITE_SNAPSHOT_URL in the web build.
+output "dashboard_snapshot_url" {
+  description = "Public URL of the dashboard snapshot (offline SPA fallback)."
+  value       = var.enable_public_snapshot ? "https://${aws_s3_bucket.reports.bucket}.s3.${aws_s3_bucket.reports.region}.amazonaws.com/dashboard/snapshot.json" : ""
+}

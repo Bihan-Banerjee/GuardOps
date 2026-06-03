@@ -21,5 +21,11 @@ export default defineConfig({
         changeOrigin: true,
       }
     }
+  },
+  // Vitest config (picked up automatically). jsdom gives us window/location for
+  // the api.js client; tests stub global fetch.
+  test: {
+    environment: 'jsdom',
+    include: ['src/**/*.{test,spec}.{js,jsx}'],
   }
 })

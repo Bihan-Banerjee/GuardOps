@@ -92,6 +92,15 @@ variable "enable_cloudwatch_logs" {
   default     = false
 }
 
+# v1.0.0: when true, the reports bucket exposes ONLY the dashboard/* prefix publicly
+# so the SPA can read dashboard/snapshot.json without auth while the cluster is down.
+# reports/ and metadata/ stay private. Off by default — see modules/s3.
+variable "enable_public_snapshot" {
+  description = "Expose only the dashboard/* S3 prefix for the public SPA snapshot fallback."
+  type        = bool
+  default     = false
+}
+
 # ── GitHub OIDC (Phase 6) ─────────────────────────────────────────────────────
 
 variable "github_repo" {

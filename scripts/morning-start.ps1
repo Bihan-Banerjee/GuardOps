@@ -1487,6 +1487,29 @@ if (-not $SkipDeploy) {
     Wait-Pods -NS "default" -Label "app.kubernetes.io/name=guardops-dashboard" -Timeout 120 -Name "Dashboard" | Out-Null
     $script:DashboardDeployed = $true
     Write-Ok "Dashboard deployed (login user: $($script:DashboardUser))"
+
+    # v1.0.0: publish a fresh static snapshot so dashboard.guardops.live renders the
+    # latest data even after tonight's teardown. Reads durable data from the same S3
+    # export the dashboard serves. Best-effort -- never fail startup.
+    if ($dashBucket) {
+        $prevBackend = $env:GUARDOPS_METADATA_BACKEND
+        $env:GUARDOPS_METADATA_BACKEND = "s3"
+        try {
+            Push-Location $RepoRoot
+            guardops dashboard snapshot --to-s3 --bucket $dashBucket 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) { Write-Ok "Published dashboard snapshot (offline fallback)" }
+            else { Write-Warn "Dashboard snapshot publish failed (continuing)" }
+        } catch {
+            Write-Warn "Dashboard snapshot publish error (continuing)"
+        } finally {
+            Pop-Location
+            if ($null -eq $prevBackend) {
+                Remove-Item Env:\GUARDOPS_METADATA_BACKEND -ErrorAction SilentlyContinue
+            } else {
+                $env:GUARDOPS_METADATA_BACKEND = $prevBackend
+            }
+        }
+    }
 }
 
 # -- Port-forwards -------------------------------------------------------------
