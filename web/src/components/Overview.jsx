@@ -67,6 +67,14 @@ export default function Overview() {
       <div className="max-w-7xl mx-auto">
         <SectionHeader>OVERVIEW</SectionHeader>
 
+        {/* Brief tool description */}
+        <p className="max-w-3xl text-sm sm:text-base leading-relaxed text-zinc-300 mb-12">
+          <span className="text-terminal font-semibold">GuardOps</span> is a DevSecOps CLI
+          that wraps your entire secure delivery pipeline — build, scan, gate, deploy, and
+          monitor — behind a single command. Five security scanners gate every release, and
+          runtime threats trigger automatic self-healing.
+        </p>
+
         {/* Latest run status banner */}
         {latest && (
           <div
