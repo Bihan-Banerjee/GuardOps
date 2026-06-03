@@ -41,7 +41,7 @@ export default function Logo({ className = '', animate = true }) {
       </text>
 
       {/* Glowing cursor node — height matches the ">" character cap height */}
-      <rect x="250" y="185" width="18" height="50" fill="#00FF41">
+      <rect x="250" y="180" width="18" height="55" fill="#00FF41">
         {animate && (
           <animate
             attributeName="opacity"
