@@ -129,3 +129,44 @@ def test_quarantine_unavailable_without_kubectl(client, monkeypatch):
     body = client.get("/api/v1/quarantine").json()
     assert body["available"] is False
     assert "kubectl" in body["reason"]
+
+
+# ── CORS (the SPA is cross-origin) ────────────────────────────────────────────
+
+def _cors_client(tmp_path, **overrides):
+    db = str(tmp_path / "cors.db")
+    SqliteMetadataStore(db).init_schema()
+    config = {"project": {"name": "demo"}, "metadata": {"backend": "sqlite", "path": db}}
+    base = dict(
+        project_name="demo", config=config,
+        prometheus_url="", loki_url="", argocd_url="", argocd_token="",
+        auth_mode="none", auth_token="", basic_user="", basic_password="",
+        cors_origins=["https://guardops.live"],
+    )
+    base.update(overrides)
+    return TestClient(create_app(DashboardSettings(**base)))
+
+
+def test_cors_allows_configured_origin(tmp_path):
+    client = _cors_client(tmp_path)
+    r = client.get("/api/v1/meta", headers={"Origin": "https://guardops.live"})
+    assert r.status_code == 200
+    assert r.headers.get("access-control-allow-origin") == "https://guardops.live"
+
+
+def test_cors_preflight_not_blocked_by_auth(tmp_path):
+    # auth enabled, but the OPTIONS preflight must still succeed (no credential)
+    client = _cors_client(tmp_path, auth_mode="token", auth_token="s3cret")
+    pre = client.options("/api/v1/summary", headers={
+        "Origin": "https://guardops.live",
+        "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Headers": "authorization",
+    })
+    assert pre.status_code in (200, 204)
+    assert pre.headers.get("access-control-allow-origin") == "https://guardops.live"
+
+
+def test_cors_origin_regex(tmp_path):
+    client = _cors_client(tmp_path, cors_origins=[], cors_origin_regex=r"https://.*\.vercel\.app")
+    r = client.get("/api/v1/meta", headers={"Origin": "https://guardops-preview.vercel.app"})
+    assert r.headers.get("access-control-allow-origin") == "https://guardops-preview.vercel.app"

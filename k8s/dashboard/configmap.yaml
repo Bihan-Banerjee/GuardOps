@@ -27,3 +27,6 @@ data:
   GUARDOPS_ARGOCD_URL: "https://argocd.guardops.live"
   # Browser-friendly auth: basic prompts for user/password (set in the Secret).
   GUARDOPS_DASHBOARD_AUTH_MODE: "basic"
+  # CORS — the SPA origin(s) allowed to call this API. Add your Vercel preview
+  # domain here, or set GUARDOPS_DASHBOARD_CORS_ORIGIN_REGEX for *.vercel.app.
+  GUARDOPS_DASHBOARD_CORS_ORIGINS: "https://guardops.live,https://www.guardops.live"

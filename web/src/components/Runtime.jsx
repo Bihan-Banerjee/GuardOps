@@ -74,8 +74,8 @@ function AlertFeed({ alerts }) {
             {alert.severity}
           </span>
           <span className="text-xs font-mono text-zinc-300 font-medium">{alert.rule}</span>
-          {alert.pod && (
-            <span className="text-xs font-mono text-zinc-600 truncate">{alert.pod}</span>
+          {alert.pod_name && (
+            <span className="text-xs font-mono text-zinc-600 truncate">{alert.pod_name}</span>
           )}
         </div>
       ))}

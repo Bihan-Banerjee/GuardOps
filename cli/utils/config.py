@@ -252,7 +252,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "host": "0.0.0.0",
         "port": 8081,
         "auth_mode": "token",      # "token" | "basic" | "none"
-        "cors_origins": [],        # allowed origins for the future SPA (empty = same-origin)
+        # CORS: the SPA is served from a different origin than this API, so the
+        # frontend origin(s) must be allowed. Empty list falls back to the built-in
+        # defaults in backend/dashboard/settings.py (guardops.live + Vite dev ports).
+        "cors_origins": [],
+        "cors_origin_regex": "",   # e.g. r"https://.*\.vercel\.app" for preview deploys
     },
 }
 
