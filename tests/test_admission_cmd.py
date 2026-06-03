@@ -23,6 +23,9 @@ spec:
     - name: verify
       verifyImages:
         - mutateDigest: __DIGEST_PIN__
+          attestors:
+            - issuer: __CI_ISSUER__
+              subject: __CI_SUBJECT__
 """
 
 
@@ -39,6 +42,15 @@ def test_render_enforce_blocks_and_pins_digest():
     out = render_policy(_POLICY, "enforce")
     assert "validationFailureAction: Enforce" in out
     assert "mutateDigest: true" in out
+
+
+def test_render_substitutes_ci_identity():
+    # The cosign keyless verification placeholders must be resolved, or the policy
+    # ships broken (literal __CI_SUBJECT__).
+    out = render_policy(_POLICY, "audit", github_repo="acme/widgets")
+    assert "issuer: https://token.actions.githubusercontent.com" in out
+    assert "acme/widgets/.github/workflows/ci.yaml@refs/heads/*" in out
+    assert "__CI_" not in out
 
 
 # ── command ───────────────────────────────────────────────────────────────────
@@ -83,3 +95,15 @@ def test_missing_policy_dir_exits_one(runner, tmp_path):
     result = runner.invoke(admission_command, ["--policy-dir", str(missing)])
     assert result.exit_code == 1
     assert "not found" in result.output
+
+
+def test_networkpolicy_templates_are_skipped(runner, policy_dir):
+    # networkpolicy-egress.yaml is a reference-only template, not a ClusterPolicy.
+    (policy_dir / "networkpolicy-egress.yaml").write_text("kind: NetworkPolicy\n", encoding="utf-8")
+    with patch("cli.commands.admission_cmd.subprocess.run") as mock_run:
+        mock_run.return_value.returncode = 0
+        result = runner.invoke(admission_command, ["--policy-dir", str(policy_dir)])
+    assert result.exit_code == 0, result.output
+    applied = [c.kwargs["input"] for c in mock_run.call_args_list]
+    assert not any("NetworkPolicy" in text for text in applied)
+    assert len(applied) == 1  # only verify-images.yaml

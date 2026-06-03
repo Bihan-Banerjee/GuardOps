@@ -24,18 +24,29 @@ import click
 from cli.utils.output import header, info, success, error, warn, blank
 
 DEFAULT_POLICY_DIR = "k8s/kyverno"
+DEFAULT_GITHUB_REPO = "Bihan-Banerjee/GuardOps"
+# GitHub Actions OIDC issuer — the keyless cosign identity Kyverno verifies against.
+CI_ISSUER = "https://token.actions.githubusercontent.com"
 
 
-def render_policy(text: str, mode: str) -> str:
-    """Substitute the action placeholders for the chosen mode.
+def render_policy(text: str, mode: str, github_repo: str = DEFAULT_GITHUB_REPO) -> str:
+    """Substitute every policy placeholder for the chosen mode + CI identity.
 
     Audit  → validationFailureAction=Audit,  mutateDigest=false (Kyverno forbids
              mutation in Audit).
     Enforce→ validationFailureAction=Enforce, mutateDigest=true (pin the digest).
+    __CI_ISSUER__ / __CI_SUBJECT__ → the GitHub Actions OIDC identity that signs the
+    images (verify-images.yaml). Mirrors scripts/setup-admission-control.ps1.
     """
     action = "Enforce" if mode == "enforce" else "Audit"
     digest = "true" if mode == "enforce" else "false"
-    return text.replace("__POLICY_ACTION__", action).replace("__DIGEST_PIN__", digest)
+    ci_subject = f"https://github.com/{github_repo}/.github/workflows/ci.yaml@refs/heads/*"
+    return (
+        text.replace("__POLICY_ACTION__", action)
+        .replace("__DIGEST_PIN__", digest)
+        .replace("__CI_ISSUER__", CI_ISSUER)
+        .replace("__CI_SUBJECT__", ci_subject)
+    )
 
 
 @click.command("admission")
@@ -44,9 +55,11 @@ def render_policy(text: str, mode: str) -> str:
               help="Kyverno policy action. audit = report only (safe); enforce = block violations.")
 @click.option("--policy-dir", default=None, type=click.Path(file_okay=False),
               help=f"Directory of Kyverno policy YAMLs (default: {DEFAULT_POLICY_DIR}).")
+@click.option("--github-repo", default=DEFAULT_GITHUB_REPO, show_default=True,
+              help="owner/repo whose GitHub Actions identity signs the images (verify-images).")
 @click.option("--dry-run", "dry_run", is_flag=True, default=False,
               help="Render the policies and print what would apply, without calling kubectl.")
-def admission_command(mode, policy_dir, dry_run):
+def admission_command(mode, policy_dir, github_repo, dry_run):
     """Apply the GuardOps Kyverno admission policies in Audit (default) or Enforce mode."""
     mode = mode.lower()
     action = "Enforce" if mode == "enforce" else "Audit"
@@ -57,7 +70,9 @@ def admission_command(mode, policy_dir, dry_run):
               "Run from the GuardOps repo root, or pass [cyan]--policy-dir[/cyan].")
         sys.exit(1)
 
-    policies = sorted(pdir.glob("*.yaml"))
+    # networkpolicy* files are reference-only egress templates, not ClusterPolicies —
+    # skip them, mirroring morning-start.ps1.
+    policies = sorted(p for p in pdir.glob("*.yaml") if not p.name.startswith("networkpolicy"))
     if not policies:
         error(f"No .yaml policies found in [cyan]{pdir}[/cyan].")
         sys.exit(1)
@@ -67,7 +82,10 @@ def admission_command(mode, policy_dir, dry_run):
         warn("Enforce BLOCKS unsigned / non-compliant pods at admission. "
              "Confirm cosign signing works end-to-end first, or deploys will fail.")
 
-    rendered = {p.name: render_policy(p.read_text(encoding="utf-8"), mode) for p in policies}
+    rendered = {
+        p.name: render_policy(p.read_text(encoding="utf-8"), mode, github_repo)
+        for p in policies
+    }
 
     if dry_run:
         for name in rendered:
