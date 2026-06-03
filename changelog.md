@@ -49,9 +49,16 @@ deliverable (it consumes this release's API).
   wildcard `*.guardops.live` ACM cert already covers the subdomain).
 - Config: `metadata.s3_*` and a `dashboard` section in `DEFAULT_CONFIG`; `dashboard`
   optional-dependency group in `pyproject.toml`; dashboard test deps in `requirements-dev.txt`.
-- ~40 new tests: deploy wizard (gate truth-table, custom/cancel, equivalent command),
-  S3 store round-trip + filters + read-only, `db export --to-s3`, and the dashboard
-  API + auth via FastAPI `TestClient`.
+- **Frontend integration (`web/` Vite/React SPA on Vercel).** Verified the SPA↔API
+  contract (all `/api/v1` paths, auth header, response shapes). Backend now enables
+  **CORS** for the SPA origin (default `https://dashboard.guardops.live` + apex/www +
+  Vite dev ports; `GUARDOPS_DASHBOARD_CORS_ORIGINS` / `cors_origin_regex` overrides),
+  with preflight handled ahead of auth. The SPA is served from `dashboard.guardops.live`
+  via a Route53 CNAME to Vercel (`modules/dns-tls`) — apex stays on the ALB, registrar
+  nameservers unchanged. Fixed a field mismatch in the runtime feed (`pod_name`).
+- ~45 new tests: deploy wizard (gate truth-table, custom/cancel, equivalent command),
+  S3 store round-trip + filters + read-only, `db export --to-s3`, the dashboard
+  API + auth + CORS via FastAPI `TestClient`.
 
 ### Changed
 - `cli/commands/deploy_cmd.py`: deploy body extracted to `_execute_deploy(opts, config)`;

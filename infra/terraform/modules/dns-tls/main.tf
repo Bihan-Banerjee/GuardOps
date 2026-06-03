@@ -206,8 +206,8 @@ resource "aws_route53_record" "argocd" {
   }
 }
 
-# Phase 13: web dashboard subdomain (app.guardops.live). Same ALB alias as the
-# other records; cert-manager issues its TLS cert from the dashboard Ingress.
+# Phase 13: dashboard API host (app.guardops.live). Same ALB alias as the other
+# records; the dashboard Ingress shares the prod ALB via the IngressGroup.
 resource "aws_route53_record" "dashboard" {
   count = local.alb_ready ? 1 : 0
 
@@ -220,4 +220,17 @@ resource "aws_route53_record" "dashboard" {
     zone_id                = var.alb_hosted_zone_id
     evaluate_target_health = true
   }
+}
+
+# Phase 14: dashboard SPA hosted on Vercel (dashboard.guardops.live). A plain
+# CNAME to Vercel's edge -- NOT an ALB alias and NOT gated on the cluster, so it
+# resolves independently of nightly destroy. Route53 stays the authoritative DNS
+# (the registrar NS are unchanged); Vercel is just the record target. Vercel
+# auto-issues the TLS cert once this record resolves.
+resource "aws_route53_record" "dashboard_spa" {
+  zone_id = aws_route53_zone.guardops.zone_id
+  name    = "dashboard.${var.domain_name}"
+  type    = "CNAME"
+  ttl     = 300
+  records = ["cname.vercel-dns.com"]
 }

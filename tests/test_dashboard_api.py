@@ -170,3 +170,11 @@ def test_cors_origin_regex(tmp_path):
     client = _cors_client(tmp_path, cors_origins=[], cors_origin_regex=r"https://.*\.vercel\.app")
     r = client.get("/api/v1/meta", headers={"Origin": "https://guardops-preview.vercel.app"})
     assert r.headers.get("access-control-allow-origin") == "https://guardops-preview.vercel.app"
+
+
+def test_default_cors_includes_spa_origin(monkeypatch):
+    # By default (no env override) the Vercel SPA origin must be allowed.
+    monkeypatch.delenv("GUARDOPS_DASHBOARD_CORS_ORIGINS", raising=False)
+    from backend.dashboard.settings import load_settings
+    s = load_settings({"project": {"name": "x"}, "metadata": {"backend": "sqlite"}})
+    assert "https://dashboard.guardops.live" in s.cors_origins

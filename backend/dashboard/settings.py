@@ -30,6 +30,7 @@ DEFAULT_LOKI_URL = "http://loki.monitoring.svc.cluster.local:3100"
 # servers; override with GUARDOPS_DASHBOARD_CORS_ORIGINS (comma-separated) or
 # dashboard.cors_origins. Local dev via the Vite proxy is same-origin and unaffected.
 DEFAULT_CORS_ORIGINS = [
+    "https://dashboard.guardops.live",  # the Vercel SPA (primary frontend origin)
     "https://guardops.live",
     "https://www.guardops.live",
     "http://localhost:5173",
