@@ -3,6 +3,12 @@
 
 FROM python:3.11-slim
 
+# Patch OS packages so the image doesn't ship fixable base-image CVEs. CI's Trivy
+# gate blocks on fixable HIGH/CRITICAL, and python:3.11-slim accumulates them over
+# time — this clears them at build time. Rebuild periodically to stay current.
+RUN apt-get update && apt-get upgrade -y \
+    && rm -rf /var/lib/apt/lists/*
+
 # Set working directory inside the container
 WORKDIR /app
 

@@ -251,6 +251,10 @@ jobs:
               ("aws-dynamodb-table-unencrypted",                  "bootstrap/"),
               # Falco simulator — test log-emitting job, no securityContext needed
               ("allow-privilege-escalation-no-securitycontext",   "falco-simulator"),
+              # Dashboard snapshot public read — intentional, opt-in (enable_public_snapshot),
+              # scoped to the dashboard/* prefix only. reports/ and metadata/ stay private.
+              ("public",                                          "modules/s3"),
+              ("s3-bucket",                                       "modules/s3"),
           ]
 
           def is_suppressed(result):
