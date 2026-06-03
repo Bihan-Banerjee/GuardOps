@@ -26,8 +26,13 @@ output "argocd_domain" {
 }
 
 output "dashboard_domain" {
-  description = "Web dashboard subdomain (Phase 13). Set as dashboard.subdomain in .guardops.yaml."
+  description = "Dashboard API host (Phase 13) — ALB-backed. The SPA points VITE_API_URL here."
   value       = "app.${var.domain_name}"
+}
+
+output "dashboard_spa_domain" {
+  description = "Dashboard SPA host (Phase 14) — CNAME to Vercel. Add this domain in the Vercel project."
+  value       = "dashboard.${var.domain_name}"
 }
 
 output "cert_manager_namespace" {
