@@ -64,7 +64,7 @@ const Terminal = forwardRef(function Terminal({ lines = [], className = '' }, re
   }
 
   return (
-    <div className={`rounded-lg overflow-hidden border border-terminal/20 bg-black/80 backdrop-blur-sm ${className}`}>
+    <div className={`rounded-lg overflow-hidden opacity-75 border border-terminal/20 bg-black/80 backdrop-blur-sm ${className}`}>
       {/* Chrome bar */}
       <div className="flex items-center gap-2 px-4 py-3 bg-zinc-900/80 border-b border-zinc-800">
         <div className="w-3 h-3 rounded-full bg-red-500/80" />

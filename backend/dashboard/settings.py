@@ -24,6 +24,18 @@ from dataclasses import dataclass, field
 DEFAULT_PROMETHEUS_URL = "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"
 DEFAULT_LOKI_URL = "http://loki.monitoring.svc.cluster.local:3100"
 
+# The dashboard SPA (Vite/React) is served from a different origin than this API
+# (e.g. https://guardops.live -> https://app.guardops.live), so cross-origin
+# requests need CORS. These defaults cover the production SPA + the Vite dev/preview
+# servers; override with GUARDOPS_DASHBOARD_CORS_ORIGINS (comma-separated) or
+# dashboard.cors_origins. Local dev via the Vite proxy is same-origin and unaffected.
+DEFAULT_CORS_ORIGINS = [
+    "https://guardops.live",
+    "https://www.guardops.live",
+    "http://localhost:5173",
+    "http://localhost:4173",
+]
+
 
 def _env(*names: str, default: str = "") -> str:
     """First non-empty value among the given environment variable names."""
@@ -47,6 +59,7 @@ class DashboardSettings:
     basic_user: str
     basic_password: str
     cors_origins: list[str] = field(default_factory=list)
+    cors_origin_regex: str = ""
 
     @property
     def auth_enabled(self) -> bool:
@@ -89,9 +102,10 @@ def load_settings(config: dict | None = None) -> DashboardSettings:
     token_env_var = argocd.get("token_env_var", "ARGOCD_TOKEN")
     argocd_token = _env("GUARDOPS_ARGOCD_TOKEN", token_env_var)
 
-    cors = dash.get("cors_origins") or []
+    cors = dash.get("cors_origins") or list(DEFAULT_CORS_ORIGINS)
     if os.environ.get("GUARDOPS_DASHBOARD_CORS_ORIGINS"):
         cors = [o.strip() for o in os.environ["GUARDOPS_DASHBOARD_CORS_ORIGINS"].split(",") if o.strip()]
+    cors_regex = _env("GUARDOPS_DASHBOARD_CORS_ORIGIN_REGEX", default=dash.get("cors_origin_regex", ""))
 
     return DashboardSettings(
         project_name=(config.get("project", {}) or {}).get("name", "guardops-app"),
@@ -105,6 +119,7 @@ def load_settings(config: dict | None = None) -> DashboardSettings:
         basic_user=_env("GUARDOPS_DASHBOARD_USER"),
         basic_password=_env("GUARDOPS_DASHBOARD_PASSWORD"),
         cors_origins=cors,
+        cors_origin_regex=cors_regex,
     )
 
 

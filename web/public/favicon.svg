@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">
+  <rect width="400" height="400" fill="#0D1117" rx="60" />
+  <path
+    d="M 0 100 L 400 100 M 0 200 L 400 200 M 0 300 L 400 300 M 100 0 L 100 400 M 200 0 L 200 400 M 300 0 L 300 400"
+    stroke="#161B22"
+    stroke-width="2"
+    fill="none"
+  />
+  <path
+    d="M 200 60 L 90 110 L 90 240 C 90 310 200 360 200 360 C 200 360 310 310 310 240 L 310 110 Z"
+    fill="#0D1117"
+    stroke="#00FF41"
+    stroke-width="16"
+    stroke-linejoin="round"
+  />
+  <text
+    x="140"
+    y="235"
+    font-family="Courier New, monospace"
+    font-size="85"
+    fill="#00FF41"
+    font-weight="bold"
+  >
+    &gt;_
+  </text>
+  <rect x="250" y="180" width="18" height="55" fill="#00FF41" />
+</svg>

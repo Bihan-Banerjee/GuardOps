@@ -48,16 +48,21 @@ export default function Navbar() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16">
           {/* Logo */}
-          <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+            className="flex items-center gap-3"
+            aria-label="Scroll to top"
+          >
             <Logo className="w-8 h-8 rounded-md" />
-            <span className="font-mono font-black text-lg tracking-widest glitch-text">
+            <span className="font-mono font-black text-lg tracking-widest">
               <span className="text-terminal">GUARD</span>
               <span className="text-zinc-200">OPS</span>
             </span>
             <span className="hidden sm:inline-block text-xs text-zinc-600 font-mono border border-zinc-800 px-2 py-0.5 rounded">
               {version}
             </span>
-          </div>
+          </button>
 
           {/* Desktop nav */}
           <div className="hidden md:flex items-center gap-0.5">

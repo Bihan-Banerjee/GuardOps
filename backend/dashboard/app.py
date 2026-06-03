@@ -43,13 +43,19 @@ def create_app(settings: Optional[DashboardSettings] = None) -> FastAPI:
     app.state.settings = settings
     app.state.store = store
 
-    if settings.cors_origins:
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=settings.cors_origins,
-            allow_methods=["GET"],
-            allow_headers=["*"],
-        )
+    # The SPA is cross-origin (e.g. guardops.live -> app.guardops.live), so CORS is
+    # required for the browser to read responses and send the Authorization header.
+    # Starlette short-circuits the OPTIONS preflight before the auth dependency, so
+    # preflight is never blocked by auth.
+    if settings.cors_origins or settings.cors_origin_regex:
+        cors_kwargs: dict = {
+            "allow_origins": settings.cors_origins,
+            "allow_methods": ["GET", "OPTIONS"],
+            "allow_headers": ["*"],
+        }
+        if settings.cors_origin_regex:
+            cors_kwargs["allow_origin_regex"] = settings.cors_origin_regex
+        app.add_middleware(CORSMiddleware, **cors_kwargs)
 
     _register_health(app)
     _register_api(app, make_auth_dependency(settings))
