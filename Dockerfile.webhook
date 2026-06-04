@@ -8,9 +8,12 @@ RUN apt-get update -qq && apt-get install -y -qq curl ca-certificates && \
     chmod +x kubectl && mv kubectl /usr/local/bin/kubectl && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# fastapi>=0.136 + starlette 1.2.x clears the Starlette CVEs (kept in sync with
+# pyproject [dashboard] and Dockerfile.dashboard).
 RUN /venv/bin/python -m pip install --quiet \
-    fastapi==0.111.0 \
-    uvicorn==0.30.1 \
+    "fastapi>=0.136,<0.137" \
+    "starlette>=1.2,<1.3" \
+    "uvicorn>=0.30" \
     pyyaml==6.0.1 \
     httpx==0.27.0 \
     kubernetes==30.1.0
