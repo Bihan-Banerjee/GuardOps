@@ -9,7 +9,9 @@ mocked — nothing builds, scans, pushes, or deploys for real.
 
 from types import SimpleNamespace
 
-from cli.commands.deploy_cmd import deploy_command
+import pytest
+
+from cli.commands.deploy_cmd import deploy_command, _run_dast_step, _print_dast_summary
 from cli.commands._deploy_wizard import DeployOptions
 from backend.security.zap_runner import ZapScanResult, ZapFinding
 
@@ -214,3 +216,112 @@ def test_wizard_resolves_options(runner, monkeypatch):
     r = runner.invoke(deploy_command, [])
     assert r.exit_code == 0, r.output
     assert "Deployment complete" in r.output
+
+
+# ── main-flow branches (build / k3d import / gitops / argocd) ──────────────────
+
+def test_build_runs_when_not_skipped(runner, monkeypatch):
+    # No --skip-build → build_image runs and the "Built …" success line prints.
+    _wire(monkeypatch)
+    r = runner.invoke(deploy_command, ["--env", "local", "--skip-scan", "--skip-dast"])
+    assert r.exit_code == 0, r.output
+    assert "Built" in r.output
+
+
+def test_k3d_import_failure_exits(runner, monkeypatch):
+    _wire(monkeypatch)
+    monkeypatch.setattr(_P + "import_image_to_k3d", lambda *a, **k: False)
+    r = runner.invoke(deploy_command, ["--env", "local", "--skip-scan", "--skip-build"])
+    assert r.exit_code == 1
+    assert "import" in r.output.lower()
+
+
+def test_gitops_commit_exception_is_warned(runner, monkeypatch):
+    # commit_and_push raising is non-fatal — Helm already succeeded.
+    _wire(monkeypatch, cfg=_prod_cfg())
+    def _boom(**k):
+        raise RuntimeError("git push rejected")
+    monkeypatch.setattr(_P + "commit_and_push", _boom)
+    r = runner.invoke(deploy_command,
+                      ["--env", "prod", "--gitops", "--skip-scan", "--skip-build", "--skip-dast"])
+    assert r.exit_code == 0, r.output
+    assert "GitOps override commit failed" in r.output
+
+
+def test_gitops_commit_returns_failure_is_warned(runner, monkeypatch):
+    _wire(monkeypatch, cfg=_prod_cfg())
+    monkeypatch.setattr(_P + "commit_and_push",
+                        lambda **k: SimpleNamespace(success=False, error_message="diverged",
+                                                    skipped=False, commit_sha=""))
+    r = runner.invoke(deploy_command,
+                      ["--env", "prod", "--gitops", "--skip-scan", "--skip-build", "--skip-dast"])
+    assert r.exit_code == 0, r.output
+    assert "GitOps commit failed" in r.output
+
+
+def test_argocd_sync_failure_is_warned(runner, monkeypatch):
+    _wire(monkeypatch, cfg=_prod_cfg())
+    monkeypatch.setenv("ARGOCD_TOKEN", "tok")
+    monkeypatch.setattr(_P + "trigger_argocd_sync",
+                        lambda **k: SimpleNamespace(success=False, error_message="app not found"))
+    r = runner.invoke(deploy_command,
+                      ["--env", "prod", "--gitops", "--skip-scan", "--skip-build", "--skip-dast"])
+    assert r.exit_code == 0, r.output
+    assert "ArgoCD sync trigger failed" in r.output
+
+
+def test_argocd_sync_skipped_without_token(runner, monkeypatch):
+    # gitops commit succeeds but no ARGOCD_TOKEN exported → explicit sync is skipped.
+    _wire(monkeypatch, cfg=_prod_cfg())
+    monkeypatch.delenv("ARGOCD_TOKEN", raising=False)
+    r = runner.invoke(deploy_command,
+                      ["--env", "prod", "--gitops", "--skip-scan", "--skip-build", "--skip-dast"])
+    assert r.exit_code == 0, r.output
+    assert "skipping explicit sync" in r.output
+
+
+# ── _run_dast_step / _print_dast_summary (called directly) ─────────────────────
+
+def _dast_cfg(enabled=False, target=""):
+    return {"security": {"tools": {"owasp_zap": enabled}, "zap_target_url": target,
+                         "report_dir": "security/reports"}}
+
+
+def test_dast_step_staging_disabled_is_expected():
+    res = _run_dast_step(config=_dast_cfg(enabled=False), env="staging", skip_dast=False,
+                         service_url="", project_name="p", namespace="default")
+    assert res.skipped is True and "owasp_zap is false" in res.skip_reason
+
+
+def test_dast_step_enabled_nonprod_is_skipped():
+    res = _run_dast_step(config=_dast_cfg(enabled=True), env="staging", skip_dast=False,
+                         service_url="", project_name="p", namespace="default")
+    assert res.skipped is True and "only runs in prod" in res.skip_reason
+
+
+def test_dast_step_no_target_url_is_skipped():
+    res = _run_dast_step(config=_dast_cfg(enabled=True, target=""), env="prod", skip_dast=False,
+                         service_url="", project_name="p", namespace="default")
+    assert res.skipped is True and "No target URL" in res.skip_reason
+
+
+def test_dast_step_blocked_rollback_also_fails(monkeypatch):
+    monkeypatch.setattr(_P + "run_zap_baseline",
+                        lambda **k: ZapScanResult(success=True, skipped=False,
+                                                  findings=[_zap_finding("CRITICAL")], blocked=True))
+    monkeypatch.setattr(_P + "rollback_helm",
+                        lambda **k: SimpleNamespace(success=False, rolled_back_to=0,
+                                                    error_message="no prior revision"))
+    monkeypatch.setattr(_P + "_sanitize_release_name", lambda n: n)
+    with pytest.raises(SystemExit) as exc:
+        _run_dast_step(config=_dast_cfg(enabled=True, target="http://app"), env="prod",
+                       skip_dast=False, service_url="http://app", project_name="p",
+                       namespace="default", helm_release_name="p")
+    assert exc.value.code == 1
+
+
+def test_print_dast_summary_truncates_over_five():
+    findings = [_zap_finding("HIGH") for _ in range(6)]
+    zap = ZapScanResult(success=True, skipped=False, findings=findings)
+    # Should not raise; exercises the ">5 findings" truncation line.
+    _print_dast_summary(zap)

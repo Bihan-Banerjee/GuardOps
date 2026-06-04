@@ -200,6 +200,45 @@ def test_persist_report_never_raises(store, make_report):
     assert "boom" in result.error_message
 
 
+# ── read filters: project / image scoping ──────────────────────────────────────
+
+def test_list_runs_project_and_image_filters(store, make_report):
+    store.persist_report(make_report(project="demo", image="demo:v1"))
+    store.persist_report(make_report(project="other", image="other:v2"))
+    assert [r.project_name for r in store.list_runs(project="demo")] == ["demo"]
+    assert [r.image_ref for r in store.list_runs(image="demo:v1")] == ["demo:v1"]
+
+
+def test_latest_run_before_image_filter(store, make_report):
+    store.persist_report(make_report(image="img:v1", timestamp="2026-05-01T10:00:00"))
+    store.persist_report(make_report(image="img:v1", timestamp="2026-05-02T10:00:00"))
+    prev = store.latest_run_before(image="img:v1")
+    assert prev is not None and prev.image_ref == "img:v1"
+
+
+def test_severity_trends_project_and_env_filters(store, make_report, make_finding):
+    store.persist_report(
+        make_report(project="demo", timestamp="2026-05-01T10:00:00",
+                    findings=[make_finding(severity="HIGH")]),
+        environment="prod",
+    )
+    pts = store.severity_trends(project="demo", environment="prod", days=36500)
+    assert len(pts) >= 1
+
+
+def test_prune_keep_last_empty_store(store):
+    # No rows → keep_ids is empty → early success with nothing deleted.
+    res = store.prune(keep_last=5)
+    assert res.success and res.runs_deleted == 0
+
+
+def test_prune_swallows_exception(store, make_report):
+    store.persist_report(make_report())
+    with patch.object(store, "_connect", side_effect=sqlite3.OperationalError("disk gone")):
+        res = store.prune(keep_last=2)
+    assert res.success is False and "disk gone" in res.error_message
+
+
 # ── factory ────────────────────────────────────────────────────────────────────
 
 def test_get_store_sqlite(tmp_path):

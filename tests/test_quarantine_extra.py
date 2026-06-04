@@ -5,14 +5,16 @@ kubectl-error / bad-JSON guards in the fetchers, the policies table, the env-dis
 line, the _release_pod variants, and the age formatter's other units.
 """
 
+import subprocess
 from datetime import datetime, timezone, timedelta
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 from cli.commands.quarantine_cmd import (
     quarantine_status_cmd, _get_quarantined_pods, _get_quarantine_policies,
-    _release_pod, _age_str,
+    _release_pod, _age_str, _run_kubectl,
 )
 
 _K = "cli.commands.quarantine_cmd._run_kubectl"
@@ -105,3 +107,44 @@ def test_age_str_seconds_and_days():
     assert _age_str((now - timedelta(seconds=10)).isoformat()).endswith("s")
     assert _age_str((now - timedelta(minutes=5)).isoformat()).endswith("m")
     assert _age_str((now - timedelta(days=3)).isoformat()).endswith("d")
+
+
+# ── kubectl-failure WITH output (warn-then-empty, not the "no resources" path) ──
+
+def test_get_pods_real_error_with_stdout_warns():
+    # not ok, stderr is a genuine error, and stdout is non-empty → warn + [].
+    with patch(_K, return_value=(False, "partial", "connection refused")):
+        assert _get_quarantined_pods(["-n", "default"]) == []
+
+
+def test_get_policies_real_error_with_stdout_warns():
+    with patch(_K, return_value=(False, "partial", "connection refused")):
+        assert _get_quarantine_policies(["-n", "default"]) == []
+
+
+# ── _run_kubectl subprocess wrapper (direct) ────────────────────────────────────
+
+def test_run_kubectl_success():
+    fake = SimpleNamespace(returncode=0, stdout="out\n", stderr="err\n")
+    with patch("cli.commands.quarantine_cmd.subprocess.run", return_value=fake):
+        ok, out, err = _run_kubectl(["get", "pods"])
+    assert ok is True and out == "out" and err == "err"
+
+
+def test_run_kubectl_timeout():
+    with patch("cli.commands.quarantine_cmd.subprocess.run",
+               side_effect=subprocess.TimeoutExpired("kubectl", 1)):
+        ok, out, err = _run_kubectl(["get", "pods"])
+    assert ok is False and "timed out" in err
+
+
+def test_run_kubectl_not_found():
+    with patch("cli.commands.quarantine_cmd.subprocess.run", side_effect=FileNotFoundError()):
+        ok, out, err = _run_kubectl(["get", "pods"])
+    assert ok is False and "not found" in err
+
+
+def test_run_kubectl_unexpected_error():
+    with patch("cli.commands.quarantine_cmd.subprocess.run", side_effect=RuntimeError("boom")):
+        ok, out, err = _run_kubectl(["get", "pods"])
+    assert ok is False and "Unexpected error" in err

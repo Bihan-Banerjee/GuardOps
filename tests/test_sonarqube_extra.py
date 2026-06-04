@@ -144,3 +144,13 @@ def test_gate_failed(monkeypatch):
     monkeypatch.setattr(sq.requests, "get", lambda *a, **k: resp)
     ok, msg = check_quality_gate({"project": {"name": "app"}})
     assert not ok and "coverage" in msg
+
+
+def test_gate_unknown_status_is_non_blocking(monkeypatch):
+    # A status that is neither OK nor ERROR (e.g. WARN/NONE) is reported but not blocked.
+    _env(monkeypatch)
+    resp = MagicMock(status_code=200)
+    resp.json.return_value = {"projectStatus": {"status": "WARN"}}
+    monkeypatch.setattr(sq.requests, "get", lambda *a, **k: resp)
+    ok, msg = check_quality_gate({"project": {"name": "app"}})
+    assert ok and "status: WARN" in msg

@@ -94,7 +94,9 @@ def test_missing_policy_dir_exits_one(runner, tmp_path):
     missing = tmp_path / "nope"
     result = runner.invoke(admission_command, ["--policy-dir", str(missing)])
     assert result.exit_code == 1
-    assert "not found" in result.output
+    # Rich may wrap the (long temp) path across lines, so normalize whitespace
+    # before substring-matching the error text.
+    assert "not found" in " ".join(result.output.split())
 
 
 def test_networkpolicy_templates_are_skipped(runner, policy_dir):

@@ -364,6 +364,18 @@ class TestDeployHelm:
         cmd_str = " ".join(mock_run.call_args[0][0])
         assert "ingress.host=myapp.example.com" in cmd_str
 
+    def test_extra_set_values_added_as_set_flags(self, mocker):
+        # Blue-green slot values arrive via extra_set_values (appended last).
+        self._patch_helm_found(mocker)
+        self._patch_chart_found(mocker)
+        self._patch_revision(mocker)
+        self._patch_ingress(mocker)
+        mock_run = mocker.patch("backend.pipeline.deployer.run_command", return_value=_ok())
+        deploy_helm("myapp", "myapp:v1",
+                    extra_set_values={"blueGreen.enabled": "true", "blueGreen.slot": "blue"})
+        cmd_str = " ".join(mock_run.call_args[0][0])
+        assert "blueGreen.slot=blue" in cmd_str
+
     def test_replicas_set_in_command(self, mocker):
         self._patch_helm_found(mocker)
         self._patch_chart_found(mocker)

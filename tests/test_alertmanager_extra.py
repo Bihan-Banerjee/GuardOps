@@ -85,6 +85,20 @@ def test_drain_node_drain_step_fails():
     assert not action.success and "drain failed" in action.error_message
 
 
+# ── failed (non-skipped) action logs an error ──────────────────────────────────
+
+def test_handle_webhook_failed_action_logs_error():
+    # A firing Falco-critical alert whose quarantine kubectl fails → a non-skipped
+    # action with success=False, which takes the error-logging branch.
+    raw = {"alerts": [{"status": "firing",
+                       "labels": {"alertname": "GuardOpsFalcoCritical", "pod": "p1", "namespace": "default"},
+                       "fingerprint": "deadbeef"}]}
+    with patch(_KUBECTL, return_value=(False, "", "permission denied")):
+        res = h.handle_webhook(raw)
+    assert res.actions[0].success is False
+    assert res.actions[0].action_type != "skipped"
+
+
 # ── webhook handler error response ────────────────────────────────────────────
 
 def test_webhook_handler_error_returns_200_with_flag():

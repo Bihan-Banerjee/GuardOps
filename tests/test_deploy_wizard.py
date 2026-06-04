@@ -89,6 +89,28 @@ def test_offer_on_bare_interactive_deploy(monkeypatch):
     assert wiz.should_offer_wizard(_FakeCtx(), interactive=False, assume_yes=False) is True
 
 
+def test_no_offer_when_isatty_raises(monkeypatch):
+    # A stream whose isatty() raises is treated as non-interactive (not a terminal).
+    class _BadTTY:
+        def isatty(self):
+            raise ValueError("no isatty here")
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.setattr(sys, "stdin", _BadTTY())
+    monkeypatch.setattr(sys, "stdout", _BadTTY())
+    assert wiz.should_offer_wizard(_FakeCtx(), interactive=False, assume_yes=False) is False
+
+
+def test_offer_when_parameter_source_unavailable(monkeypatch):
+    # If Click can't report parameter sources, fall back to offering the wizard.
+    _interactive_terminal(monkeypatch)
+
+    class _BrokenCtx:
+        def get_parameter_source(self, name):
+            raise RuntimeError("no source info")
+    assert wiz.should_offer_wizard(_BrokenCtx(), interactive=False, assume_yes=False) is True
+
+
 # ── run_deploy_wizard ───────────────────────────────────────────────────────--
 
 def _config():
@@ -182,6 +204,20 @@ def test_to_cli_args_gitops_branch_and_replicas():
 def test_to_cli_args_fail_on_only_when_non_default():
     assert "--fail-on" not in wiz.to_cli_args(DeployOptions(fail_on="HIGH"))
     assert "--fail-on" in wiz.to_cli_args(DeployOptions(fail_on="CRITICAL"))
+
+
+def test_to_cli_args_slot_build_trivy():
+    opts = DeployOptions(slot="blue", skip_build=True, skip_trivy=True)
+    args = wiz.to_cli_args(opts)
+    assert args[args.index("--slot") + 1] == "blue"
+    assert "--skip-build" in args
+    assert "--skip-trivy" in args
+
+
+def test_confirm_plan_with_slot(monkeypatch):
+    monkeypatch.setattr(wiz, "_confirm", lambda *a, **k: True)
+    opts = DeployOptions(env="staging", slot="green")
+    assert wiz.confirm_plan(opts) is True
 
 
 # ── deploy_command integration ──────────────────────────────────────────────--

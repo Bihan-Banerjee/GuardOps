@@ -51,3 +51,11 @@ def test_snapshot_to_s3_no_bucket_exits(runner):
     with a, b, c:
         r = runner.invoke(dashboard_command, ["snapshot", "--to-s3"])
     assert r.exit_code == 1 and "No S3 bucket" in r.output
+
+
+def test_snapshot_to_s3_upload_failure_exits(runner):
+    a, b, c = _patches({"metadata": {"s3_bucket": "mybucket"}})
+    with a, b, c, \
+         patch("backend.metadata.s3_store.put_export_to_s3", side_effect=Exception("network down")):
+        r = runner.invoke(dashboard_command, ["snapshot", "--to-s3"])
+    assert r.exit_code == 1 and "S3 upload failed" in r.output
