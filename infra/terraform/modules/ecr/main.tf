@@ -52,8 +52,14 @@ resource "aws_ecr_repository" "repos" {
 #   2. Keep a generous count of the most-recent images (tagStatus=any) so the
 #      active image set AND the signatures pushed alongside them stay together.
 resource "aws_ecr_lifecycle_policy" "repos" {
-  for_each   = aws_ecr_repository.repos
-  repository = each.value.name
+  # Static keys (same set the repos resource uses) so the for_each is known at
+  # plan/import time — deriving keys from aws_ecr_repository.repos makes them
+  # "known only after apply", which blocks `terraform import` of ANY resource in
+  # this state. depends_on preserves create-after-repository ordering.
+  for_each   = toset(var.image_names)
+  repository = each.value
+
+  depends_on = [aws_ecr_repository.repos]
 
   policy = jsonencode({
     rules = [

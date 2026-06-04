@@ -88,7 +88,14 @@ function Read-TfVar {
     if (-not (Test-Path $TfVarsFile)) { return $null }
     foreach ($line in (Get-Content $TfVarsFile)) {
         if ($line -match "^\s*$VarName\s*=\s*(.+)$") {
-            return $Matches[1].Trim().Trim('"').Trim("'")
+            $val = $Matches[1].Trim()
+            # A quoted value may be followed by an inline comment, e.g.
+            #   kyverno_policy_action = "Audit"  # observe first; flip later
+            # Take only the contents of the first quoted string. For an unquoted
+            # value (true / 2 / etc.) drop any trailing "# comment" before trimming.
+            if ($val -match '^"([^"]*)"') { return $Matches[1] }
+            if ($val -match "^'([^']*)'") { return $Matches[1] }
+            return ($val -replace '#.*$', '').Trim()
         }
     }
     return $null
@@ -1206,15 +1213,26 @@ if ($argoCdEnabled -eq "true") {
     Wait-Pods -NS "argocd" -Label "app.kubernetes.io/name=argocd-server" -Timeout 300 -Name "ArgoCD server" | Out-Null
 
     Write-Info "Applying ArgoCD manifests..."
-    kubectl apply -f "$RepoRoot\k8s\argocd\project.yaml"     2>$null
-    kubectl apply -f "$RepoRoot\k8s\argocd\app-prod.yaml"    2>$null
-    kubectl apply -f "$RepoRoot\k8s\argocd\app-staging.yaml" 2>$null
-    # v1.0.0: the UI Ingress on the shared ALB (replaces the chart's nginx ingress).
-    if ($dnsTlsEnabled -eq "true") {
-        kubectl apply -f "$RepoRoot\k8s\argocd\ingress.yaml" 2>$null
-        Write-Ok "ArgoCD AppProject + Applications + Ingress (argocd.$domainName) applied"
-    } else {
-        Write-Ok "ArgoCD AppProject + Applications applied (Ingress skipped — enable_dns_tls not true)"
+    # kubectl emits harmless deprecation warnings to stderr (e.g. the non-domain-
+    # qualified ArgoCD finalizer). Under $ErrorActionPreference='Stop' PowerShell 5.1
+    # promotes a native command's stderr to a TERMINATING error, which would abort
+    # the whole run even though `kubectl apply` exited 0. Drop to 'Continue' for these
+    # applies (same guard the terraform helper uses) and gate on $LASTEXITCODE.
+    $prevEapArgo = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        kubectl apply -f "$RepoRoot\k8s\argocd\project.yaml"     2>&1 | Out-Null
+        kubectl apply -f "$RepoRoot\k8s\argocd\app-prod.yaml"    2>&1 | Out-Null
+        kubectl apply -f "$RepoRoot\k8s\argocd\app-staging.yaml" 2>&1 | Out-Null
+        # v1.0.0: the UI Ingress on the shared ALB (replaces the chart's nginx ingress).
+        if ($dnsTlsEnabled -eq "true") {
+            kubectl apply -f "$RepoRoot\k8s\argocd\ingress.yaml" 2>&1 | Out-Null
+            Write-Ok "ArgoCD AppProject + Applications + Ingress (argocd.$domainName) applied"
+        } else {
+            Write-Ok "ArgoCD AppProject + Applications applied (Ingress skipped — enable_dns_tls not true)"
+        }
+    } finally {
+        $ErrorActionPreference = $prevEapArgo
     }
 
     Set-Location $TerraformDir
@@ -1228,43 +1246,67 @@ if ($argoCdEnabled -eq "true") {
             [System.Convert]::FromBase64String($passB64))
     }
 
-    if ((Get-Command "argocd" -ErrorAction SilentlyContinue) -and $argoCdUrl -and $argoCdPass) {
-        Write-Info "Logging into ArgoCD CLI..."
-        $argoHost = $argoCdUrl -replace "https://",""
-        argocd login $argoHost --username admin --password $argoCdPass --grpc-web --insecure 2>$null
-        if ($LASTEXITCODE -eq 0) {
-            $argoCdToken = argocd account generate-token --account admin 2>$null
-            if ($argoCdToken) {
-                gh secret set ARGOCD_TOKEN --body $argoCdToken 2>$null
-                Write-Ok "GitHub secret ARGOCD_TOKEN set"
+    if ((Get-Command "argocd" -ErrorAction SilentlyContinue) -and $argoCdPass) {
+        Write-Info "Logging into ArgoCD CLI (via port-forward)..."
+        # Log in over a kubectl port-forward to the in-cluster argocd-server rather
+        # than the public ALB hostname (argocd.<domain>): on a fresh bring-up the ALB
+        # and its Route53 record were just created and won't resolve for several
+        # minutes, so a public-host login always fails. Port-forward works instantly.
+        # Run under 'Continue' so a CLI stderr line can't terminate the whole script
+        # (PowerShell 5.1 promotes native stderr to a terminating error under 'Stop').
+        $prevEapLogin = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        $argoPfJob = $null
+        try {
+            $argoPfJob = Start-Job -ScriptBlock {
+                kubectl port-forward svc/argocd-server -n argocd 8088:443
+            }
+            Start-Sleep -Seconds 6   # let the forward establish
 
-                if (Test-Path $GuardopsYaml) {
-                    $yamlContent = Get-Content $GuardopsYaml -Raw
-                    if ($yamlContent -notmatch "argocd:") {
-                        $argoSection  = "`nargocd:`n"
-                        $argoSection += "  url: `"$argoCdUrl`"`n"
-                        $argoSection += "  app_name_staging: `"guardops-app-staging`"`n"
-                        $argoSection += "  app_name_prod: `"guardops-app-prod`"`n"
-                        $argoSection += "  token_env_var: `"ARGOCD_TOKEN`"`n"
-                        Add-Content $GuardopsYaml $argoSection
-                        Write-Ok "Updated .guardops.yaml with argocd section"
-                    } else {
-                        Write-Info ".guardops.yaml argocd section already present"
+            argocd login "localhost:8088" --username admin --password $argoCdPass `
+                --grpc-web --insecure 2>&1 | Out-Null
+
+            if ($LASTEXITCODE -eq 0) {
+                $argoCdToken = argocd account generate-token --account admin 2>$null
+                if ($argoCdToken) {
+                    gh secret set ARGOCD_TOKEN --body $argoCdToken 2>&1 | Out-Null
+                    Write-Ok "GitHub secret ARGOCD_TOKEN set"
+
+                    if (Test-Path $GuardopsYaml) {
+                        $yamlContent = Get-Content $GuardopsYaml -Raw
+                        if ($yamlContent -notmatch "argocd:") {
+                            $argoSection  = "`nargocd:`n"
+                            $argoSection += "  url: `"$argoCdUrl`"`n"
+                            $argoSection += "  app_name_staging: `"guardops-app-staging`"`n"
+                            $argoSection += "  app_name_prod: `"guardops-app-prod`"`n"
+                            $argoSection += "  token_env_var: `"ARGOCD_TOKEN`"`n"
+                            Add-Content $GuardopsYaml $argoSection
+                            Write-Ok "Updated .guardops.yaml with argocd section"
+                        } else {
+                            Write-Info ".guardops.yaml argocd section already present"
+                        }
                     }
+                } else {
+                    Write-Warn "Token generation returned empty -- generate manually"
                 }
             } else {
-                Write-Warn "Token generation returned empty -- generate manually"
+                Write-Warn "ArgoCD CLI login failed -- set the token manually (see below)"
             }
-        } else {
-            Write-Warn "ArgoCD CLI login failed"
+        } finally {
+            if ($argoPfJob) {
+                Stop-Job   $argoPfJob -ErrorAction SilentlyContinue
+                Remove-Job $argoPfJob -Force -ErrorAction SilentlyContinue
+            }
+            $ErrorActionPreference = $prevEapLogin
         }
     } else {
-        Write-Warn "argocd CLI not found or URL/password missing"
+        Write-Warn "argocd CLI not found or admin password missing"
     }
 
     if (-not $argoCdToken) {
-        Write-Info "To set up ArgoCD token manually after startup:"
-        Write-Info "  argocd login $($argoCdUrl -replace 'https://','') --username admin --password YOUR_PASS"
+        Write-Info "To set up ArgoCD token manually after startup (port-forward avoids DNS waits):"
+        Write-Info "  kubectl port-forward svc/argocd-server -n argocd 8088:443"
+        Write-Info "  argocd login localhost:8088 --username admin --password YOUR_PASS --grpc-web --insecure"
         Write-Info "  argocd account generate-token --account admin"
         Write-Info "  gh secret set ARGOCD_TOKEN --body YOUR_TOKEN"
     }
