@@ -126,6 +126,11 @@ driver:
   # accounted, no perf/memlock path), needs no driver-loader, and is the recommended
   # driver on the EKS 6.x kernel.
   kind: modern_ebpf
+  # Shrink the per-CPU ring buffer (default preset 4 ≈ 8MB) and share it across
+  # more CPUs to cut the driver's memory footprint on small nodes.
+  modernEbpf:
+    bufSizePreset: 2
+    cpusForEachBuffer: 4
 
 falco:
   json_output: true
@@ -139,13 +144,16 @@ falco:
 serviceMonitor:
   create: true
 
+# modern_ebpf's per-CPU ring buffers (default ~8MB each) plus Falco's userspace RSS
+# OOMKill a 256-512Mi pod. Raise the limit so Falco stays alive even with the full
+# stack on a single t3.large.
 resources:
   requests:
-    memory: 128Mi
-    cpu: 50m
+    memory: 256Mi
+    cpu: 100m
   limits:
-    memory: 512Mi
-    cpu: 200m
+    memory: 1Gi
+    cpu: 500m
 
 customRules:
   guardops-rules.yaml: |

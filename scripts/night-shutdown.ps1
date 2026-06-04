@@ -146,8 +146,10 @@ if ($clusterOk) {
     # Delete Ingress objects in all app namespaces.
     # The ALB controller watches for Ingress deletions and removes the
     # corresponding AWS Application Load Balancers automatically.
+    # Include 'argocd' — its UI Ingress shares the 'guardops' ALB group, so the ALB
+    # is not released (and terraform destroy hangs on the ENI/subnet) until it's gone.
     $ingressCount = 0
-    foreach ($ns in @("default", "staging")) {
+    foreach ($ns in @("default", "staging", "argocd")) {
         # try/catch: with $ErrorActionPreference=Stop, kubectl's "No resources
         # found" stderr otherwise terminates the whole script before destroy.
         $ingresses = $null

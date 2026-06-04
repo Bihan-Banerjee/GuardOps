@@ -1209,7 +1209,13 @@ if ($argoCdEnabled -eq "true") {
     kubectl apply -f "$RepoRoot\k8s\argocd\project.yaml"     2>$null
     kubectl apply -f "$RepoRoot\k8s\argocd\app-prod.yaml"    2>$null
     kubectl apply -f "$RepoRoot\k8s\argocd\app-staging.yaml" 2>$null
-    Write-Ok "ArgoCD AppProject + Applications applied"
+    # v1.0.0: the UI Ingress on the shared ALB (replaces the chart's nginx ingress).
+    if ($dnsTlsEnabled -eq "true") {
+        kubectl apply -f "$RepoRoot\k8s\argocd\ingress.yaml" 2>$null
+        Write-Ok "ArgoCD AppProject + Applications + Ingress (argocd.$domainName) applied"
+    } else {
+        Write-Ok "ArgoCD AppProject + Applications applied (Ingress skipped — enable_dns_tls not true)"
+    }
 
     Set-Location $TerraformDir
     $argoCdUrl = terraform output -raw argocd_server_url 2>$null
@@ -1282,25 +1288,21 @@ if ($kyvernoEnabled -eq "true") {
     $policyAction = Read-TfVar "kyverno_policy_action"
     if (-not $policyAction) { $policyAction = "Audit" }
 
-    $ciIssuer  = "https://token.actions.githubusercontent.com"
-    $ciSubject = "https://github.com/Bihan-Banerjee/GuardOps/.github/workflows/ci.yaml@refs/heads/*"
-    # Kyverno forbids mutateDigest in Audit, so pin the digest only under Enforce.
-    $digestPin = if ($policyAction -eq "Enforce") { "true" } else { "false" }
-
+    # Render + apply the ClusterPolicies via the GuardOps CLI, which substitutes the
+    # policy action, digest pin, and the cosign keyless CI identity. Audit is default.
     Write-Info "Applying Kyverno ClusterPolicies (action=$policyAction)..."
-    foreach ($f in (Get-ChildItem "$RepoRoot\k8s\kyverno\*.yaml" | Where-Object { $_.Name -notlike "networkpolicy*" })) {
-        $body = (Get-Content $f.FullName -Raw).
-            Replace("__CI_ISSUER__",     $ciIssuer).
-            Replace("__CI_SUBJECT__",    $ciSubject).
-            Replace("__POLICY_ACTION__", $policyAction).
-            Replace("__DIGEST_PIN__",    $digestPin)
-        try { $body | kubectl apply -f - 2>&1 | Out-Null } catch { }
-        if ($LASTEXITCODE -eq 0) { Write-Ok "  $($f.Name)" }
-        else { Write-Warn "  $($f.Name) failed -- check: kubectl get clusterpolicy" }
+    Push-Location $RepoRoot
+    try {
+        guardops admission --mode $($policyAction.ToLower()) --policy-dir "$RepoRoot\k8s\kyverno" 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) { Write-Ok "Kyverno ClusterPolicies applied (action=$policyAction)" }
+        else { Write-Warn "Some Kyverno policies failed -- check: kubectl get clusterpolicy" }
+    } catch {
+        Write-Warn "guardops admission failed: $_ -- check: kubectl get clusterpolicy"
+    } finally {
+        Pop-Location
     }
-    Write-Ok "Kyverno ClusterPolicies applied (action=$policyAction)"
     Write-Info "Verify:  kubectl get clusterpolicy ; kubectl get polr -A"
-    Write-Info "Enforce: .\scripts\setup-admission-control.ps1 -Enforce"
+    Write-Info "Enforce: guardops admission --mode enforce"
 } else {
     Write-Info "enable_kyverno not true in terraform.tfvars -- skipping admission control"
     Write-Info "Add:  enable_kyverno = true  to infra/terraform/terraform.tfvars"

@@ -108,6 +108,15 @@ def runtime_status_command(since, namespace, severity, tail, loki_url, fail_on):
     """
     config = load_config()
 
+    # Falco runs in simulated mode on the cost-constrained single-node cluster: the
+    # falco-simulator CronJob emits representative alerts so the pipeline + dashboard
+    # can be demonstrated end-to-end without the node capacity real-time syscall
+    # monitoring needs. Treat this feature as experimental. See TROUBLESHOOTING.md.
+    warn(
+        "Falco runtime security is [bold]experimental[/bold] — alerts are currently "
+        "[bold]simulated[/bold] (cost-constrained single node). See TROUBLESHOOTING.md."
+    )
+
     # URL resolution priority: CLI flag > .guardops.yaml > default port-forward
     resolved_loki_url = (
         loki_url

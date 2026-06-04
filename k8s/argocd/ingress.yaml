@@ -1,0 +1,42 @@
+# k8s/argocd/ingress.yaml — v1.0.0
+#
+# Exposes the ArgoCD UI at https://argocd.guardops.live on the SAME shared "guardops"
+# ALB as the prod app and dashboard. This replaces the argo-cd chart's built-in
+# ingress, which defaulted to ingressClassName=nginx — the cluster runs the AWS Load
+# Balancer Controller (ALB), not nginx, so that ingress never got an address.
+#
+# ArgoCD server runs in insecure mode (server.insecure=true in the Helm release), so
+# the ALB terminates TLS with the wildcard ACM cert (*.guardops.live, which covers
+# argocd.guardops.live) and forwards plain HTTP to argocd-server:80.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: argocd-server
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-server
+    app.kubernetes.io/managed-by: guardops
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/backend-protocol: HTTP
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+    # Same shared ALB group as the prod app + dashboard Ingresses.
+    alb.ingress.kubernetes.io/group.name: guardops
+    # Wildcard ACM cert (*.guardops.live) — covers argocd.guardops.live.
+    alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:ap-south-1:236796665744:certificate/9068b1dc-6273-45ac-9076-051e1397e326"
+spec:
+  ingressClassName: alb
+  rules:
+    - host: argocd.guardops.live
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: argocd-server
+                port:
+                  number: 80

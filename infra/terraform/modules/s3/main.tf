@@ -38,10 +38,12 @@ resource "aws_s3_bucket" "reports" {
 resource "aws_s3_bucket_public_access_block" "reports" {
   bucket = aws_s3_bucket.reports.id
 
-  block_public_acls       = true
-  ignore_public_acls      = true
-  block_public_policy     = var.enable_public_snapshot ? false : true
-  restrict_public_buckets = var.enable_public_snapshot ? false : true
+  block_public_acls  = true
+  ignore_public_acls = true
+  # Intentional: only relaxed when enable_public_snapshot=true, and only the
+  # dashboard/* prefix is then made public (see the scoped policy below).
+  block_public_policy     = var.enable_public_snapshot ? false : true # nosemgrep
+  restrict_public_buckets = var.enable_public_snapshot ? false : true # nosemgrep
 }
 
 # Public read for the snapshot object only — scoped to dashboard/*. reports/ and
@@ -49,6 +51,9 @@ resource "aws_s3_bucket_public_access_block" "reports" {
 data "aws_iam_policy_document" "public_snapshot" {
   count = var.enable_public_snapshot ? 1 : 0
 
+  # Intentional public read, scoped to the dashboard/* snapshot prefix only — this
+  # is the opt-in offline fallback for the public SPA. nosemgrep on the wildcard
+  # principal: the resource ARN restricts it to dashboard/*, nothing else.
   statement {
     sid       = "PublicReadDashboardSnapshot"
     effect    = "Allow"
@@ -57,7 +62,7 @@ data "aws_iam_policy_document" "public_snapshot" {
 
     principals {
       type        = "*"
-      identifiers = ["*"]
+      identifiers = ["*"] # nosemgrep
     }
   }
 }

@@ -22,8 +22,8 @@ security:
     semgrep: true
     bandit: true
     trivy: true
-    sonarqube: false
-    owasp_zap: false          # set to true in prod to enable Phase 6 DAST
+    sonarqube: true           # set SONAR_HOST_URL + SONAR_TOKEN (in .env or CI secrets); skips gracefully if unset
+    owasp_zap: true           # Phase 6 DAST — runs on --env prod only (skipped for local/staging)
 
   # ── DAST (Phase 6) ──────────────────────────────────────────────────────
   # owasp_zap must be true above for these to take effect.
@@ -69,7 +69,7 @@ monitoring:
 #   Equivalent to passing --namespace on the CLI each time.
 
 runtime_security:
-  enabled: false              # set true after .\scripts\setup-runtime-security.ps1
+  enabled: true               # Falco/Loki runtime gate (degrades gracefully if Loki is unreachable)
   falco_alert_window: 1h      # default --since for runtime-status
   alert_fail_on: CRITICAL     # default --fail-on for CI gate
   namespaces_to_watch: []     # e.g. [default, production]

@@ -42,6 +42,38 @@ the backend with `guardops dashboard` in another terminal, or set `VITE_SNAPSHOT
 pip install 'guardops[dashboard]'
 ```
 
+## Falco runtime security shows "experimental / simulated"
+
+`guardops runtime-status` prints a warning that Falco is experimental and alerts are
+**simulated**. This is intentional. Real-time syscall monitoring with the modern eBPF
+driver needs more memory/CPU than the cost-optimized **single t3.large** node can
+spare alongside the full stack (Prometheus, Loki, Kyverno, ArgoCD, dashboard, app). So
+a `falco-simulator` CronJob emits representative Falco alerts into Loki — enough to
+demonstrate the alert → quarantine → dashboard flow end-to-end without the node cost.
+
+To run **real** Falco detection:
+- Scale the node group up (`node_desired_size = 2`, or `node_instance_type = t3.xlarge`
+  in `terraform.tfvars`) so Falco's DaemonSet has headroom, then
+- `terraform apply` (with `enable_runtime_security = true`) or re-run
+  `scripts/setup-runtime-security.ps1`. The Falco pod is configured for a 1Gi limit
+  with shrunk eBPF ring buffers (`bufSizePreset: 2`) to fit smaller nodes.
+
+If the Falco pod is `CrashLoopBackOff`/`OOMKilled`, it's memory — raise the limit or
+the node size as above.
+
+## Admission control (Kyverno): Audit vs Enforce
+
+Kyverno ships in **Audit** mode (reports violations, blocks nothing). To enforce:
+
+```bash
+guardops admission --mode enforce            # blocks unsigned / non-compliant pods
+guardops admission --mode enforce --dry-run  # preview without applying
+guardops admission                           # back to Audit (default)
+```
+
+Only flip to Enforce once cosign image signing is proven end-to-end, or deploys of
+unsigned images will be **blocked at admission**.
+
 ## `morning-start.ps1` fails on Linux/macOS
 
 The lifecycle scripts are PowerShell. Install **PowerShell Core** and run them with
