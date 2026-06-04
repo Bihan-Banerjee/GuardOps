@@ -43,7 +43,7 @@ Phase 10 adds GitOps: after the Helm deploy, `--gitops` writes `values-override-
 
 ---
 
-## Current Status — v0.13.0
+## Current Status — v1.0.0
 
 | Phase | Version | Status | What was built |
 |-------|---------|--------|----------------|
@@ -60,15 +60,19 @@ Phase 10 adds GitOps: after the Helm deploy, `--gitops` writes `values-override-
 | 10 — Full Production | v0.10.0 | ✅ Done | Real domain(in progress) + TLS via cert-manager + Let's Encrypt + Route53, ArgoCD GitOps (override-file pattern), `guardops deploy --gitops`, `guardops sync-status` CLI, 7-job CI pipeline, automated morning-start.ps1 (OIDC repair, subnet tag repair, state identity repair, webhook image build, ALB DNS wiring), night-shutdown.ps1 (Ingress drain + ALB wait), production runbooks |
 | 11 — Supply Chain + Admission Control | v0.11.0 | ✅ Done | Syft SBOM (CycloneDX + SPDX), Cosign **keyless** image signing + SBOM/provenance attestations (Sigstore: Fulcio + Rekor), Kyverno admission control — keyless signature verification (`mutateDigest`) + required SBOM attestation + best-practice policy pack (Audit→Enforce), IRSA for Kyverno→ECR, `guardops verify-image` / `guardops sbom`, `scripts/setup-admission-control.ps1`, cosign-aware ECR lifecycle |
 | 12 — Scan Metadata Database | v0.12.0 | ✅ Done | SQLite scan-metadata store (`scan_runs`/`findings`/`tool_runs`) behind a `MetadataStore` abstraction (Postgres-ready for the dashboard), non-fatal persistence wired into `scan` + `deploy`, and `guardops history` / `findings` / `trends` / `diff` (CI regression gate) / `db` (init·prune·export) |
-| 13 — Dashboard + Interactive Deploy | v0.13.0 | ✅ **Current** | Interactive default/custom pre-deploy chooser on `guardops deploy` (prints the equivalent flags; `-i`/`-y`, CI-safe); web dashboard backend API (`backend/dashboard`, FastAPI) — findings/runs/trends/diff/summary + graceful live metrics/runtime/quarantine/sync, served by `guardops dashboard`; S3 export bridge (`S3MetadataStore`, `guardops db export --to-s3`) as the durable dashboard source; shared token/basic auth; `Dockerfile.dashboard` + `k8s/dashboard/` + `app.guardops.live` Route53 + `scripts/setup-dashboard.ps1`; 435 tests |
+| 13 — Dashboard + Interactive Deploy | v0.13.0 | ✅ Done | Interactive default/custom pre-deploy chooser on `guardops deploy` (prints the equivalent flags; `-i`/`-y`, CI-safe); web dashboard backend API (`backend/dashboard`, FastAPI) — findings/runs/trends/diff/summary + graceful live metrics/runtime/quarantine/sync, served by `guardops dashboard`; S3 export bridge (`S3MetadataStore`, `guardops db export --to-s3`) as the durable dashboard source; shared token/basic auth; `Dockerfile.dashboard` + `k8s/dashboard/` + `app.guardops.live` Route53 + `scripts/setup-dashboard.ps1` |
+| 14 — Stable Release | v1.0.0 | ✅ **Current** | Web dashboard SPA on guardops.live + **always-on snapshot fallback** (works 24/7 from any device, no cluster); `guardops doctor` preflight; `guardops admission` (Kyverno Audit/Enforce); cross-platform CI (Linux/macOS/Windows) + coverage gate + web Vitest; ArgoCD module fixed + enabled; Falco marked experimental/simulated; dependency-CVE + CI-gate fixes; full external docs set incl. self-hosting |
 
 ---
 
-## Roadmap
+## Roadmap (post-1.0)
 
-| Phase | Target | What it adds |
-|-------|--------|-------------|
-| 14 — Stable Release | v1.0.0 | First stable release: dashboard **frontend** SPA on guardops.live (consumes the v0.13.0 API), thorough bug-testing + security audit, and a ruff/mypy + QoL polish pass |
+| Theme | What it adds |
+|-------|-------------|
+| Cloud-neutral storage | `metadata.s3_endpoint_url` so storage works on Cloudflare R2 / MinIO / DO Spaces, not just AWS S3 |
+| Registry-agnostic | GHCR / Docker Hub / Quay push (keep ECR as one option) |
+| Self-hostable backend | One-container dashboard on Fly.io / Render / Cloud Run — see [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) |
+| Run-anywhere docs | kind / GKE / AKS / DOKS quickstarts + nginx-ingress alternative to ALB |
 
 ---
 
@@ -391,6 +395,7 @@ Job 7: sync-gate           <-- active when ARGOCD_TOKEN set [Phase 10]
 | [QUICKSTART.md](QUICKSTART.md) | Deploy your first app to local k3d in ~5 minutes |
 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | Common issues — incl. "the dashboard URL is blank" |
 | [docs/API.md](docs/API.md) | The dashboard `/api/v1` HTTP API |
+| [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) | Host the dashboard yourself, cheaply, without a cluster |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Module map and how the pieces fit |
 | [TESTING.md](TESTING.md) | Test layers, the coverage gate, the CLI permutation matrix |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup, tests, PR checklist |
@@ -485,7 +490,17 @@ guardops rollback
 # Roll back to a specific revision
 guardops rollback --revision 2
 
-# Check runtime security alerts (Phase 7)
+# Preflight: check required tools + config (v1.0.0)
+guardops doctor
+
+# Apply Kyverno admission policies — Audit (default) or Enforce (v1.0.0)
+guardops admission
+guardops admission --mode enforce --dry-run
+
+# Publish a static dashboard snapshot so the site works 24/7 with no cluster (v1.0.0)
+guardops dashboard snapshot --to-s3
+
+# Check runtime security alerts (Phase 7 — experimental / simulated, see TROUBLESHOOTING)
 guardops runtime-status
 
 # Filter by time window and severity

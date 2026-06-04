@@ -11,7 +11,7 @@ export default function Footer() {
             <div className="font-mono text-sm">
               <span className="text-terminal/60 font-bold tracking-widest">GUARD</span>
               <span className="text-zinc-600 font-bold tracking-widest">OPS</span>
-              <span className="ml-2 text-zinc-700">v0.13.0</span>
+              <span className="ml-2 text-zinc-700">v1.0.0</span>
             </div>
           </div>
 
@@ -48,7 +48,7 @@ export default function Footer() {
           <p className="text-xs font-mono text-zinc-800">
             <span className="text-zinc-700">$</span>{' '}
             guardops --version{' '}
-            <span className="text-terminal/30">→ 0.13.0</span>
+            <span className="text-terminal/30">→ 1.0.0</span>
           </p>
         </div>
       </div>
