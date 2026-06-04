@@ -993,7 +993,7 @@ async def receive_webhook(request: Request) -> JSONResponse:
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     port = int(os.environ.get("WEBHOOK_PORT", WEBHOOK_PORT))
     logger.info(
         "Starting GuardOps Alertmanager webhook handler  port=%d", port

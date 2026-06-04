@@ -31,7 +31,7 @@ from rich import box
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
-    except Exception:
+    except Exception:  # pragma: no cover - depends on the terminal's stream type
         pass
 
 # stderr=False means output goes to stdout (normal output stream).
