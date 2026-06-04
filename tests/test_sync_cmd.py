@@ -179,6 +179,22 @@ class TestSnapshotMode:
             )
         assert "OutOfSync" in result.output
 
+    def test_in_progress_state_shows_info(self, runner, mock_load_config):
+        # Synced but not yet Healthy (e.g. Progressing) → neither success nor failure;
+        # the "in progress" info branch.
+        progressing = SyncResult(
+            success=True, app_name="guardops-app-prod",
+            sync_status="Synced", health_status="Progressing", revision="abc1234",
+        )
+        with patch("cli.commands.sync_cmd.get_app_status", return_value=progressing):
+            result = runner.invoke(
+                sync_status_command,
+                ["--env", "prod"],
+                env={"ARGOCD_TOKEN": "tok"},
+            )
+        assert result.exit_code == 0
+        assert "in progress" in result.output
+
     def test_api_failure_exits_1(self, runner, mock_load_config):
         failed = SyncResult(success=False, app_name="guardops-app-prod", error_message="connection refused")
         with patch("cli.commands.sync_cmd.get_app_status", return_value=failed):

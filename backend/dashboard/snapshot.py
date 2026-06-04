@@ -104,7 +104,7 @@ def build_snapshot(
         except Exception as e:  # noqa: BLE001 - a snapshot must never fail as a whole
             if isinstance(default, dict):
                 return {**default, "_error": str(e)}
-            return default
+            return default  # pragma: no cover - every caller passes a dict default
 
     data = {
         "/api/v1/meta": _meta(settings),
