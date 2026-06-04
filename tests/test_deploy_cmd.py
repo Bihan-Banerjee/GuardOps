@@ -10,6 +10,8 @@ mocked — nothing builds, scans, pushes, or deploys for real.
 from types import SimpleNamespace
 
 from cli.commands.deploy_cmd import deploy_command
+from cli.commands._deploy_wizard import DeployOptions
+from backend.security.zap_runner import ZapScanResult, ZapFinding
 
 _P = "cli.commands.deploy_cmd."
 
@@ -17,6 +19,16 @@ _P = "cli.commands.deploy_cmd."
 def _cfg():
     return {"project": {"name": "test-app"}, "kubernetes": {"namespace": "default"},
             "security": {"tools": {}}, "docker": {}}
+
+
+def _prod_cfg():
+    return {"project": {"name": "test-app"}, "kubernetes": {"namespace": "default"},
+            "security": {"tools": {"owasp_zap": True}, "zap_target_url": ""}, "docker": {}}
+
+
+def _zap_finding(sev="CRITICAL"):
+    return ZapFinding(severity=sev, alert="Reflected XSS", description="d", solution="s",
+                      url="http://x", evidence="", confidence="High", zap_riskcode=3, instance_count=2)
 
 
 def _build_ok(**k):
@@ -51,12 +63,25 @@ def _wire(monkeypatch, cfg=None):
     s(_P + "run_trivy_filesystem", lambda *a: SimpleNamespace(tool="trivy-fs", success=True))
     s(_P + "run_trivy_image", lambda *a: SimpleNamespace(tool="trivy", success=True))
     s(_P + "run_sonarqube", lambda *a: SimpleNamespace(tool="sonarqube", success=True))
-    s(_P + "generate_report", lambda **k: SimpleNamespace(blocked=False))
+    s(_P + "generate_report",
+      lambda **k: SimpleNamespace(blocked=False,
+                                  severity_counts={"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}))
     s(_P + "persist_report_safe", lambda *a, **k: None)
-    s(_P + "_print_scan_summary", lambda *a: None)
     s(_P + "push_to_ecr", _push_ok)
     s(_P + "import_image_to_k3d", lambda *a, **k: True)
     s(_P + "deploy_helm", _deploy_ok)
+    # DAST + GitOps collaborators (only exercised on the prod/--gitops paths)
+    s(_P + "run_zap_baseline", lambda **k: ZapScanResult(skipped=True, skip_reason="default"))
+    s(_P + "rollback_helm",
+      lambda **k: SimpleNamespace(success=True, rolled_back_to=1, error_message=""))
+    s(_P + "_sanitize_release_name", lambda n: n)
+    s(_P + "write_image_override", lambda **k: "values-override-prod.yaml")
+    s(_P + "commit_and_push",
+      lambda **k: SimpleNamespace(success=True, error_message="", skipped=False, commit_sha="def4567"))
+    s(_P + "trigger_argocd_sync", lambda **k: SimpleNamespace(success=True, error_message=""))
+    s(_P + "get_argocd_url", lambda c: "https://argo.example")
+    s(_P + "get_argocd_app_name", lambda c, e: "guardops-app-prod")
+    s(_P + "get_argocd_token_env_var", lambda c: "ARGOCD_TOKEN")
     return cfg
 
 
@@ -85,7 +110,8 @@ def test_build_failure_exits(runner, monkeypatch):
 
 def test_scan_blocked_exits(runner, monkeypatch):
     _wire(monkeypatch)
-    monkeypatch.setattr(_P + "generate_report", lambda **k: SimpleNamespace(blocked=True))
+    monkeypatch.setattr(_P + "generate_report", lambda **k: SimpleNamespace(
+        blocked=True, severity_counts={"CRITICAL": 1, "HIGH": 0, "MEDIUM": 0, "LOW": 0}))
     r = runner.invoke(deploy_command, ["--env", "local", "--skip-build"])
     assert r.exit_code == 1
     assert "blocked" in r.output.lower()
@@ -115,3 +141,76 @@ def test_helm_deploy_failure_exits(runner, monkeypatch):
     r = runner.invoke(deploy_command, ["--env", "local", "--skip-scan", "--skip-build"])
     assert r.exit_code == 1
     assert "Deployment failed" in r.output
+
+
+def test_scan_pass_path(runner, monkeypatch):
+    # not --skip-scan: runs the scanners, persists, prints the summary, passes the gate
+    _wire(monkeypatch)
+    r = runner.invoke(deploy_command, ["--env", "local", "--skip-build"])
+    assert r.exit_code == 0, r.output
+    assert "Security scans passed" in r.output
+
+
+def test_dast_passes(runner, monkeypatch):
+    _wire(monkeypatch, cfg=_prod_cfg())
+    monkeypatch.setattr(_P + "run_zap_baseline",
+                        lambda **k: ZapScanResult(success=True, skipped=False, findings=[], blocked=False))
+    r = runner.invoke(deploy_command, ["--env", "prod", "--skip-scan", "--skip-build"])
+    assert r.exit_code == 0, r.output
+    assert "DAST passed" in r.output
+
+
+def test_dast_blocked_triggers_rollback(runner, monkeypatch):
+    _wire(monkeypatch, cfg=_prod_cfg())
+    monkeypatch.setattr(_P + "run_zap_baseline",
+                        lambda **k: ZapScanResult(success=True, skipped=False,
+                                                  findings=[_zap_finding("CRITICAL")], blocked=True))
+    r = runner.invoke(deploy_command, ["--env", "prod", "--skip-scan", "--skip-build"])
+    assert r.exit_code == 1
+    assert "DAST gate FAILED" in r.output
+    assert "Rolled back" in r.output
+
+
+def test_dast_scan_failure_is_non_fatal(runner, monkeypatch):
+    _wire(monkeypatch, cfg=_prod_cfg())
+    monkeypatch.setattr(_P + "run_zap_baseline",
+                        lambda **k: ZapScanResult(success=False, skipped=False, error_message="zap crashed"))
+    r = runner.invoke(deploy_command, ["--env", "prod", "--skip-scan", "--skip-build"])
+    assert r.exit_code == 0, r.output
+    assert "ZAP scan failed" in r.output
+
+
+def test_gitops_commit_and_sync(runner, monkeypatch):
+    _wire(monkeypatch, cfg=_prod_cfg())
+    monkeypatch.setenv("ARGOCD_TOKEN", "tok")
+    r = runner.invoke(deploy_command, ["--env", "prod", "--gitops", "--skip-scan", "--skip-build", "--skip-dast"])
+    assert r.exit_code == 0, r.output
+    assert "GitOps image override" in r.output
+
+
+def test_slot_deploy(runner, monkeypatch):
+    _wire(monkeypatch)
+    r = runner.invoke(deploy_command, ["--env", "staging", "--slot", "blue", "--skip-scan", "--skip-build", "--skip-dast"])
+    assert r.exit_code == 0, r.output
+    assert "blue" in r.output
+
+
+def test_wizard_cancel(runner, monkeypatch):
+    _wire(monkeypatch)
+    monkeypatch.setattr(_P + "should_offer_wizard", lambda *a: True)
+    monkeypatch.setattr(_P + "run_deploy_wizard", lambda c, o: None)   # user cancelled
+    r = runner.invoke(deploy_command, [])
+    assert r.exit_code == 0
+    assert "cancelled" in r.output.lower()
+
+
+def test_wizard_resolves_options(runner, monkeypatch):
+    _wire(monkeypatch)
+    resolved = DeployOptions(env="local", slot=None, use_gitops=False, gitops_branch="main",
+                             skip_scan=True, skip_build=True, skip_sonarqube=False, skip_trivy=False,
+                             skip_dast=True, fail_on="HIGH", replicas=None)
+    monkeypatch.setattr(_P + "should_offer_wizard", lambda *a: True)
+    monkeypatch.setattr(_P + "run_deploy_wizard", lambda c, o: resolved)
+    r = runner.invoke(deploy_command, [])
+    assert r.exit_code == 0, r.output
+    assert "Deployment complete" in r.output
