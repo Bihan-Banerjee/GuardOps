@@ -140,7 +140,7 @@ jobs:
             --cov=cli --cov=backend \
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml \
-            --cov-fail-under=55 \
+            --cov-fail-under=64 \
             --tb=short
 
       - name: Upload coverage report
