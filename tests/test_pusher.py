@@ -42,6 +42,21 @@ def test_push_no_account_id(monkeypatch):
     assert not res.success and "account ID" in res.error_message
 
 
+def test_push_constructs_registry_from_sts_account(monkeypatch):
+    # No configured registry → resolve the account ID via STS and build the
+    # registry from it. (test_push_success covers the configured-registry path.)
+    monkeypatch.delenv("AWS_ACCOUNT_ID", raising=False)
+    with patch("backend.pipeline.pusher._get_account_id", return_value="123456789012"), \
+         patch("backend.pipeline.pusher._ensure_ecr_repository", return_value=True), \
+         patch("backend.pipeline.pusher._authenticate_docker_to_ecr", return_value=True), \
+         patch("backend.pipeline.pusher._tag_and_push_latest", return_value=True), \
+         patch("backend.pipeline.pusher.run_command", return_value=_proc()):
+        res = push_to_ecr("test-app:abc123", {})   # no docker.registry in config
+    assert res.success
+    assert res.registry == "123456789012.dkr.ecr.ap-south-1.amazonaws.com"
+    assert res.image_uri.endswith("/test-app:abc123")
+
+
 def test_push_ecr_repo_failure(monkeypatch):
     monkeypatch.setenv("AWS_ACCOUNT_ID", "123456789012")
     with patch("backend.pipeline.pusher._ensure_ecr_repository", return_value=False):
