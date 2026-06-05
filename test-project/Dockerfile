@@ -57,7 +57,18 @@ WORKDIR /app
 RUN apt-get update && \
     apt-get upgrade -y && \
     apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* && \
+    # The base image also ships a SYSTEM pip/setuptools/wheel under /usr/local that
+    # vendor the same old jaraco.context (5.3.0) and wheel (0.45.1). The app runs
+    # from the copied venv (PATH below), never the system interpreter, so remove the
+    # system build tools and their vendored CVE copies entirely.
+    rm -rf /usr/local/lib/python3.11/site-packages/pip* \
+           /usr/local/lib/python3.11/site-packages/setuptools* \
+           /usr/local/lib/python3.11/site-packages/wheel* \
+           /usr/local/lib/python3.11/site-packages/pkg_resources \
+           /usr/local/lib/python3.11/site-packages/_distutils_hack \
+           /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/wheel \
+           /usr/local/lib/python3.11/ensurepip
 
 # Copy only the pre-built venv from the builder — no pip, no wheel, no compiler
 COPY --from=builder /build/venv /venv
