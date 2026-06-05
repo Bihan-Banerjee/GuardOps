@@ -74,32 +74,33 @@ def push_to_ecr(
     # ap-south-1 is closest to India and generally cheapest for Indian users.
     region = region or os.environ.get("AWS_REGION", "ap-south-1")
 
-    # ── Resolve AWS account ID ────────────────────────────────────────────────
-    account_id = account_id or os.environ.get("AWS_ACCOUNT_ID", "")
-    if not account_id:
-        account_id = _get_account_id()
-        if not account_id:
-            return PushResult(
-                success=False,
-                image_uri="",
-                registry="",
-                repository=image_name,
-                tag=image_tag,
-                error_message=(
-                    "Could not determine AWS account ID. "
-                    "Either set AWS_ACCOUNT_ID in your environment, "
-                    "or ensure your AWS CLI credentials are configured "
-                    "(`aws sts get-caller-identity` should return your account ID)."
-                ),
-            )
-
     # ── Resolve ECR registry URL ──────────────────────────────────────────────
-    # Use the registry from .guardops.yaml if set (prod workflow).
-    # Fall back to constructing it from account ID + region.
-    registry = (
-        config.get("docker", {}).get("registry", "").strip()
-        or f"{account_id}.dkr.ecr.{region}.amazonaws.com"
-    )
+    # An explicitly configured registry (.guardops.yaml docker.registry) is
+    # authoritative — it already embeds the account ID — so we must NOT require an
+    # independent account-ID / STS lookup in that case. This lets CI and any
+    # pre-configured environment push without AWS_ACCOUNT_ID or live STS creds.
+    registry = config.get("docker", {}).get("registry", "").strip()
+    if not registry:
+        # No configured registry: construct it from account ID + region, resolving
+        # the account ID from the arg, then AWS_ACCOUNT_ID, then STS as a last resort.
+        account_id = account_id or os.environ.get("AWS_ACCOUNT_ID", "")
+        if not account_id:
+            account_id = _get_account_id()
+            if not account_id:
+                return PushResult(
+                    success=False,
+                    image_uri="",
+                    registry="",
+                    repository=image_name,
+                    tag=image_tag,
+                    error_message=(
+                        "Could not determine AWS account ID. "
+                        "Either set AWS_ACCOUNT_ID in your environment, "
+                        "or ensure your AWS CLI credentials are configured "
+                        "(`aws sts get-caller-identity` should return your account ID)."
+                    ),
+                )
+        registry = f"{account_id}.dkr.ecr.{region}.amazonaws.com"
 
     remote_image_uri = f"{registry}/{image_name}:{image_tag}"
     local_image_ref  = f"{image_name}:{image_tag}"
