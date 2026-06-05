@@ -343,8 +343,15 @@ Write-Host ""
 # zone was already detached or DNS/TLS is disabled.
 $dnsTlsEnabled = Read-TfVar "enable_dns_tls"
 if ($dnsTlsEnabled -eq "true") {
-    Write-Host "    Preserving Route53 zone (detaching from Terraform state)..." -ForegroundColor Gray
+    Write-Host "    Preserving Route53 zone + dashboard CNAME (detaching from Terraform state)..." -ForegroundColor Gray
     try { terraform state rm "module.dns_tls[0].aws_route53_zone.guardops" 2>&1 | Out-Null } catch { }
+    # dashboard.guardops.live is a plain CNAME to Vercel (NOT an ALB alias), so it
+    # must resolve 24/7 — independent of the cluster. It is NOT cluster-dependent
+    # like the apex/app/staging/argocd A-records, which alias the ephemeral ALB and
+    # are correctly recreated each morning. Detach it from state so `terraform
+    # destroy` cannot delete the Route53 record (which would NXDOMAIN the SPA and
+    # break the always-on dashboard). morning-start re-adopts it via allow_overwrite.
+    try { terraform state rm "module.dns_tls[0].aws_route53_record.dashboard_spa" 2>&1 | Out-Null } catch { }
 }
 
 # Phase 6/11: preserve the GitHub Actions OIDC provider + CI role + inline policy
