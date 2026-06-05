@@ -255,6 +255,16 @@ jobs:
               # scoped to the dashboard/* prefix only. reports/ and metadata/ stay private.
               ("public",                                          "modules/s3"),
               ("s3-bucket",                                       "modules/s3"),
+              # SQLite raw queries — parameterized: every user value is bound via "?"
+              # placeholders; only static column names / clause fragments are f-string
+              # interpolated (WHERE/JOIN structure), never user input. No injection vector.
+              ("sqlalchemy-execute-raw-query",                    "metadata/sqlite_store"),
+              # Finding-dedup fingerprint uses SHA-1 — not a security/integrity digest
+              # (usedforsecurity=False); collisions only affect local dedup, not trust.
+              ("insecure-hash-algorithm-sha1",                    "metadata/sqlite_store"),
+              # Kyverno ECR-read role — short-lived IRSA tokens only, not long-lived
+              # creds (same rationale as the iam_oidc suppression above).
+              ("no-iam-creds-exposure",                           "modules/kyverno"),
           ]
 
           def is_suppressed(result):
@@ -630,14 +640,21 @@ jobs:
         if: ${{ env.HAS_AWS == 'true' }}
         env:
           COSIGN_YES: "true"
+          # Pass GitHub context through the environment rather than interpolating
+          # ${{ … }} directly into the shell (avoids run-shell-injection; these
+          # values are GitHub-controlled but env-passing is the correct pattern).
+          PROV_REPO: ${{ github.repository }}
+          PROV_REF: ${{ github.ref }}
+          PROV_SHA: ${{ github.sha }}
+          PROV_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           cat > security/reports/provenance.json <<JSON
           {
-            "buildType": "https://github.com/${{ github.repository }}/ci",
-            "builder": { "id": "https://github.com/${{ github.repository }}/.github/workflows/ci.yaml@${{ github.ref }}" },
-            "invocation": { "configSource": { "uri": "git+https://github.com/${{ github.repository }}@${{ github.sha }}" } },
-            "metadata": { "buildInvocationID": "${{ github.run_id }}" }
+            "buildType": "https://github.com/${PROV_REPO}/ci",
+            "builder": { "id": "https://github.com/${PROV_REPO}/.github/workflows/ci.yaml@${PROV_REF}" },
+            "invocation": { "configSource": { "uri": "git+https://github.com/${PROV_REPO}@${PROV_SHA}" } },
+            "metadata": { "buildInvocationID": "${PROV_RUN_ID}" }
           }
           JSON
           cosign attest --type slsaprovenance \
