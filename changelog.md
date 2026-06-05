@@ -3,11 +3,12 @@
 All notable changes are documented here.
 Format: [Semantic Versioning](https://semver.org)
 
-## [1.0.0] — Unreleased
+## [1.0.0] — 2026-06-05
 
 Phase 14 — the first stable release: completes the web dashboard, hardens the tool for
-external users, and makes the public site work 24/7 at near-zero cost. The package
-version bump + PyPI tag are cut separately — see [RELEASE.md](RELEASE.md).
+external users, and makes the public site work 24/7 at near-zero cost. Version bumped to
+1.0.0 across `cli/__init__.py`, `pyproject.toml`, `web/package.json`, and the Helm chart;
+published to PyPI on the `v1.0.0` tag — see [RELEASE.md](RELEASE.md).
 
 ### Added
 - **Web dashboard SPA** (`web/`, Vite + React + Three.js) on guardops.live.
@@ -43,6 +44,26 @@ version bump + PyPI tag are cut separately — see [RELEASE.md](RELEASE.md).
 - **Dependency CVEs** — floored `urllib3>=2.7.0`, `idna>=3.15` (plus the Starlette bump).
 - **Snapshot info-leak** — internal endpoints/hostnames redacted from the public snapshot.
 - Runtime `pod_name` field consistency; a Windows-only CLI hint made cross-platform.
+- **CI hermeticity (pusher)** — `push_to_ecr` no longer requires an AWS account-ID/STS
+  lookup when `docker.registry` is configured, so CI (and any pre-configured env) pushes
+  without live AWS credentials.
+- **SAST gate** — fixed a workflow `run`-shell-injection (GitHub context now passed via
+  env, not inline `${{ }}`); justified false positives (parameterized SQLite queries,
+  the non-security dedup SHA-1 fingerprint, Kyverno's short-lived IRSA role) suppressed.
+- **Container CVEs** — the demo image strips `pip`/`setuptools`/`ensurepip` whose
+  *vendored* `jaraco.context`/`wheel` copies were flagged, plus `apt-get upgrade` for the
+  OS layer → a clean Trivy scan (0 fixable HIGH/CRITICAL).
+- **Terraform import safety** — the ECR lifecycle policy uses static `for_each` keys so
+  pre-existing long-lived resources (ECR/S3/OIDC) can be imported back into state.
+- **Lifecycle scripts (PowerShell 5.1)** — ArgoCD apply/login guarded against the
+  `Stop`+native-stderr trap; ArgoCD login moved to a `kubectl port-forward` (no DNS wait);
+  `Read-TfVar` strips inline comments; `night-shutdown` preserves the
+  `dashboard.guardops.live` Vercel CNAME across teardown.
+- **CI cluster gating** — `HAS_EKS_CLUSTER` is kept in sync by the lifecycle scripts so a
+  push never hard-fails on a torn-down cluster.
+
+### Tests
+- **100% line coverage** enforced in CI (`--cov-fail-under=100`).
 
 ### Security
 - Public snapshot redaction; dependency CVE remediation; opt-in, prefix-scoped public S3.
