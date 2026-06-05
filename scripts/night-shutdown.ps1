@@ -414,6 +414,13 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host ""
 Write-Host "    OK  terraform destroy complete" -ForegroundColor Green
 
+# The EKS cluster is gone — flip the CI gate flag so pushes to main skip the
+# deploy / runtime / sync-gate jobs, which would otherwise hard-fail on the missing
+# cluster ("No cluster found for name: guardops-prod-cluster"). morning-start.ps1
+# sets it back to true on the next bring-up. Non-fatal if gh isn't configured.
+try { gh variable set HAS_EKS_CLUSTER --body "false" 2>$null } catch { }
+Write-Host "    OK  GitHub variable HAS_EKS_CLUSTER=false (CI deploy jobs disabled)" -ForegroundColor Green
+
 # ── Step 6/8: Clean up cert-manager CRDs (terraform doesn't remove them) ─────
 Write-ShutdownStep "6" "8" "Remove cert-manager CRDs (not managed by Terraform)"
 
