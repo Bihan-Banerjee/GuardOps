@@ -47,3 +47,8 @@ terraform.tfvars
 .terraform/
 terraform.tfstate
 terraform.tfstate.backup
+
+# Personal project report / interview notes — documentation, not shipped code
+GUARDOPS_REPORT.md
+# Local DNS recovery artifact (one-off Route53 change-batch)
+dashboard-dns.json
