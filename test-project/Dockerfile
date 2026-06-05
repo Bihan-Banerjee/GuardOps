@@ -36,12 +36,28 @@ RUN pip install --upgrade pip==25.3 && \
     pip install -r requirements.txt && \
     # Ensure the highest available patched versions of transitive deps
     pip install --upgrade "urllib3>=2.7.0" "jaraco.context>=6.1.0" && \
-    pip cache purge
+    pip cache purge && \
+    # pip + setuptools ship VENDORED copies of jaraco.context (5.3.0) and wheel
+    # (0.45.1) inside their _vendor/ dirs — those are the CVEs Trivy flags, and
+    # pinning the standalone packages above can't touch them. They are build-time
+    # only (the app imports just stdlib + prometheus_client), so remove them from
+    # the venv that gets copied into the runtime image. The patched STANDALONE
+    # jaraco.context / urllib3 stay behind.
+    pip uninstall -y setuptools pip
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
 FROM python:3.11-slim-bookworm AS runtime
 
 WORKDIR /app
+
+# Patch OS packages to their latest Debian security releases. The base image is
+# pinned, so newer patched packages (e.g. libgnutls30 3.7.9-2+deb12u7, which fixes
+# several HIGH/CRITICAL CVEs) only arrive via an explicit upgrade. Done in its own
+# layer, before copying the app, so it caches independently.
+RUN apt-get update && \
+    apt-get upgrade -y && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 # Copy only the pre-built venv from the builder — no pip, no wheel, no compiler
 COPY --from=builder /build/venv /venv
