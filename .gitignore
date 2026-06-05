@@ -52,3 +52,10 @@ terraform.tfstate.backup
 GUARDOPS_REPORT.md
 # Local DNS recovery artifact (one-off Route53 change-batch)
 dashboard-dns.json
+
+# Claude Code local tooling config (editor/agent settings, not part of the product)
+.claude/
+
+# Scan-metadata databases — build artifacts that mutate on every run
+**/guardops.db
+security/metadata/*.db
