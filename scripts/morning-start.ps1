@@ -1029,6 +1029,13 @@ if (-not $SkipTerraform) {
         Write-Ok "GitHub secret AWS_ROLE_ARN updated"
     }
 
+    # Keep the CI gate flag accurate: the EKS cluster now exists, so the deploy /
+    # runtime / sync-gate CI jobs may run. night-shutdown.ps1 flips this back to
+    # false so a push to main while the cluster is down skips those jobs instead of
+    # hard-failing on "No cluster found for name: guardops-prod-cluster".
+    gh variable set HAS_EKS_CLUSTER --body "true" 2>$null
+    Write-Ok "GitHub variable HAS_EKS_CLUSTER=true (CI deploy jobs enabled)"
+
     Set-Location $RepoRoot
 }
 
