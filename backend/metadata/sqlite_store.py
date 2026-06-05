@@ -383,7 +383,9 @@ class SqliteMetadataStore(MetadataStore):
     @staticmethod
     def _fingerprint(finding) -> str:
         raw = f"{finding.tool}|{finding.rule_id}|{finding.cve}|{finding.file_path}|{finding.severity}"
-        return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+        # Dedup fingerprint only — not a security/integrity digest. usedforsecurity=False
+        # documents that intent (and silences SAST) while keeping the digest identical.
+        return hashlib.sha1(raw.encode("utf-8"), usedforsecurity=False).hexdigest()
 
     @staticmethod
     def _row_to_run(row) -> RunRecord:
