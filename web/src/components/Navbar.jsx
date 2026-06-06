@@ -22,10 +22,13 @@ export default function Navbar() {
   const [loaded, setLoaded] = useState(false) // first meta fetch resolved (live or snapshot)
   const [version, setVersion] = useState('v1.0.0')
   const [menuOpen, setMenuOpen] = useState(false)
-  const { offline } = useOffline()
+  const { status: connStatus } = useOffline()
 
-  // Derived badge state: null=checking, 'live'=live API, 'snapshot'=cached fallback.
-  const status = !loaded ? null : offline ? 'snapshot' : 'live'
+  // Derived badge state: null=checking, then the live signal:
+  //   'live'     → green  (connected to the live API)
+  //   'snapshot' → amber  (live API down, serving cached snapshot)
+  //   'error'    → red    (both live API and snapshot unreachable)
+  const status = !loaded ? null : connStatus
 
   useEffect(() => {
     const handleScroll = () => setScrolled(window.scrollY > 60)
@@ -102,6 +105,12 @@ export default function Navbar() {
                 <>
                   <span className="w-2 h-2 rounded-full bg-amber-500" />
                   <span className="hidden sm:inline text-xs font-mono text-amber-500/80">SNAPSHOT</span>
+                </>
+              )}
+              {status === 'error' && (
+                <>
+                  <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                  <span className="hidden sm:inline text-xs font-mono text-red-500/80">DISCONNECTED</span>
                 </>
               )}
             </div>

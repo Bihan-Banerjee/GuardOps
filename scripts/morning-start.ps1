@@ -174,25 +174,37 @@ function Import-EksOidcProvider {
 function Import-IfMissing {
     param([string]$Addr, [string]$AwsId, [string]$Desc)
     Write-Info "Checking state for $Desc..."
-    
-    try {
-        terraform state show $Addr 2>&1 | Out-Null
-    } catch {
-        # Catch and ignore PowerShell's NativeCommandError
-    }
-    
-    if ($LASTEXITCODE -eq 0) {
+
+    # Membership check via `terraform state list` (lists every address) + an exact
+    # match, instead of `terraform state show $Addr`. A for_each address such as
+    #   module.ecr.aws_ecr_repository.repos["guardops-app"]
+    # cannot be passed reliably as a native-command ARGUMENT in PowerShell 5.1 — it
+    # strips the inner quotes (-> repos[guardops-app] -> "Index value required"), so
+    # the check AND the import would silently fail and the apply then tries to CREATE
+    # an already-existing resource. `state list` takes no args, so it's quote-safe.
+    $inState = $false
+    try { $inState = ((terraform state list 2>$null) -contains $Addr) } catch { }
+
+    if ($inState) {
         Write-Info "$Desc already in state"
         return
     }
-    
+
     Write-Info "Importing $Desc..."
+    # The address must be passed as an argument, but PowerShell 5.1 mangles embedded
+    # double quotes in a for_each key — `repos["guardops-app"]` arrives at terraform
+    # as `repos[guardops-app]` ("Index value required"), so the import silently fails
+    # and the apply then tries to CREATE an already-existing resource. Route the
+    # import through cmd.exe with \"-escaped quotes: cmd passes them verbatim and
+    # terraform's Go arg parser converts \" back to ". A no-op for plain addresses.
+    # Runs in the current dir (the caller has already Set-Location'd to TerraformDir).
+    $escaped = $Addr -replace '"', '\"'
     try {
-        terraform import $Addr $AwsId 2>&1 | Out-Null
+        cmd /c "terraform import $escaped $AwsId" 2>&1 | Out-Null
     } catch {
         # Catch and ignore PowerShell's NativeCommandError
     }
-    
+
     if ($LASTEXITCODE -eq 0) { Write-Ok "Imported $Desc" }
     else                     { Write-Warn "Import of $Desc skipped (may not exist yet)" }
 }
@@ -456,19 +468,25 @@ function Ensure-DashboardImage {
         return $fullImage
     }
 
-    cmd /c "aws ecr get-login-password --region $Region 2>nul | docker login --username AWS --password-stdin $ecrBase"
+    # NOTE: pipe every native command's output to Out-Host. PowerShell returns ALL
+    # uncaptured pipeline output as the function's value, so a bare `docker build` /
+    # `docker push` would make the caller's $dashboardImage = [...build/push output...,
+    # $fullImage]. That output (ANSI codes, progress, CR) then lands in the rendered
+    # manifest -> "yaml: control characters are not allowed". Out-Host displays the
+    # output without adding it to the return value; $LASTEXITCODE is unaffected.
+    cmd /c "aws ecr get-login-password --region $Region 2>nul | docker login --username AWS --password-stdin $ecrBase" | Out-Host
     if ($LASTEXITCODE -ne 0) { Write-Warn "docker login failed -- skipping dashboard image build"; return $fullImage }
 
     $prevLocation = Get-Location
     Set-Location $RepoRoot
     Write-Info "Building $fullImage (this may take a few minutes)..."
-    docker build -f Dockerfile.dashboard -t $fullImage .
+    docker build -f Dockerfile.dashboard -t $fullImage . | Out-Host
     if ($LASTEXITCODE -ne 0) {
         Write-Warn "Docker build failed -- check Dockerfile.dashboard"
         Set-Location $prevLocation
         return $fullImage
     }
-    docker push $fullImage
+    docker push $fullImage | Out-Host
     if ($LASTEXITCODE -eq 0) { Write-Ok "Pushed $fullImage"; $script:DashboardImageReady = $true }
     else { Write-Warn "docker push failed -- pod may stay in ImagePullBackOff" }
     Set-Location $prevLocation
@@ -1029,12 +1047,14 @@ if (-not $SkipTerraform) {
         Write-Ok "GitHub secret AWS_ROLE_ARN updated"
     }
 
-    # Keep the CI gate flag accurate: the EKS cluster now exists, so the deploy /
-    # runtime / sync-gate CI jobs may run. night-shutdown.ps1 flips this back to
-    # false so a push to main while the cluster is down skips those jobs instead of
-    # hard-failing on "No cluster found for name: guardops-prod-cluster".
-    gh variable set HAS_EKS_CLUSTER --body "true" 2>$null
-    Write-Ok "GitHub variable HAS_EKS_CLUSTER=true (CI deploy jobs enabled)"
+    # Keep the CI deploy/runtime/sync jobs DISABLED (HAS_EKS_CLUSTER=false). They only
+    # work if the GitHub Actions IAM role is mapped into the cluster's RBAC (an EKS
+    # access entry); without that, a push to main runs them and they fail with
+    # "the server has asked for the client to provide credentials". Deployment is done
+    # by THIS script, not CI. To enable CI/CD later, add an EKS access entry for
+    # module.iam_oidc's role and flip this to "true".
+    gh variable set HAS_EKS_CLUSTER --body "false" 2>$null
+    Write-Ok "GitHub variable HAS_EKS_CLUSTER=false (CI deploy jobs disabled — deploy via this script)"
 
     Set-Location $RepoRoot
 }

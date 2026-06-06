@@ -10,13 +10,23 @@ RUN apt-get update -qq && apt-get install -y -qq curl ca-certificates && \
 
 # fastapi>=0.136 + starlette 1.2.x clears the Starlette CVEs (kept in sync with
 # pyproject [dashboard] and Dockerfile.dashboard).
-RUN /venv/bin/python -m pip install --quiet \
-    "fastapi>=0.136,<0.137" \
-    "starlette>=1.2,<1.3" \
-    "uvicorn>=0.30" \
-    pyyaml==6.0.1 \
-    httpx==0.27.0 \
-    kubernetes==30.1.0
+# Install everything the webhook needs. The base app image may not carry the GuardOps
+# CLI deps and strips pip from its venv (CVE-clean for the Trivy gate), so bootstrap
+# pip (curl installed above), then install the core CLI deps it imports via cli.utils.*
+# (rich/click/pyyaml/requests/boto3/dotenv) plus the webhook's own extras.
+RUN curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 30 \
+        https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py && \
+    /venv/bin/python /tmp/get-pip.py --quiet && \
+    rm -f /tmp/get-pip.py && \
+    /venv/bin/python -m pip install --quiet \
+        "click>=8.1.7" "rich>=13.7,<14.0" "requests>=2.31" \
+        "boto3>=1.34" "python-dotenv>=1.0" \
+        "fastapi>=0.136,<0.137" \
+        "starlette>=1.2,<1.3" \
+        "uvicorn>=0.30" \
+        pyyaml==6.0.1 \
+        httpx==0.27.0 \
+        kubernetes==30.1.0
 
 COPY backend/ /app/backend/
 

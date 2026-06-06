@@ -28,10 +28,22 @@ RUN apt-get update -qq && apt-get install -y -qq curl ca-certificates && \
 # click, rich and pyyaml are already in the app image's venv (core CLI deps). Pinned
 # to match pyproject [dashboard] — fastapi>=0.136 unblocks a patched Starlette
 # (CVE-2025-54121 / CVE-2025-62727 / PYSEC-2026-161).
-RUN /venv/bin/python -m pip install --quiet \
-    "fastapi>=0.136,<0.137" \
-    "starlette>=1.2,<1.3" \
-    "uvicorn[standard]>=0.30"
+# Install everything the dashboard needs. The base is the deployed app image, which
+# is NOT guaranteed to carry the GuardOps CLI deps (when it's the minimal demo app it
+# doesn't), and it strips pip from its venv to stay CVE-clean for the Trivy gate. So
+# bootstrap pip (curl was installed above), then install the core CLI deps the
+# dashboard imports via cli.utils.* (rich/click/pyyaml/requests/boto3/dotenv) plus the
+# FastAPI dashboard extras. Versions kept in sync with pyproject.
+RUN curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 30 \
+        https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py && \
+    /venv/bin/python /tmp/get-pip.py --quiet && \
+    rm -f /tmp/get-pip.py && \
+    /venv/bin/python -m pip install --quiet \
+        "click>=8.1.7" "rich>=13.7,<14.0" "pyyaml>=6.0.1" \
+        "requests>=2.31" "boto3>=1.34" "python-dotenv>=1.0" \
+        "fastapi>=0.136,<0.137" \
+        "starlette>=1.2,<1.3" \
+        "uvicorn[standard]>=0.30"
 
 COPY backend/ /app/backend/
 COPY cli/ /app/cli/

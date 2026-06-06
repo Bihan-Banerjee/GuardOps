@@ -25,7 +25,10 @@ function buildHeaders() {
 
 // ── offline signal (live API unreachable → serving snapshot) ──────────────────
 const offlineListeners = new Set()
-let offlineState = { offline: false, snapshotTime: null }
+// status: 'live'   — a live API read succeeded
+//         'snapshot' — live API down, serving the cached snapshot
+//         'error'   — both the live API and the snapshot failed
+let offlineState = { offline: false, snapshotTime: null, status: 'live' }
 
 export function getOfflineState() {
   return offlineState
@@ -39,7 +42,11 @@ export function subscribeOffline(fn) {
 
 function setOffline(next) {
   const merged = { ...offlineState, ...next }
-  if (merged.offline === offlineState.offline && merged.snapshotTime === offlineState.snapshotTime) {
+  if (
+    merged.offline === offlineState.offline &&
+    merged.snapshotTime === offlineState.snapshotTime &&
+    merged.status === offlineState.status
+  ) {
     return // no change — don't churn subscribers
   }
   offlineState = merged
@@ -76,14 +83,15 @@ export async function apiFetch(path, params = {}) {
     })
     if (!resp.ok) throw new Error(`API ${resp.status}: ${path}`)
     const data = await resp.json()
-    setOffline({ offline: false, snapshotTime: null }) // a live read succeeded
+    setOffline({ offline: false, snapshotTime: null, status: 'live' }) // a live read succeeded
     return data
   } catch (err) {
     const snap = await loadSnapshot()
     if (snap && snap.data && Object.prototype.hasOwnProperty.call(snap.data, path)) {
-      setOffline({ offline: true, snapshotTime: snap.generated_at || null })
+      setOffline({ offline: true, snapshotTime: snap.generated_at || null, status: 'snapshot' })
       return snap.data[path]
     }
+    setOffline({ offline: true, snapshotTime: null, status: 'error' }) // live + snapshot both failed
     throw err // no snapshot, or no entry for this path (e.g. a run detail)
   } finally {
     clearTimeout(timer)

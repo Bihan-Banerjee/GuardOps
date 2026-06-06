@@ -2,7 +2,7 @@ import { useRef, useState, useEffect, useCallback } from 'react'
 import anime from 'animejs/lib/anime.es.js'
 import { useApi } from '../hooks/useApi.js'
 import { useInView } from '../hooks/useInView.js'
-import { Search, ChevronDown, ChevronUp, Activity, ExternalLink } from 'lucide-react'
+import { Search, ChevronDown, ChevronUp, Activity, ExternalLink, ChevronLeft, ChevronRight } from 'lucide-react'
 
 function SectionHeader({ children }) {
   const ref = useRef(null)
@@ -49,6 +49,21 @@ const TOOL_COLORS = {
 
 const SEVERITIES = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']
 const TOOLS = ['semgrep', 'bandit', 'trivy', 'sonarqube']
+
+const PAGE_SIZE = 8
+
+// Build a compact, windowed page list with ellipses, e.g. [1, '…', 4, 5, 6, '…', 12].
+function getPageNumbers(current, total) {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1)
+  const pages = [1]
+  const start = Math.max(2, current - 1)
+  const end = Math.min(total - 1, current + 1)
+  if (start > 2) pages.push('…')
+  for (let i = start; i <= end; i++) pages.push(i)
+  if (end < total - 1) pages.push('…')
+  pages.push(total)
+  return pages
+}
 
 function FindingCard({ finding }) {
   const [expanded, setExpanded] = useState(false)
@@ -128,23 +143,43 @@ export default function Findings() {
 
   const [activeSev, setActiveSev] = useState(null)
   const [activeTool, setActiveTool] = useState(null)
-  const [cveInput, setCveInput] = useState('')
-  const [debouncedCve, setDebouncedCve] = useState('')
+  const [searchInput, setSearchInput] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [page, setPage] = useState(1)
 
   useEffect(() => {
-    const t = setTimeout(() => setDebouncedCve(cveInput), 400)
+    const t = setTimeout(() => setDebouncedSearch(searchInput.trim().toLowerCase()), 300)
     return () => clearTimeout(t)
-  }, [cveInput])
+  }, [searchInput])
 
   const params = {
-    severity: activeSev || undefined,
+    // severity (threshold) and cve (exact) on the API don't match the UX here, so both
+    // the severity pills and the free-text search are applied client-side (below).
     tool: activeTool || undefined,
-    cve: debouncedCve || undefined,
-    limit: 25,
+    limit: 200,
   }
 
   const { data, loading } = useApi('/api/v1/findings', params, { refreshMs: 30_000 })
-  const findings = data?.findings ?? []
+  const allFindings = data?.findings ?? []
+  // Exact severity + free-text substring across CVE / rule / message / file / tool.
+  const findings = allFindings.filter(f => {
+    if (activeSev && f.severity !== activeSev) return false
+    if (debouncedSearch) {
+      const hay = `${f.cve ?? ''} ${f.rule_id ?? ''} ${f.message ?? ''} ${f.file_path ?? ''} ${f.tool ?? ''}`.toLowerCase()
+      if (!hay.includes(debouncedSearch)) return false
+    }
+    return true
+  })
+
+  // ── Pagination (client-side over the fetched set) ──────────────────────────
+  const totalPages = Math.max(1, Math.ceil(findings.length / PAGE_SIZE))
+  // Reset to the first page whenever the filters change.
+  useEffect(() => { setPage(1) }, [activeSev, activeTool, debouncedSearch])
+  // Keep the page in range if the result set shrinks.
+  useEffect(() => { if (page > totalPages) setPage(totalPages) }, [totalPages, page])
+  const pagedFindings = findings.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
+  const rangeStart = findings.length === 0 ? 0 : (page - 1) * PAGE_SIZE + 1
+  const rangeEnd = Math.min(page * PAGE_SIZE, findings.length)
 
   useEffect(() => {
     if (!inView || appeared.current) return
@@ -201,10 +236,10 @@ export default function Findings() {
             <Search className="w-3 h-3 text-zinc-600" />
             <input
               type="text"
-              placeholder="CVE-YYYY-NNNNN"
-              value={cveInput}
-              onChange={e => setCveInput(e.target.value)}
-              className="bg-zinc-900 border border-zinc-700 rounded px-3 py-1 text-xs font-mono text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-terminal/50 w-40"
+              placeholder="Search CVE, rule, message, file…"
+              value={searchInput}
+              onChange={e => setSearchInput(e.target.value)}
+              className="bg-zinc-900 border border-zinc-700 rounded px-3 py-1 text-xs font-mono text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-terminal/50 w-56"
             />
           </div>
         </div>
@@ -214,7 +249,12 @@ export default function Findings() {
           {loading ? (
             <span className="flex items-center gap-2"><Activity className="w-3 h-3 animate-spin" /> Searching...</span>
           ) : (
-            <span>{findings.length} finding{findings.length !== 1 ? 's' : ''} found</span>
+            <span>
+              {findings.length} finding{findings.length !== 1 ? 's' : ''} found
+              {findings.length > PAGE_SIZE && (
+                <span className="text-zinc-600"> · showing {rangeStart}–{rangeEnd}</span>
+              )}
+            </span>
           )}
         </div>
 
@@ -225,10 +265,52 @@ export default function Findings() {
               No findings match the current filters.
             </div>
           )}
-          {findings.map(f => (
+          {pagedFindings.map(f => (
             <FindingCard key={f.id} finding={f} />
           ))}
         </div>
+
+        {/* Pagination */}
+        {totalPages > 1 && (
+          <div className="mt-8 flex items-center justify-center gap-2 font-mono text-xs">
+            <button
+              onClick={() => setPage(p => Math.max(1, p - 1))}
+              disabled={page === 1}
+              className="px-3 py-1 rounded-full border border-zinc-700 text-zinc-400 hover:border-zinc-600 hover:text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed transition-all inline-flex items-center gap-1"
+              aria-label="Previous page"
+            >
+              <ChevronLeft className="w-3 h-3" /> Prev
+            </button>
+
+            {getPageNumbers(page, totalPages).map((p, i) =>
+              p === '…' ? (
+                <span key={`gap-${i}`} className="px-2 text-zinc-600 select-none">…</span>
+              ) : (
+                <button
+                  key={p}
+                  onClick={() => setPage(p)}
+                  aria-current={p === page ? 'page' : undefined}
+                  className={`min-w-[2rem] px-2 py-1 rounded-full border transition-all ${
+                    p === page
+                      ? 'border-terminal text-terminal bg-terminal/10'
+                      : 'border-zinc-700 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300'
+                  }`}
+                >
+                  {p}
+                </button>
+              )
+            )}
+
+            <button
+              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+              disabled={page === totalPages}
+              className="px-3 py-1 rounded-full border border-zinc-700 text-zinc-400 hover:border-zinc-600 hover:text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed transition-all inline-flex items-center gap-1"
+              aria-label="Next page"
+            >
+              Next <ChevronRight className="w-3 h-3" />
+            </button>
+          </div>
+        )}
       </div>
     </section>
   )
