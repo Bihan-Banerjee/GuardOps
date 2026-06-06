@@ -109,7 +109,10 @@ def load_settings(config: dict | None = None) -> DashboardSettings:
     cors_regex = _env("GUARDOPS_DASHBOARD_CORS_ORIGIN_REGEX", default=dash.get("cors_origin_regex", ""))
 
     return DashboardSettings(
-        project_name=(config.get("project", {}) or {}).get("name", "guardops-app"),
+        project_name=_env(
+            "GUARDOPS_PROJECT",
+            default=(config.get("project", {}) or {}).get("name", "") or "guardops-app",
+        ),
         config=config,
         prometheus_url=_env("GUARDOPS_PROMETHEUS_URL", default=monitoring.get("prometheus_url") or DEFAULT_PROMETHEUS_URL),
         loki_url=_env("GUARDOPS_LOKI_URL", default=monitoring.get("loki_url") or DEFAULT_LOKI_URL),
