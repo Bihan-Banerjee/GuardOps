@@ -1,8 +1,9 @@
-import { useRef, useEffect } from 'react'
+import { useRef, useEffect, useState } from 'react'
 import anime from 'animejs/lib/anime.es.js'
 import { useApi } from '../hooks/useApi.js'
 import { useInView } from '../hooks/useInView.js'
 import { AlertTriangle, Shield, WifiOff, Activity } from 'lucide-react'
+import { Paginator } from './Paginator.jsx'
 
 function SectionHeader({ children }) {
   const ref = useRef(null)
@@ -113,34 +114,121 @@ function QuarantineOfflineState() {
   )
 }
 
+// ── Paginated Falco alert feed ──────────────────────────────────────────────
+const ALERT_PAGE_SIZE = 8
+
 function AlertFeed({ alerts }) {
-  if (!alerts?.length) {
+  const [page, setPage] = useState(1)
+
+  // Reset to page 1 whenever the alerts array identity changes (live refresh).
+  useEffect(() => { setPage(1) }, [alerts])
+
+  const totalPages  = Math.max(1, Math.ceil(alerts.length / ALERT_PAGE_SIZE))
+  useEffect(() => { if (page > totalPages) setPage(totalPages) }, [totalPages, page])
+
+  const pagedAlerts = alerts.slice((page - 1) * ALERT_PAGE_SIZE, page * ALERT_PAGE_SIZE)
+  const rangeStart  = (page - 1) * ALERT_PAGE_SIZE + 1
+  const rangeEnd    = Math.min(page * ALERT_PAGE_SIZE, alerts.length)
+
+  if (!alerts.length) {
     return (
       <div className="py-8 text-center text-zinc-300 font-mono text-sm">
         No alerts in this window
       </div>
     )
   }
+
   return (
-    <div className="space-y-2">
-      {alerts.map((alert, i) => (
-        <div key={i} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 py-3 border-b border-zinc-800/50 last:border-0">
-          <span className="text-xs font-mono text-zinc-600 whitespace-nowrap shrink-0">
-            {alert.timestamp ? new Date(alert.timestamp).toLocaleTimeString() : '—'}
-          </span>
-          <span className={`text-xs font-mono px-2 py-0.5 rounded border self-start shrink-0 ${SEV_STYLES[alert.severity] ?? SEV_STYLES.LOW}`}>
-            {alert.severity}
-          </span>
-          <span className="text-xs font-mono text-zinc-300 font-medium">{alert.rule}</span>
-          {alert.pod_name && (
-            <span className="text-xs font-mono text-zinc-600 truncate">{alert.pod_name}</span>
-          )}
-        </div>
-      ))}
+    <div>
+      {/* Range hint — only shown when there is more than one page */}
+      {totalPages > 1 && (
+        <p className="mb-3 text-xs font-mono text-zinc-600">
+          {alerts.length} alert{alerts.length !== 1 ? 's' : ''} · showing {rangeStart}–{rangeEnd}
+        </p>
+      )}
+
+      <div className="space-y-2">
+        {pagedAlerts.map((alert, i) => (
+          <div key={i} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 py-3 border-b border-zinc-800/50 last:border-0">
+            <span className="text-xs font-mono text-zinc-600 whitespace-nowrap shrink-0">
+              {alert.timestamp ? new Date(alert.timestamp).toLocaleTimeString() : '—'}
+            </span>
+            <span className={`text-xs font-mono px-2 py-0.5 rounded border self-start shrink-0 ${SEV_STYLES[alert.severity] ?? SEV_STYLES.LOW}`}>
+              {alert.severity}
+            </span>
+            <span className="text-xs font-mono text-zinc-300 font-medium">{alert.rule}</span>
+            {alert.pod_name && (
+              <span className="text-xs font-mono text-zinc-600 truncate">{alert.pod_name}</span>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <Paginator
+        page={page}
+        totalPages={totalPages}
+        setPage={setPage}
+        className="mt-4 pt-4 border-t border-zinc-800/50"
+      />
     </div>
   )
 }
 
+// ── Paginated quarantine pod list ───────────────────────────────────────────
+const QUARANTINE_PAGE_SIZE = 5
+
+function QuarantineList({ pods, policies }) {
+  const [page, setPage] = useState(1)
+
+  useEffect(() => { setPage(1) }, [pods])
+
+  const totalPages = Math.max(1, Math.ceil(pods.length / QUARANTINE_PAGE_SIZE))
+  useEffect(() => { if (page > totalPages) setPage(totalPages) }, [totalPages, page])
+
+  const pagedPods  = pods.slice((page - 1) * QUARANTINE_PAGE_SIZE, page * QUARANTINE_PAGE_SIZE)
+  const rangeStart = (page - 1) * QUARANTINE_PAGE_SIZE + 1
+  const rangeEnd   = Math.min(page * QUARANTINE_PAGE_SIZE, pods.length)
+
+  return (
+    <div>
+      {totalPages > 1 && (
+        <p className="mb-3 text-xs font-mono text-zinc-600">
+          {pods.length} pod{pods.length !== 1 ? 's' : ''} · showing {rangeStart}–{rangeEnd}
+        </p>
+      )}
+
+      <div className="space-y-3">
+        {pagedPods.map(pod => (
+          <div key={pod.name} className="border border-red-500/20 bg-red-500/5 rounded-lg p-4">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-sm font-mono text-red-300 font-bold">{pod.name}</p>
+                <p className="text-xs font-mono text-zinc-600 mt-1">{pod.namespace}</p>
+              </div>
+              <span className="text-xs font-mono text-red-400 bg-red-500/10 px-2 py-0.5 rounded border border-red-500/20">
+                ISOLATED
+              </span>
+            </div>
+            {policies?.find(p => p.name.includes(pod.name.slice(-6))) && (
+              <p className="text-xs font-mono text-zinc-600 mt-2">
+                Policy: {policies.find(p => p.name.includes(pod.name.slice(-6)))?.name}
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <Paginator
+        page={page}
+        totalPages={totalPages}
+        setPage={setPage}
+        className="mt-4 pt-4 border-t border-zinc-800/50"
+      />
+    </div>
+  )
+}
+
+// ── Section ─────────────────────────────────────────────────────────────────
 export default function Runtime() {
   const ref = useRef(null)
   const inView = useInView(ref)
@@ -187,9 +275,9 @@ export default function Runtime() {
               {alertsData?.available && (
                 <div className="flex items-center gap-3 text-xs font-mono">
                   {counts.CRITICAL > 0 && <span className="text-red-400">{counts.CRITICAL} CRIT</span>}
-                  {counts.HIGH > 0 && <span className="text-orange-400">{counts.HIGH} HIGH</span>}
-                  {counts.MEDIUM > 0 && <span className="text-yellow-400">{counts.MEDIUM} MED</span>}
-                  {counts.LOW > 0 && <span className="text-blue-400">{counts.LOW} LOW</span>}
+                  {counts.HIGH > 0     && <span className="text-orange-400">{counts.HIGH} HIGH</span>}
+                  {counts.MEDIUM > 0   && <span className="text-yellow-400">{counts.MEDIUM} MED</span>}
+                  {counts.LOW > 0      && <span className="text-blue-400">{counts.LOW} LOW</span>}
                   {!counts.CRITICAL && !counts.HIGH && !counts.MEDIUM && !counts.LOW && (
                     <span className="text-terminal">All clear</span>
                   )}
@@ -205,7 +293,7 @@ export default function Runtime() {
               ) : !alertsData.available ? (
                 <AlertsOfflineState />
               ) : (
-                <AlertFeed alerts={alertsData.alerts} />
+                <AlertFeed alerts={alertsData.alerts ?? []} />
               )}
             </div>
           </div>
@@ -233,26 +321,10 @@ export default function Runtime() {
                   <p className="font-mono text-xs text-zinc-300 mt-1">Self-healing policy active</p>
                 </div>
               ) : (
-                <div className="space-y-3">
-                  {quarantineData.pods.map(pod => (
-                    <div key={pod.name} className="border border-red-500/20 bg-red-500/5 rounded-lg p-4">
-                      <div className="flex items-start justify-between">
-                        <div>
-                          <p className="text-sm font-mono text-red-300 font-bold">{pod.name}</p>
-                          <p className="text-xs font-mono text-zinc-600 mt-1">{pod.namespace}</p>
-                        </div>
-                        <span className="text-xs font-mono text-red-400 bg-red-500/10 px-2 py-0.5 rounded border border-red-500/20">
-                          ISOLATED
-                        </span>
-                      </div>
-                      {quarantineData.policies?.find(p => p.name.includes(pod.name.slice(-6))) && (
-                        <p className="text-xs font-mono text-zinc-600 mt-2">
-                          Policy: {quarantineData.policies.find(p => p.name.includes(pod.name.slice(-6)))?.name}
-                        </p>
-                      )}
-                    </div>
-                  ))}
-                </div>
+                <QuarantineList
+                  pods={quarantineData.pods}
+                  policies={quarantineData.policies}
+                />
               )}
             </div>
           </div>

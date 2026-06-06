@@ -4,6 +4,7 @@ import { useApi } from '../hooks/useApi.js'
 import { useInView } from '../hooks/useInView.js'
 import { fetchRunDetail } from '../api.js'
 import { ChevronDown, ChevronRight, Activity } from 'lucide-react'
+import { Paginator } from './Paginator.jsx'
 
 function SectionHeader({ children }) {
   const ref = useRef(null)
@@ -35,24 +36,24 @@ function SectionHeader({ children }) {
 }
 
 const ENV_COLORS = {
-  prod: 'text-red-400 border-red-500/30 bg-red-500/10',
+  prod:    'text-red-400 border-red-500/30 bg-red-500/10',
   staging: 'text-yellow-400 border-yellow-500/30 bg-yellow-500/10',
-  local: 'text-zinc-400 border-zinc-700 bg-zinc-800/50',
+  local:   'text-zinc-400 border-zinc-700 bg-zinc-800/50',
 }
 
 const SEV_COLORS = {
-  crit: 'text-red-400',
-  high: 'text-orange-400',
+  crit:   'text-red-400',
+  high:   'text-orange-400',
   medium: 'text-yellow-400',
-  low: 'text-blue-400',
+  low:    'text-blue-400',
 }
 
 function FindingRow({ finding }) {
   const sevColor = {
     CRITICAL: 'text-red-400 bg-red-500/10 border-red-500/30',
-    HIGH: 'text-orange-400 bg-orange-500/10 border-orange-500/30',
-    MEDIUM: 'text-yellow-400 bg-yellow-500/10 border-yellow-500/30',
-    LOW: 'text-blue-400 bg-blue-500/10 border-blue-500/30',
+    HIGH:     'text-orange-400 bg-orange-500/10 border-orange-500/30',
+    MEDIUM:   'text-yellow-400 bg-yellow-500/10 border-yellow-500/30',
+    LOW:      'text-blue-400 bg-blue-500/10 border-blue-500/30',
   }[finding.severity] || 'text-zinc-400'
 
   return (
@@ -84,7 +85,7 @@ function FindingRow({ finding }) {
   )
 }
 
-function RunRow({ run, idx }) {
+function RunRow({ run }) {
   const [expanded, setExpanded] = useState(false)
   const [findings, setFindings] = useState(null)
   const [loadingFindings, setLoadingFindings] = useState(false)
@@ -185,13 +186,23 @@ function RunRow({ run, idx }) {
   )
 }
 
+const PAGE_SIZE = 10
+
 export default function Runs() {
   const ref = useRef(null)
   const inView = useInView(ref)
   const appeared = useRef(false)
+  const [page, setPage] = useState(1)
 
-  const { data, loading } = useApi('/api/v1/runs', { limit: 15 }, { refreshMs: 30_000 })
+  // Fetch up to 50 runs; paginate client-side so the table never gets unwieldy.
+  const { data, loading } = useApi('/api/v1/runs', { limit: 50 }, { refreshMs: 30_000 })
   const runs = data?.runs ?? []
+
+  const totalPages = Math.max(1, Math.ceil(runs.length / PAGE_SIZE))
+  useEffect(() => { if (page > totalPages) setPage(totalPages) }, [totalPages, page])
+  const pagedRuns  = runs.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
+  const rangeStart = runs.length === 0 ? 0 : (page - 1) * PAGE_SIZE + 1
+  const rangeEnd   = Math.min(page * PAGE_SIZE, runs.length)
 
   useEffect(() => {
     if (!inView || appeared.current) return
@@ -209,6 +220,22 @@ export default function Runs() {
     <section id="runs" className="relative bg-[#030303]/82 py-24 px-4">
       <div className="max-w-7xl mx-auto">
         <SectionHeader>SCAN RUNS</SectionHeader>
+
+        {/* Result count */}
+        <div className="mb-3 text-xs font-mono text-zinc-600">
+          {loading ? (
+            <span className="flex items-center gap-2">
+              <Activity className="w-3 h-3 animate-spin" /> Loading…
+            </span>
+          ) : runs.length > 0 ? (
+            <span>
+              {runs.length} run{runs.length !== 1 ? 's' : ''}
+              {runs.length > PAGE_SIZE && (
+                <span className="text-zinc-700"> · showing {rangeStart}–{rangeEnd}</span>
+              )}
+            </span>
+          ) : null}
+        </div>
 
         <div ref={ref} className="rounded-xl border border-zinc-800 overflow-hidden">
           <div className="overflow-x-auto">
@@ -228,8 +255,8 @@ export default function Runs() {
                 </tr>
               </thead>
               <tbody>
-                {runs.map((run, idx) => (
-                  <RunRow key={run.id} run={run} idx={idx} />
+                {pagedRuns.map(run => (
+                  <RunRow key={run.id} run={run} />
                 ))}
               </tbody>
             </table>
@@ -247,6 +274,13 @@ export default function Runs() {
             </div>
           )}
         </div>
+
+        <Paginator
+          page={page}
+          totalPages={totalPages}
+          setPage={setPage}
+          className="mt-6"
+        />
       </div>
     </section>
   )
