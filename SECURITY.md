@@ -18,7 +18,7 @@ Instead, report privately via one of:
 
 - **GitHub Security Advisories** — open a draft advisory at
   `Security → Advisories → Report a vulnerability` on this repository (preferred).
-- **Email** — send details to the address listed on the maintainer's GitHub profile.
+- **Email** — send details to bihanbanerjee26@gmail.com.
 
 Please include:
 
