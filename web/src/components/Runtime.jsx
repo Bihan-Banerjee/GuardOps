@@ -33,26 +33,84 @@ function SectionHeader({ children }) {
   )
 }
 
-function OfflineBanner({ reason }) {
-  return (
-    <div className="border border-zinc-800 rounded-xl bg-zinc-900/30 p-8 text-center">
-      <WifiOff className="w-8 h-8 text-zinc-700 mx-auto mb-3" strokeWidth={1} />
-      <p className="font-mono text-sm font-bold text-zinc-500 mb-1">CLUSTER OFFLINE</p>
-      <p className="font-mono text-xs text-zinc-300 break-all line-clamp-2">
-        {reason ? reason.split('\n')[0].slice(0, 100) : 'Data source unavailable'}
-      </p>
-      <p className="font-mono text-xs text-zinc-300 mt-2">
-        Nightly shutdown active — cluster resumes mornings
-      </p>
-    </div>
-  )
-}
-
 const SEV_STYLES = {
   CRITICAL: 'text-red-400 bg-red-500/10 border-red-500/30',
   HIGH:     'text-orange-400 bg-orange-500/10 border-orange-500/30',
   MEDIUM:   'text-yellow-400 bg-yellow-500/10 border-yellow-500/30',
   LOW:      'text-blue-400 bg-blue-500/10 border-blue-500/30',
+}
+
+// Ghost rows shown in the Falco panel when the cluster is offline — gives the
+// reader a sense of the live feed format and fills the card height.
+const GHOST_ALERTS = [
+  { severity: 'CRITICAL', rule: 'Terminal shell in container',      pod: 'app-7d9f4b-xk2s1'    },
+  { severity: 'HIGH',     rule: 'Sensitive file read in container', pod: 'app-7d9f4b-xk2s1'    },
+  { severity: 'MEDIUM',   rule: 'Package manager invoked',          pod: 'worker-9c3e2b-zp4k8' },
+  { severity: 'LOW',      rule: 'Unexpected outbound connection',   pod: 'api-6f8b2c-mn3j1'    },
+]
+
+function AlertsOfflineState() {
+  return (
+    <div>
+      <div className="flex items-start gap-3 p-4 rounded-lg bg-zinc-800/40 border border-zinc-700/40 mb-5">
+        <WifiOff className="w-4 h-4 text-zinc-400 shrink-0 mt-0.5" strokeWidth={1.5} />
+        <div>
+          <p className="text-xs font-mono text-zinc-200 font-bold mb-1">CLUSTER OFFLINE</p>
+          <p className="text-xs font-mono text-zinc-500 leading-relaxed">
+            Falco alerts are streamed in real-time from Loki and require the active
+            cluster. The cluster spins up each morning — live alerts will appear here then.
+          </p>
+        </div>
+      </div>
+      {/* Ghost rows — dimmed preview of the live feed format */}
+      <div className="space-y-0 opacity-20 pointer-events-none select-none" aria-hidden="true">
+        {GHOST_ALERTS.map((alert, i) => (
+          <div key={i} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 py-3 border-b border-zinc-800/50 last:border-0">
+            <span className="text-xs font-mono text-zinc-500 whitespace-nowrap shrink-0">
+              {new Date(Date.now() - (i + 1) * 900_000).toLocaleTimeString()}
+            </span>
+            <span className={`text-xs font-mono px-2 py-0.5 rounded border self-start shrink-0 ${SEV_STYLES[alert.severity]}`}>
+              {alert.severity}
+            </span>
+            <span className="text-xs font-mono text-zinc-300 font-medium">{alert.rule}</span>
+            <span className="text-xs font-mono text-zinc-600 truncate">{alert.pod}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function QuarantineOfflineState() {
+  return (
+    <div>
+      <div className="flex items-start gap-3 p-4 rounded-lg bg-zinc-800/40 border border-zinc-700/40 mb-5">
+        <WifiOff className="w-4 h-4 text-zinc-400 shrink-0 mt-0.5" strokeWidth={1.5} />
+        <div>
+          <p className="text-xs font-mono text-zinc-200 font-bold mb-1">CLUSTER OFFLINE</p>
+          <p className="text-xs font-mono text-zinc-500 leading-relaxed">
+            Quarantine status reads live Kubernetes NetworkPolicies. Self-healing pod
+            isolation resumes automatically when the cluster is running.
+          </p>
+        </div>
+      </div>
+      {/* Ghost skeleton cards — dimmed preview of what quarantined pods look like */}
+      <div className="space-y-3 opacity-20 pointer-events-none select-none" aria-hidden="true">
+        {[0, 1].map(i => (
+          <div key={i} className="border border-red-500/20 bg-red-500/5 rounded-lg p-4">
+            <div className="flex items-start justify-between">
+              <div className="space-y-2">
+                <div className="h-3 w-36 bg-zinc-700 rounded" />
+                <div className="h-2 w-24 bg-zinc-800 rounded" />
+              </div>
+              <div className="h-5 w-16 bg-zinc-800 rounded" />
+            </div>
+            <div className="h-2 w-48 bg-zinc-800 rounded mt-3" />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 function AlertFeed({ alerts }) {
@@ -145,7 +203,7 @@ export default function Runtime() {
                   <Activity className="w-4 h-4 animate-spin" /> Querying Loki...
                 </div>
               ) : !alertsData.available ? (
-                <OfflineBanner reason={alertsData.reason} />
+                <AlertsOfflineState />
               ) : (
                 <AlertFeed alerts={alertsData.alerts} />
               )}
@@ -165,7 +223,7 @@ export default function Runtime() {
                   <Activity className="w-4 h-4 animate-spin" /> Checking cluster...
                 </div>
               ) : !quarantineData.available ? (
-                <OfflineBanner reason={quarantineData.reason} />
+                <QuarantineOfflineState />
               ) : quarantineData.pods?.length === 0 ? (
                 <div className="py-8 text-center">
                   <div className="w-10 h-10 rounded-full bg-terminal/10 border border-terminal/20 flex items-center justify-center mx-auto mb-3">
