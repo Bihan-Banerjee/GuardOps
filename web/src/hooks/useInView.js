@@ -14,7 +14,7 @@ export function useInView(ref, options = {}) {
           obs.disconnect() // fire once
         }
       },
-      { threshold: 0.15, ...options }
+      { threshold: 0, ...options }
     )
     obs.observe(el)
     return () => obs.disconnect()

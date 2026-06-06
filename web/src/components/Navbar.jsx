@@ -20,7 +20,7 @@ function scrollTo(id) {
 export default function Navbar() {
   const [scrolled, setScrolled] = useState(false)
   const [loaded, setLoaded] = useState(false) // first meta fetch resolved (live or snapshot)
-  const [version, setVersion] = useState('v1.0.0')
+  const [version, setVersion] = useState('v1.0.1')
   const [menuOpen, setMenuOpen] = useState(false)
   const { status: connStatus } = useOffline()
 

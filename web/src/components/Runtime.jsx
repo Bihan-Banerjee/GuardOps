@@ -176,7 +176,7 @@ export default function Runtime() {
       <div className="max-w-7xl mx-auto">
         <SectionHeader>RUNTIME SECURITY</SectionHeader>
 
-        <div ref={ref} className="opacity-0 grid lg:grid-cols-2 gap-6">
+        <div ref={ref} className="grid md:grid-cols-2 gap-6">
           {/* Falco alerts */}
           <div>
             <div className="flex items-center justify-between mb-4">

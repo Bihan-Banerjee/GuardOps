@@ -259,7 +259,7 @@ export default function Findings() {
         </div>
 
         {/* Cards */}
-        <div ref={ref} className="opacity-0 space-y-3">
+        <div ref={ref} className="space-y-3">
           {findings.length === 0 && !loading && (
             <div className="py-16 text-center text-zinc-300 font-mono text-sm border border-zinc-800 rounded-xl">
               No findings match the current filters.

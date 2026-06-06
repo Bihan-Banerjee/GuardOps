@@ -117,7 +117,7 @@ export default function Trends() {
 
         <div
           ref={ref}
-          className="opacity-0 bg-zinc-900/40 border border-zinc-800 rounded-xl p-6"
+          className="bg-zinc-900/40 border border-zinc-800 rounded-xl p-6"
         >
           {loading && points.length === 0 ? (
             <div className="flex items-center justify-center h-[300px] gap-3 text-zinc-300 font-mono text-sm">

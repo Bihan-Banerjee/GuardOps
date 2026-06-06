@@ -44,7 +44,7 @@ const BINARY_PATTERNS = {
 
 const TERMINAL_LINES = [
   { text: '$ guardops --about', color: 'green' },
-  { text: '  GuardOps · DevSecOps Pipeline CLI · v0.13.0', color: 'cyan' },
+  { text: '  GuardOps · DevSecOps Pipeline CLI · v1.0.1', color: 'cyan' },
   { text: '  Your secure delivery pipeline in one command:', color: 'white' },
   { text: '  build,scan, gate, deploy, monitor', color: 'white' },
   { text: '  Five scanners gate every release; threats self-heal.', color: 'white' },

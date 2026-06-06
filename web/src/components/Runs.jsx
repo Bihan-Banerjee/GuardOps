@@ -210,7 +210,7 @@ export default function Runs() {
       <div className="max-w-7xl mx-auto">
         <SectionHeader>SCAN RUNS</SectionHeader>
 
-        <div ref={ref} className="opacity-0 rounded-xl border border-zinc-800 overflow-hidden">
+        <div ref={ref} className="rounded-xl border border-zinc-800 overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead className="bg-zinc-900/80 border-b border-zinc-800">

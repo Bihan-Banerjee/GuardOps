@@ -124,7 +124,7 @@ export default function Metrics() {
       <div className="max-w-7xl mx-auto">
         <SectionHeader>LIVE METRICS</SectionHeader>
 
-        <div ref={ref} className="opacity-0 grid lg:grid-cols-3 gap-6">
+        <div ref={ref} className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
 
           {/* App metrics */}
           <div className="bg-zinc-900/40 border border-zinc-800 rounded-xl p-6">
