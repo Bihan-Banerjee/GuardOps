@@ -10,7 +10,7 @@
 [![Typed: mypy](https://img.shields.io/badge/typed-mypy-blue.svg)](https://mypy-lang.org/)
 [![Lint: ruff](https://img.shields.io/badge/lint-ruff-261230.svg)](https://docs.astral.sh/ruff/)
 
-GuardOps wraps a complete secure delivery pipeline behind a single command. Given any application repo, it builds a Docker image, runs four security scanners in sequence, deploys to Kubernetes via Helm, runs a post-deploy DAST scan, exposes live metrics to Prometheus, queries runtime security alerts from Loki, automatically quarantines compromised pods via Alertmanager webhooks, serves the application on a real HTTPS domain via cert-manager + Let's Encrypt + Route53, and keeps the cluster state continuously reconciled with Git via ArgoCD — blocking the pipeline if HIGH or CRITICAL findings are detected at any stage.
+GuardOps wraps a complete secure delivery pipeline behind a single command. Given any application repo, it builds a Docker image, runs four security scanners in sequence, deploys to Kubernetes via Helm, runs a post-deploy DAST scan, exposes live metrics to Prometheus, queries runtime security alerts from Loki, automatically quarantines compromised pods via Alertmanager webhooks, serves the application on a real HTTPS domain via cert-manager + Let's Encrypt + Route53, and keeps the cluster state continuously reconciled with Git via ArgoCD, thus blocking the pipeline if HIGH or CRITICAL findings are detected at any stage.
 
 ```
 guardops deploy --env prod
