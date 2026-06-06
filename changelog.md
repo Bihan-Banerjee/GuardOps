@@ -3,6 +3,34 @@
 All notable changes are documented here.
 Format: [Semantic Versioning](https://semver.org)
 
+## [1.0.1] — 2026-06-06
+
+Patch release: post-1.0.0 hardening from a full end-to-end cluster bring-up, plus
+dashboard-frontend polish. No breaking changes.
+
+### Fixed
+- **Dashboard project-name resolution.** `load_settings` now resolves the project name
+  from `GUARDOPS_PROJECT` → config → `"guardops-app"` fallback, so the in-cluster
+  dashboard reads the correct `metadata/<project>/latest.json` S3 key instead of an
+  empty-project key (previously showed 0 runs against a populated bucket).
+- **morning-start.ps1**: ECR `for_each` resource imported via `cmd /c` (PowerShell 5.1
+  mangles `repos["…"]` quotes); `Ensure-DashboardImage` pipes docker output to
+  `Out-Host` so build/push logs don't pollute the returned image ref (which had been
+  injecting control characters into the rendered k8s manifest); `Import-IfMissing` uses
+  a quote-safe `state list` membership check; `HAS_EKS_CLUSTER` kept `false` (CI deploy
+  is opt-in and needs an EKS access entry for the CI role).
+- **night-shutdown.ps1**: preserves the `dashboard.guardops.live` Vercel CNAME across
+  teardown; keeps `HAS_EKS_CLUSTER=false`.
+- **Dockerfile.dashboard / Dockerfile.webhook**: bootstrap pip (the shared app base
+  strips it for the Trivy gate), install the full dependency set the services import,
+  and retry the get-pip download on transient TLS errors.
+
+### Changed
+- **Dashboard frontend** (`web/`): Findings Explorer gains **pagination** (8/page,
+  windowed page numbers), an **exact** severity filter, and a **functional free-text
+  search** across CVE / rule / message / file / tool. The Navbar connection badge is now
+  three-state: **green** (live), **amber** (snapshot), **red** (disconnected).
+
 ## [1.0.0] — 2026-06-05
 
 Phase 14 — the first stable release: completes the web dashboard, hardens the tool for
